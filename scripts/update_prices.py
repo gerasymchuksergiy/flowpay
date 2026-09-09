@@ -5,7 +5,8 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "products.json"
-API_KEY = os.environ.get("GEMINI_API_KEY")
+raw_keys = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY", "")
+API_KEYS = [key.strip() for key in re.split(r"[,\n]+", raw_keys) if key.strip()]
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 def get(url):
@@ -15,11 +16,20 @@ def get(url):
 
 def extract_price(product, html):
     prompt = f'''Verify that this page sells the exact product "{product['name']}" and extract its currently purchasable full price in UAH. Ignore installments, crossed-out prices, accessories, different variants and unrelated products. Return ONLY JSON: {{"matchedProduct": boolean, "available": boolean, "price": number|null, "confidence": number}}. Page text:\n{re.sub(r'<[^>]+>', ' ', html)[:120000]}'''
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
     body = json.dumps({"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0}}).encode()
-    req = Request(url, data=body, headers={"Content-Type":"application/json"})
-    with urlopen(req, timeout=60) as r:
-        result = json.load(r)
+    last_error = None
+    for index, api_key in enumerate(API_KEYS, 1):
+        try:
+            req = Request(url, data=body, headers={"Content-Type":"application/json", "x-goog-api-key":api_key})
+            with urlopen(req, timeout=60) as r:
+                result = json.load(r)
+            break
+        except Exception as exc:
+            last_error = exc
+            print(f"::warning title=Gemini key {index}::Key failed, trying the next configured key")
+    else:
+        raise RuntimeError(f"all Gemini keys failed: {last_error}")
     text = result["candidates"][0]["content"]["parts"][0]["text"]
     parsed = json.loads(text)
     if not parsed.get("matchedProduct") or not parsed.get("available") or parsed.get("confidence", 0) < 0.8:
@@ -27,8 +37,8 @@ def extract_price(product, html):
     return parsed.get("price")
 
 def main():
-    if not API_KEY:
-        raise SystemExit("GEMINI_API_KEY is required")
+    if not API_KEYS:
+        raise SystemExit("GEMINI_API_KEYS or GEMINI_API_KEY is required")
     data = json.loads(DATA.read_text())
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     day = now[:10]
