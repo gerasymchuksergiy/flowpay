@@ -1,32 +1,429 @@
 package com.flowpay.app
-import android.content.*;import android.net.Uri;import android.os.Bundle
-import androidx.activity.ComponentActivity;import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.*;import androidx.compose.foundation.lazy.*;import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions;import androidx.compose.material.icons.Icons;import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*;import androidx.compose.runtime.*;import androidx.compose.ui.Modifier;import androidx.compose.ui.graphics.Color;import androidx.compose.ui.text.font.FontWeight;import androidx.compose.ui.text.input.KeyboardType;import androidx.compose.ui.unit.dp;import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage;import kotlinx.coroutines.*;import org.json.*;import java.net.*;import androidx.work.*
 
-data class Wish(val id:String,val name:String,val url:String,val image:String,val price:Double,val history:List<Double>)
-data class Pay(val name:String,val amount:Double)
-class MainActivity:ComponentActivity(){override fun onCreate(b:Bundle?){super.onCreate(b);if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),7);PriceWorker.schedule(this);setContent{App(this)}}}
-class Store(c:Context){private val p=c.getSharedPreferences("flowpay",0)
- fun wishes():List<Wish>{val a=JSONArray(p.getString("w","[]"));return(0 until a.length()).map{val o=a.getJSONObject(it);val h=o.getJSONArray("h");Wish(o.getString("id"),o.getString("n"),o.getString("u"),o.getString("i"),o.getDouble("p"),(0 until h.length()).map{x->h.getDouble(x)})}}
- fun save(x:List<Wish>){p.edit().putString("w",JSONArray(x.map{JSONObject().put("id",it.id).put("n",it.name).put("u",it.url).put("i",it.image).put("p",it.price).put("h",JSONArray(it.history))}).toString()).apply()}
- fun pays():List<Pay>{val a=JSONArray(p.getString("pay","[]"));return(0 until a.length()).map{val o=a.getJSONObject(it);Pay(o.getString("n"),o.getDouble("a"))}}
- fun savePays(x:List<Pay>){p.edit().putString("pay",JSONArray(x.map{JSONObject().put("n",it.name).put("a",it.amount)}).toString()).apply()}}
-suspend fun product(link:String)=withContext(Dispatchers.IO){val c=URL(link).openConnection()as HttpURLConnection;c.setRequestProperty("User-Agent","Mozilla/5.0 Android");val s=c.inputStream.bufferedReader().readText()
- fun meta(k:String)=Regex("""<meta[^>]+(?:property|name)=["']$k["'][^>]+content=["']([^"']+)""",RegexOption.IGNORE_CASE).find(s)?.groupValues?.get(1)?:""
- val raw=meta("product:price:amount").ifBlank{Regex("""\"price\"\s*:\s*[\"']?([0-9.]+)""").find(s)?.groupValues?.get(1)?:"0"};val p=raw.toDoubleOrNull()?:0.0
- Wish(System.currentTimeMillis().toString(),meta("og:title").ifBlank{"Новий товар"},link,meta("og:image"),p,listOf(p))}
-suspend fun usd()=withContext(Dispatchers.IO){val a=JSONArray(URL("https://api.monobank.ua/bank/currency").readText());(0 until a.length()).map{a.getJSONObject(it)}.first{it.getInt("currencyCodeA")==840&&it.getInt("currencyCodeB")==980}.optDouble("rateSell")}
-val Lime=Color(0xffcbfb60);val Bg=Color(0xff030601);val Panel=Color(0xff1c1c1c)
-@Composable fun App(c:Context){val s=remember{Store(c)};var tab by remember{mutableIntStateOf(0)};var w by remember{mutableStateOf(s.wishes())};var p by remember{mutableStateOf(s.pays())}
- LaunchedEffect(Unit){if(w.isEmpty())runCatching{product("https://prom.ua/ua/p2522203669-muzhskie-krossovki-asics.html")}.onSuccess{w=listOf(it);s.save(w)}}
- MaterialTheme(colorScheme=darkColorScheme(primary=Lime,background=Bg,surface=Panel)){Scaffold(containerColor=Bg,bottomBar={NavigationBar(containerColor=Panel){listOf(Icons.Default.Favorite to "Вішліст",Icons.Default.Calculate to "Калькулятор",Icons.Default.Receipt to "Платежі",Icons.Default.Settings to "Ще").forEachIndexed{i,x->NavigationBarItem(tab==i,{tab=i},{Icon(x.first,null)},label={Text(x.second)})}}}){q->Box(Modifier.padding(q)){when(tab){0->Wishlist(w,{w=it;s.save(it)},c);1->Calc();2->Pays(p,{p=it;s.savePays(it)});else->About()}}}}}
-@Composable fun Head(a:String,b:String){Column(Modifier.padding(20.dp)){Text(a,color=Lime,fontSize=11.sp,fontWeight=FontWeight.Bold);Text(b,fontSize=36.sp,fontWeight=FontWeight.Black)}}
-@Composable fun Wishlist(ws:List<Wish>,save:(List<Wish>)->Unit,c:Context){var show by remember{mutableStateOf(false)};val scope=rememberCoroutineScope();LazyColumn(contentPadding=PaddingValues(bottom=80.dp)){item{Head("FLOWPAY","Мої бажання");Button({show=true},Modifier.padding(horizontal=20.dp).fillMaxWidth(),shape=RoundedCornerShape(16.dp)){Icon(Icons.Default.Add,null);Text(" Додати посилання")}};items(ws){x->Card(Modifier.padding(10.dp).fillMaxWidth(),shape=RoundedCornerShape(24.dp)){AsyncImage(x.image,x.name,Modifier.fillMaxWidth().height(230.dp));Column(Modifier.padding(18.dp)){Text(x.name,fontSize=20.sp,fontWeight=FontWeight.Bold);Text("${"%,.0f".format(x.price)} ₴",fontSize=28.sp,color=Lime,fontWeight=FontWeight.Black);Text("Історія: "+x.history.joinToString(" → "){"%,.0f".format(it)},fontSize=11.sp);Row{TextButton({c.startActivity(Intent(Intent.ACTION_VIEW,Uri.parse(x.url)))}){Text("До магазину ↗")};Spacer(Modifier.weight(1f));IconButton({save(ws-x)}){Icon(Icons.Default.Delete,null)}}}}}}
- if(show){var link by remember{mutableStateOf("")};AlertDialog({show=false},{Button({scope.launch{runCatching{product(link)}.onSuccess{save(ws+it);show=false}}},enabled=link.startsWith("http")){Text("Додати")}},title={Text("Посилання на товар")},text={OutlinedTextField(link,{link=it},label={Text("Prom.ua або інший магазин")})},dismissButton={TextButton({show=false}){Text("Скасувати")}})}}
-@Composable fun Field(n:String,v:String,set:(String)->Unit)=OutlinedTextField(v,set,Modifier.fillMaxWidth().padding(bottom=12.dp),label={Text(n)},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal))
-@Composable fun Calc(){var av by remember{mutableStateOf("")};var sal by remember{mutableStateOf("")};var rate by remember{mutableDoubleStateOf(0.0)};val sc=rememberCoroutineScope();Column{Head("ПЛАНУВАННЯ","Калькулятор");Column(Modifier.padding(20.dp)){Field("Аванс",av){av=it};Field("Основна зарплата",sal){sal=it};Text("Разом: ${"%,.0f".format((av.toDoubleOrNull()?:0.0)+(sal.toDoubleOrNull()?:0.0))} ₴",fontSize=24.sp,color=Lime);Button({sc.launch{rate=runCatching{usd()}.getOrDefault(0.0)}}){Text("Курс Monobank")};if(rate>0)Text("1 USD = $rate ₴",fontSize=20.sp)}}}
-@Composable fun Pays(xs:List<Pay>,save:(List<Pay>)->Unit){var n by remember{mutableStateOf("")};var a by remember{mutableStateOf("")};LazyColumn{item{Head("ЩОМІСЯЦЯ","Регулярні платежі");Column(Modifier.padding(20.dp)){OutlinedTextField(n,{n=it},Modifier.fillMaxWidth(),label={Text("Назва")});Field("Сума",a){a=it};Button({a.toDoubleOrNull()?.let{save(xs+Pay(n,it));n="";a=""}},Modifier.fillMaxWidth()){Text("Додати")};Text("Разом: ${"%,.0f".format(xs.sumOf{it.amount})} ₴",Modifier.padding(top=18.dp),fontSize=24.sp,color=Lime)}};items(xs){x->ListItem(headlineContent={Text(x.name)},supportingContent={Text("${x.amount} ₴")},trailingContent={IconButton({save(xs-x)}){Icon(Icons.Default.Delete,null)}})}}}
-@Composable fun About(){Column{Head("FLOWPAY","Налаштування");Text("Дані зберігаються на телефоні. Ключі не вшиваються в APK.",Modifier.padding(20.dp))}}
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.text.NumberFormat
+import java.util.Locale
+
+data class Wish(
+    val id: String,
+    val name: String,
+    val url: String,
+    val image: String,
+    val price: Double,
+    val targetPrice: Double = 0.0,
+    val category: String = "Інше",
+    val history: List<Double>
+)
+
+data class Pay(val name: String, val amount: Double, val day: Int = 1)
+data class Order(val id: String, val name: String, val url: String, val status: String, val tracking: String)
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
+        }
+        PriceWorker.schedule(this)
+        setContent { FlowPayApp(this) }
+    }
+}
+
+class Store(context: Context) {
+    private val prefs = context.getSharedPreferences("flowpay", Context.MODE_PRIVATE)
+
+    fun wishes(): List<Wish> = jsonList("w") { o ->
+        val history = o.optJSONArray("h") ?: JSONArray()
+        Wish(
+            id = o.optString("id", System.currentTimeMillis().toString()),
+            name = o.optString("n", "Товар"),
+            url = o.optString("u"),
+            image = o.optString("i"),
+            price = o.optDouble("p", 0.0),
+            targetPrice = o.optDouble("t", 0.0),
+            category = o.optString("c", "Інше"),
+            history = (0 until history.length()).map { history.optDouble(it) }.filter { it > 0 }
+        )
+    }
+
+    fun saveWishes(items: List<Wish>) = save("w", items.map {
+        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("i", it.image)
+            .put("p", it.price).put("t", it.targetPrice).put("c", it.category).put("h", JSONArray(it.history))
+    })
+
+    fun pays(): List<Pay> = jsonList("pay") { Pay(it.optString("n"), it.optDouble("a"), it.optInt("d", 1)) }
+    fun savePays(items: List<Pay>) = save("pay", items.map { JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day) })
+
+    fun orders(): List<Order> = jsonList("orders") {
+        Order(it.optString("id"), it.optString("n"), it.optString("u"), it.optString("s", "Замовлено"), it.optString("t"))
+    }
+    fun saveOrders(items: List<Order>) = save("orders", items.map {
+        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("s", it.status).put("t", it.tracking)
+    })
+
+    private fun <T> jsonList(key: String, map: (JSONObject) -> T): List<T> = runCatching {
+        val array = JSONArray(prefs.getString(key, "[]"))
+        (0 until array.length()).map { map(array.getJSONObject(it)) }
+    }.getOrDefault(emptyList())
+
+    private fun save(key: String, values: List<JSONObject>) {
+        prefs.edit().putString(key, JSONArray(values).toString()).apply()
+    }
+}
+
+suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
+    val connection = URL(link).openConnection() as HttpURLConnection
+    connection.instanceFollowRedirects = true
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
+    val html = connection.inputStream.bufferedReader().use { it.readText() }
+    fun meta(key: String): String {
+        val patterns = listOf(
+            Regex("""<meta[^>]+(?:property|name)=["']${Regex.escape(key)}["'][^>]+content=["']([^"']+)""", RegexOption.IGNORE_CASE),
+            Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${Regex.escape(key)}["']""", RegexOption.IGNORE_CASE)
+        )
+        return patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.get(1) }.orEmpty()
+    }
+    val rawPrice = meta("product:price:amount").ifBlank {
+        Regex("""\"price\"\s*:\s*[\"']?([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
+            .find(html)?.groupValues?.get(1).orEmpty()
+    }
+    val price = rawPrice.replace(',', '.').toDoubleOrNull() ?: 0.0
+    require(price > 0) { "Не вдалося знайти ціну на сторінці" }
+    Wish(
+        id = System.currentTimeMillis().toString(),
+        name = meta("og:title").replace("&quot;", "\"").ifBlank { "Новий товар" },
+        url = link,
+        image = meta("og:image"),
+        price = price,
+        history = listOf(price)
+    )
+}
+
+suspend fun usdRate(): Double = withContext(Dispatchers.IO) {
+    val array = JSONArray(URL("https://api.monobank.ua/bank/currency").readText())
+    (0 until array.length()).map { array.getJSONObject(it) }
+        .first { it.optInt("currencyCodeA") == 840 && it.optInt("currencyCodeB") == 980 }
+        .optDouble("rateSell")
+}
+
+val Accent = Color(0xffd7ff63)
+val AppBackground = Color(0xff090a08)
+val CardBackground = Color(0xff1a1b18)
+private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " ₴"
+
+@Composable
+fun FlowPayApp(context: Context) {
+    val store = remember { Store(context) }
+    var tab by remember { mutableIntStateOf(0) }
+    var wishes by remember { mutableStateOf(store.wishes()) }
+    var pays by remember { mutableStateOf(store.pays()) }
+    var orders by remember { mutableStateOf(store.orders()) }
+
+    LaunchedEffect(Unit) {
+        if (wishes.isEmpty()) runCatching {
+            product("https://prom.ua/ua/p2522203669-muzhskie-krossovki-asics.html")
+        }.onSuccess { wishes = listOf(it); store.saveWishes(wishes) }
+    }
+
+    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = AppBackground, surface = CardBackground)) {
+        Scaffold(containerColor = AppBackground, bottomBar = {
+            NavigationBar(containerColor = CardBackground) {
+                val tabs = listOf(
+                    Icons.Default.FavoriteBorder to "Бажання",
+                    Icons.Default.Calculate to "План",
+                    Icons.Default.ReceiptLong to "Платежі",
+                    Icons.Default.LocalShipping to "Замовлення",
+                    Icons.Default.MoreHoriz to "Ще"
+                )
+                tabs.forEachIndexed { index, item ->
+                    NavigationBarItem(tab == index, { tab = index }, { Icon(item.first, item.second) }, label = { Text(item.second, fontSize = 10.sp) })
+                }
+            }
+        }) { padding ->
+            Box(Modifier.padding(padding)) {
+                when (tab) {
+                    0 -> WishlistScreen(wishes, { wishes = it; store.saveWishes(it) }, context)
+                    1 -> PlannerScreen(wishes, pays)
+                    2 -> PaymentsScreen(pays) { pays = it; store.savePays(it) }
+                    3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context)
+                    else -> SettingsScreen()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun ScreenHeader(kicker: String, title: String, subtitle: String? = null) {
+    Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 14.dp)) {
+        Text(kicker, color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        Text(title, fontSize = 34.sp, fontWeight = FontWeight.Black)
+        subtitle?.let { Text(it, color = Color.Gray, fontSize = 14.sp) }
+    }
+}
+
+@Composable
+fun WishlistScreen(items: List<Wish>, save: (List<Wish>) -> Unit, context: Context) {
+    var adding by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+        item {
+            ScreenHeader("FLOWPAY", "Мої бажання", "Ціна, ціль та історія в одному місці")
+            Row(Modifier.padding(horizontal = 20.dp).fillMaxWidth()) {
+                Button({ adding = true }, Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
+                    Icon(Icons.Default.Add, null); Text(" Додати")
+                }
+                Spacer(Modifier.width(10.dp))
+                FilledTonalButton(onClick = {
+                    scope.launch {
+                        refreshing = true
+                        var updated = 0
+                        val fresh = items.map { old ->
+                            runCatching { product(old.url) }.getOrNull()?.let { now ->
+                                updated++
+                                old.copy(name = now.name, image = now.image.ifBlank { old.image }, price = now.price, history = (old.history + now.price).takeLast(90))
+                            } ?: old
+                        }
+                        save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
+                    }
+                }, enabled = !refreshing && items.isNotEmpty(), shape = RoundedCornerShape(16.dp)) {
+                    if (refreshing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Refresh, null)
+                    Text(" Оновити")
+                }
+            }
+            message?.let { Text(it, Modifier.padding(horizontal = 22.dp, vertical = 8.dp), color = Color.Gray) }
+        }
+        if (items.isEmpty()) item { EmptyCard("Додайте посилання на товар — фото й ціна підтягнуться автоматично") }
+        items(items, key = { it.id }) { wish ->
+            WishCard(wish, context, onDelete = { save(items - wish) })
+        }
+    }
+    if (adding) AddWishDialog({ adding = false }, { wish -> save(items + wish); adding = false })
+}
+
+@Composable
+fun AddWishDialog(close: () -> Unit, add: (Wish) -> Unit) {
+    var link by remember { mutableStateOf("") }
+    var target by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("Інше") }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(onDismissRequest = close, confirmButton = {
+        Button(onClick = {
+            scope.launch {
+                loading = true; error = null
+                runCatching { product(link).copy(targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category) }
+                    .onSuccess(add).onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                loading = false
+            }
+        }, enabled = link.startsWith("http") && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
+    }, dismissButton = { TextButton(close) { Text("Скасувати") } }, title = { Text("Новий товар") }, text = {
+        Column {
+            OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
+            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
+            OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Категорія") })
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
+        }
+    })
+}
+
+@Composable
+fun WishCard(wish: Wish, context: Context, onDelete: () -> Unit) {
+    val first = wish.history.firstOrNull() ?: wish.price
+    val change = if (first > 0) (wish.price - first) / first * 100 else 0.0
+    Card(Modifier.padding(horizontal = 12.dp, vertical = 7.dp).fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
+        AsyncImage(wish.image, wish.name, Modifier.fillMaxWidth().height(220.dp).background(Color(0xff262724)))
+        Column(Modifier.padding(18.dp)) {
+            Row { AssistChip({}, { Text(wish.category) }); Spacer(Modifier.weight(1f)); Text("%+.1f%%".format(change), color = if (change <= 0) Accent else Color(0xffff6b6b), fontWeight = FontWeight.Bold) }
+            Text(wish.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+            Text(money(wish.price), fontSize = 29.sp, color = Accent, fontWeight = FontWeight.Black)
+            if (wish.targetPrice > 0) Text("Ціль: ${money(wish.targetPrice)}", color = Color.LightGray)
+            PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = 10.dp))
+            Text("${wish.history.size} вимірювань · останні 90", color = Color.Gray, fontSize = 11.sp)
+            Row {
+                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(wish.url))) }) { Text("До магазину ↗") }
+                Spacer(Modifier.weight(1f))
+                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+            }
+        }
+    }
+}
+
+@Composable
+fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
+    val points = values.filter { it > 0 }
+    Canvas(modifier) {
+        if (points.size < 2) {
+            drawLine(Color.DarkGray, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 2f, StrokeCap.Round)
+            return@Canvas
+        }
+        val min = points.min()
+        val max = points.max()
+        val range = (max - min).takeIf { it > 0 } ?: 1.0
+        val path = Path()
+        points.forEachIndexed { index, value ->
+            val x = size.width * index / (points.size - 1)
+            val y = size.height - ((value - min) / range * size.height).toFloat()
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        drawPath(path, if (points.last() <= points.first()) Accent else Color(0xffff6b6b), style = Stroke(5f, cap = StrokeCap.Round))
+    }
+}
+
+@Composable
+fun PlannerScreen(wishes: List<Wish>, pays: List<Pay>) {
+    var advance by remember { mutableStateOf("") }
+    var salary by remember { mutableStateOf("") }
+    var expenses by remember { mutableStateOf("") }
+    var chosen by remember { mutableStateOf<Wish?>(null) }
+    var rate by remember { mutableDoubleStateOf(0.0) }
+    val scope = rememberCoroutineScope()
+    val income = (advance.toDoubleOrNull() ?: 0.0) + (salary.toDoubleOrNull() ?: 0.0)
+    val reserved = (expenses.toDoubleOrNull() ?: 0.0) + pays.sumOf { it.amount }
+    val available = income - reserved
+    val missing = ((chosen?.price ?: 0.0) - available).coerceAtLeast(0.0)
+    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+        item {
+            ScreenHeader("ПЛАНУВАННЯ", "Калькулятор покупки", "Порахуйте, коли бажання стане доступним")
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                NumberField("Аванс", advance) { advance = it }
+                NumberField("Основна зарплата", salary) { salary = it }
+                NumberField("Інші витрати", expenses) { expenses = it }
+                Text("Оберіть товар", color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(wishes) { wish -> FilterChip(chosen?.id == wish.id, { chosen = wish }, { Text(wish.name, maxLines = 1) }) }
+                }
+                SummaryCard("Вільно після платежів", money(available), if (available >= 0) Accent else Color(0xffff6b6b))
+                chosen?.let { Text(if (missing == 0.0) "На ${it.name} уже вистачає" else "До покупки бракує ${money(missing)}", Modifier.padding(top = 10.dp), fontWeight = FontWeight.Bold) }
+                FilledTonalButton({ scope.launch { rate = runCatching { usdRate() }.getOrDefault(0.0) } }, Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Оновити курс Monobank") }
+                if (rate > 0) Text("1 USD = ${"%.2f".format(rate)} ₴ · доступно ${"%.2f".format(available / rate)} USD", Modifier.padding(vertical = 12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+fun PaymentsScreen(items: List<Pay>, save: (List<Pay>) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var day by remember { mutableStateOf("1") }
+    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+        item {
+            ScreenHeader("ЩОМІСЯЦЯ", "Регулярні платежі", "Підписки, комунальні та обов'язкові витрати")
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                SummaryCard("Разом на місяць", money(items.sumOf { it.amount }), Accent)
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth().padding(top = 14.dp), label = { Text("Назва платежу") })
+                NumberField("Сума", amount) { amount = it }
+                NumberField("День місяця", day) { day = it }
+                Button({ amount.toDoubleOrNull()?.let { save(items + Pay(name.ifBlank { "Платіж" }, it, day.toIntOrNull()?.coerceIn(1, 31) ?: 1)); name = ""; amount = "" } }, Modifier.fillMaxWidth()) { Text("Додати платіж") }
+            }
+        }
+        items(items) { pay -> ListItem(headlineContent = { Text(pay.name) }, supportingContent = { Text("${money(pay.amount)} · ${pay.day} числа") }, trailingContent = { IconButton({ save(items - pay) }) { Icon(Icons.Default.DeleteOutline, "Видалити") } }) }
+    }
+}
+
+@Composable
+fun OrdersScreen(items: List<Order>, save: (List<Order>) -> Unit, context: Context) {
+    var name by remember { mutableStateOf("") }
+    var link by remember { mutableStateOf("") }
+    var tracking by remember { mutableStateOf("") }
+    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
+        item {
+            ScreenHeader("ДОСТАВКА", "Мої замовлення", "Зберігайте магазин, трек-номер і статус")
+            Column(Modifier.padding(horizontal = 20.dp)) {
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва товару") })
+                OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Посилання на замовлення") })
+                OutlinedTextField(tracking, { tracking = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Трек-номер") })
+                Button({ save(items + Order(System.currentTimeMillis().toString(), name.ifBlank { "Замовлення" }, link, "Замовлено", tracking)); name = ""; link = ""; tracking = "" }, Modifier.fillMaxWidth().padding(top = 10.dp), enabled = name.isNotBlank()) { Text("Додати замовлення") }
+            }
+        }
+        if (items.isEmpty()) item { EmptyCard("Тут з'являться ваші активні замовлення") }
+        items(items, key = { it.id }) { order ->
+            Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
+                Column(Modifier.padding(18.dp)) {
+                    Text(order.name, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                    Text(order.status, color = Accent)
+                    if (order.tracking.isNotBlank()) Text("Трек: ${order.tracking}", color = Color.Gray)
+                    Row {
+                        listOf("Замовлено", "В дорозі", "Отримано").forEach { status -> TextButton({ save(items.map { if (it.id == order.id) it.copy(status = status) else it }) }) { Text(status, fontSize = 11.sp) } }
+                    }
+                    Row {
+                        if (order.url.startsWith("http")) TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(order.url))) }) { Text("Відкрити ↗") }
+                        Spacer(Modifier.weight(1f))
+                        IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingsScreen() {
+    LazyColumn {
+        item {
+            ScreenHeader("FLOWPAY", "Налаштування")
+            ListItem(leadingContent = { Icon(Icons.Default.Sync, null) }, headlineContent = { Text("Фонове оновлення") }, supportingContent = { Text("Кожні 12 годин, коли є інтернет") })
+            ListItem(leadingContent = { Icon(Icons.Default.NotificationsNone, null) }, headlineContent = { Text("Сповіщення") }, supportingContent = { Text("Про падіння та досягнення цільової ціни") })
+            ListItem(leadingContent = { Icon(Icons.Default.Security, null) }, headlineContent = { Text("Приватність") }, supportingContent = { Text("Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK.") })
+        }
+    }
+}
+
+@Composable
+fun NumberField(label: String, value: String, set: (String) -> Unit) = OutlinedTextField(
+    value, set, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text(label) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+)
+
+@Composable
+fun SummaryCard(label: String, value: String, color: Color) {
+    Card(Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = Color(0xff242520)), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(18.dp)) { Text(label, color = Color.Gray); Text(value, fontSize = 28.sp, fontWeight = FontWeight.Black, color = color) }
+    }
+}
+
+@Composable
+fun EmptyCard(text: String) {
+    Card(Modifier.padding(20.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) { Text(text, Modifier.padding(24.dp), color = Color.Gray) }
+}
