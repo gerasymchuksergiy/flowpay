@@ -1,151 +1,75 @@
 <!doctype html>
 <html lang="uk">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
-<meta name="theme-color" content="#090b10" />
-<title>Мої гроші 2.0</title>
-<style>
-:root{
-  --bg:#080a0f;--bg2:#0d1118;--panel:#10151d;--panel2:#151b25;--panel3:#1b2230;
-  --text:#f7f9fc;--muted:#8e98aa;--line:rgba(255,255,255,.075);--lime:#b6ff65;--cyan:#77dcff;
-  --violet:#ad8cff;--danger:#ff7683;--warn:#ffd36b;--good:#78f0a7;--shadow:0 24px 80px rgba(0,0,0,.36);
-  --r:24px;--blur:blur(18px);
-}
-*{box-sizing:border-box}html{background:var(--bg)}body{margin:0;min-height:100vh;background:radial-gradient(circle at 85% -10%,rgba(119,220,255,.09),transparent 30%),radial-gradient(circle at -10% 30%,rgba(182,255,101,.06),transparent 32%),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;padding-bottom:112px}
-button,input,select,textarea{font:inherit}button{border:0;color:inherit}.app{max-width:560px;margin:auto;padding:18px 16px 36px}.topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}.brand{font-size:20px;font-weight:900;letter-spacing:-.6px}.subtle{font-size:12px;color:var(--muted);margin-top:3px}.iconbtn{width:42px;height:42px;border-radius:15px;border:1px solid var(--line);background:linear-gradient(145deg,#161c26,#0d1118);display:grid;place-items:center;cursor:pointer;box-shadow:inset 0 1px rgba(255,255,255,.03)}
-.view{display:none;animation:fade .28s ease}.view.active{display:block}@keyframes fade{from{opacity:.35;transform:translateY(4px)}to{opacity:1;transform:none}}
-.hero{position:relative;overflow:hidden;border:1px solid var(--line);border-radius:32px;padding:23px;background:linear-gradient(145deg,rgba(25,32,43,.98),rgba(12,16,23,.96));box-shadow:var(--shadow)}.hero:before{content:"";position:absolute;right:-70px;top:-90px;width:220px;height:220px;border-radius:50%;background:rgba(182,255,101,.12);filter:blur(40px)}.hero:after{content:"";position:absolute;left:-100px;bottom:-130px;width:240px;height:240px;border-radius:50%;background:rgba(119,220,255,.06);filter:blur(46px)}.eyebrow{position:relative;z-index:1;text-transform:uppercase;letter-spacing:1.35px;color:var(--muted);font-size:10px}.heroamount{position:relative;z-index:1;font-size:46px;line-height:1;font-weight:920;letter-spacing:-2.2px;margin:10px 0 8px}.heroamount small{font-size:22px;color:#cbd2dd;letter-spacing:-.5px}.chips{position:relative;z-index:1;display:flex;gap:8px;flex-wrap:wrap}.chip{font-size:11px;color:#c7cfdb;padding:7px 10px;border-radius:999px;background:rgba(255,255,255,.05);border:1px solid var(--line)}.chip.good{color:var(--lime);border-color:rgba(182,255,101,.18);background:rgba(182,255,101,.07)}
-.herofooter{position:relative;z-index:1;display:flex;justify-content:space-between;gap:12px;align-items:end;margin-top:22px}.mini-label{font-size:10px;color:var(--muted)}.mini-value{font-size:15px;font-weight:800;margin-top:3px}.safe-pill{font-size:11px;font-weight:800;color:#0a0e08;background:var(--lime);padding:9px 11px;border-radius:13px}
-.section{margin-top:24px}.sectionhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:11px}.sectiontitle{font-size:16px;font-weight:900;letter-spacing:-.25px}.link{font-size:12px;color:var(--lime);cursor:pointer}.card{border:1px solid var(--line);background:linear-gradient(145deg,rgba(17,22,30,.98),rgba(13,17,24,.98));border-radius:22px;padding:16px;box-shadow:0 12px 34px rgba(0,0,0,.18)}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.metric{min-height:110px;display:flex;flex-direction:column;justify-content:space-between}.metric .ico{font-size:20px}.metric strong{font-size:20px;letter-spacing:-.7px}.metric small{color:var(--muted);font-size:11px}.row{display:flex;align-items:center;gap:12px}.grow{flex:1;min-width:0}.name{font-weight:800;font-size:13px}.meta{font-size:11px;color:var(--muted);margin-top:4px}.amount{font-weight:850;font-size:14px}.pos{color:var(--good)}.neg{color:#ffd3d7}.progress{height:8px;border-radius:99px;background:#222936;overflow:hidden;margin-top:10px}.progress span{display:block;height:100%;border-radius:inherit;background:linear-gradient(90deg,var(--lime),var(--cyan))}.goalitem+.goalitem,.tx+.tx{margin-top:14px;padding-top:14px;border-top:1px solid var(--line)}.goalicon,.txicon{width:44px;height:44px;border-radius:15px;background:var(--panel2);display:grid;place-items:center;font-size:19px;flex:0 0 auto}.txicon{width:40px;height:40px;font-size:17px}.quick{display:grid;grid-template-columns:1fr 1fr;gap:10px}.quick button{padding:16px;border-radius:19px;text-align:left;background:linear-gradient(145deg,#151b25,#0e1219);border:1px solid var(--line);cursor:pointer}.quick b{display:block;font-size:13px}.quick span{display:block;font-size:11px;color:var(--muted);margin-top:4px}.quick .primaryquick{background:linear-gradient(145deg,rgba(182,255,101,.15),rgba(119,220,255,.06));border-color:rgba(182,255,101,.18)}
-.ringbox{display:flex;gap:16px;align-items:center}.ring{width:92px;height:92px;border-radius:50%;display:grid;place-items:center;background:conic-gradient(var(--lime) 0 62%,#232a35 62%);position:relative}.ring:after{content:"";position:absolute;inset:9px;border-radius:50%;background:var(--panel)}.ring strong{z-index:1;font-size:16px}.legend{display:grid;gap:7px;font-size:11px;color:#cbd2dc}.legend span{display:inline-flex;align-items:center;gap:7px}.dot{width:7px;height:7px;border-radius:50%;background:var(--lime)}.dot.d2{background:var(--cyan)}.dot.d3{background:var(--violet)}
-.list{display:grid;gap:9px}.listcard{padding:14px;border:1px solid var(--line);background:var(--panel);border-radius:18px}.empty{padding:26px 12px;text-align:center;color:var(--muted);font-size:12px}.tag{display:inline-flex;padding:5px 8px;border-radius:999px;font-size:10px;background:rgba(255,255,255,.05);color:#cbd2dc;border:1px solid var(--line)}.toolbar{display:flex;gap:8px;overflow:auto;padding-bottom:2px}.filter{white-space:nowrap;padding:8px 11px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:11px;color:#aeb7c6;cursor:pointer}.filter.active{color:#0a0e08;background:var(--lime);border-color:transparent;font-weight:800}.summaryline{display:flex;justify-content:space-between;gap:12px;align-items:end}.summaryline strong{font-size:24px;letter-spacing:-.8px}.summaryline small{color:var(--muted)}
-.bottom{position:fixed;z-index:30;left:50%;bottom:max(12px,env(safe-area-inset-bottom));transform:translateX(-50%);width:min(536px,calc(100% - 20px));height:72px;padding:7px;display:grid;grid-template-columns:repeat(4,1fr);background:rgba(14,18,25,.88);backdrop-filter:var(--blur);border:1px solid var(--line);border-radius:24px;box-shadow:0 20px 50px rgba(0,0,0,.46)}.nav{background:transparent;border-radius:17px;color:#7f899a;display:grid;place-items:center;gap:2px;font-size:9.5px;cursor:pointer}.nav .ni{font-size:19px;line-height:20px}.nav.active{background:#1d2430;color:#fff}.nav.active .ni{color:var(--lime)}.fab{position:fixed;z-index:35;right:max(18px,calc((100vw - 560px)/2 + 18px));bottom:94px;width:56px;height:56px;border-radius:19px;background:var(--lime);color:#0a0e08;font-size:27px;box-shadow:0 14px 34px rgba(182,255,101,.18);cursor:pointer}
-.modal{position:fixed;z-index:100;inset:0;display:none;align-items:flex-end;justify-content:center;background:rgba(0,0,0,.65);backdrop-filter:blur(10px)}.modal.open{display:flex}.sheet{width:min(560px,100%);max-height:88vh;overflow:auto;background:#10151d;border:1px solid var(--line);border-radius:28px 28px 0 0;padding:18px 16px calc(24px + env(safe-area-inset-bottom));box-shadow:0 -28px 70px rgba(0,0,0,.5)}.grab{width:44px;height:4px;border-radius:99px;background:#333c4a;margin:0 auto 16px}.sheet h2{font-size:21px;margin:0 0 4px}.sheet p{font-size:12px;color:var(--muted);margin:0 0 16px}.form{display:grid;gap:10px}.field{display:grid;gap:6px}.field label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px}.form input,.form select,.form textarea{width:100%;background:#171d27;border:1px solid var(--line);color:var(--text);border-radius:15px;padding:13px;outline:none}.form textarea{resize:vertical;min-height:82px}.form input:focus,.form select:focus,.form textarea:focus{border-color:rgba(182,255,101,.36);box-shadow:0 0 0 3px rgba(182,255,101,.05)}.actions{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:4px}.btn{padding:13px 15px;border-radius:15px;font-weight:850;cursor:pointer}.btn.primary{background:var(--lime);color:#0a0e08}.btn.ghost{background:#1b222e}.btn.danger{background:rgba(255,118,131,.1);color:var(--danger);border:1px solid rgba(255,118,131,.14)}.afford{padding:17px;border-radius:20px;background:linear-gradient(145deg,rgba(182,255,101,.08),rgba(119,220,255,.035));border:1px solid rgba(182,255,101,.14)}.afford .big{font-size:28px;font-weight:900;letter-spacing:-1px;margin:5px 0}.afford ul{margin:12px 0 0;padding-left:18px;color:#b3bdca;font-size:11px;line-height:1.6}.split{display:grid;grid-template-columns:1fr 1fr;gap:10px}.dangertext{color:var(--danger)}.goodtext{color:var(--lime)}
-.toast{position:fixed;z-index:200;left:50%;bottom:184px;transform:translateX(-50%) translateY(18px);opacity:0;pointer-events:none;padding:10px 13px;border-radius:13px;background:#222a36;border:1px solid var(--line);font-size:11px;transition:.22s ease;box-shadow:var(--shadow)}.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
-@media(max-width:380px){.heroamount{font-size:40px}.grid2,.quick,.split{grid-template-columns:1fr}.app{padding-left:13px;padding-right:13px}.fab{right:14px}}
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#07110e">
+  <meta name="description" content="FlowPay — автоматичний трекер цін">
+  <title>FlowPay — Price Tracker</title>
+  <link rel="preconnect" href="https://images.unsplash.com">
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="app">
   <header class="topbar">
-    <div><div class="brand">Мої гроші</div><div class="subtle" id="today"></div></div>
-    <button class="iconbtn" onclick="openSettings()" aria-label="Налаштування">⚙</button>
+    <a class="brand" href="#"><span>F</span>FlowPay</a>
+    <div class="live"><i></i><span id="syncText">Завантаження цін…</span></div>
   </header>
 
   <main>
-    <section id="homeView" class="view active"></section>
-    <section id="moneyView" class="view"></section>
-    <section id="goalsView" class="view"></section>
-    <section id="budgetView" class="view"></section>
+    <section class="hero">
+      <div>
+        <p class="eyebrow">PRICE INTELLIGENCE</p>
+        <h1>Купуй у правильний<br><em>момент.</em></h1>
+        <p class="lead">FlowPay стежить за цінами щодня, показує динаміку та підсвічує справжні знижки.</p>
+      </div>
+      <div class="hero-stats">
+        <div><b id="trackedCount">—</b><span>товарів</span></div>
+        <div><b id="dropCount">—</b><span>подешевшали</span></div>
+        <div><b id="bestSaving">—</b><span>краща економія</span></div>
+      </div>
+    </section>
+
+    <section class="toolbar" aria-label="Фільтри">
+      <div class="filters" id="filters"></div>
+      <select id="sort" aria-label="Сортування">
+        <option value="drop">Найбільше падіння</option>
+        <option value="priceAsc">Спочатку дешевші</option>
+        <option value="priceDesc">Спочатку дорожчі</option>
+        <option value="updated">Нещодавно оновлені</option>
+      </select>
+    </section>
+
+    <section class="grid" id="productGrid" aria-live="polite"></section>
+    <div class="empty" id="empty" hidden>У цій категорії товарів поки немає.</div>
   </main>
-</div>
-<button class="fab" onclick="openTransaction()">＋</button>
-<nav class="bottom">
-  <button class="nav active" data-view="home" onclick="showView('home',this)"><span class="ni">⌂</span>Головна</button>
-  <button class="nav" data-view="money" onclick="showView('money',this)"><span class="ni">↕</span>Гроші</button>
-  <button class="nav" data-view="goals" onclick="showView('goals',this)"><span class="ni">◎</span>Цілі</button>
-  <button class="nav" data-view="budget" onclick="showView('budget',this)"><span class="ni">▦</span>Бюджет</button>
-</nav>
-<div class="modal" id="modal" onclick="if(event.target===this)closeModal()"><div class="sheet"><div class="grab"></div><div id="modalContent"></div></div></div>
-<div class="toast" id="toast"></div>
-<script>
-const STORAGE='moi_hroshi_2_0_state';
-const baseState={
-  balance:{uah:8700,usd:200},exchangeRate:44.74,
-  transactions:[],
-  recurring:[
-    {id:'r1',name:'Житло',emoji:'🏠',amount:125,currency:'USD',enabled:true},
-    {id:'r2',name:'Комуналка',emoji:'💡',amount:1000,currency:'UAH',enabled:true},
-    {id:'r3',name:'Спільне',emoji:'🤝',amount:4000,currency:'UAH',enabled:true}
-  ],
-  goals:[
-    {id:'g1',name:'RAM Crucial 16GB',emoji:'💾',target:11855,saved:8700,currency:'UAH',priority:1,status:'saving'},
-    {id:'g2',name:'ASICS Gel 1130',emoji:'👟',target:2203.24,saved:2203.24,currency:'UAH',priority:2,status:'can_buy'}
-  ],
-  settings:{safetyBuffer:2000,defaultCurrency:'UAH',nextIncomeDate:'2026-09-13'}
-};
-let state=load();
-let activeFilter='all';
-function clone(v){return JSON.parse(JSON.stringify(v))}
-function load(){try{const x=JSON.parse(localStorage.getItem(STORAGE));return x?Object.assign(clone(baseState),x,{settings:Object.assign({},baseState.settings,x.settings||{})}):clone(baseState)}catch(e){return clone(baseState)}}
-function save(){localStorage.setItem(STORAGE,JSON.stringify(state));renderAll()}
-function fmt(n,d=0){return new Intl.NumberFormat('uk-UA',{maximumFractionDigits:d,minimumFractionDigits:d}).format(Number(n||0))}
-function money(n,c='UAH'){return c==='USD'?'$'+fmt(n,2):'₴'+fmt(n,0)}
-function toUAH(a,c){return c==='USD'?Number(a)*state.exchangeRate:Number(a)}
-function uid(p='x'){return p+Date.now().toString(36)+Math.random().toString(36).slice(2,6)}
-function plannedUAH(){return state.recurring.filter(x=>x.enabled).reduce((s,x)=>s+toUAH(x.amount,x.currency),0)}
-function expenseMonth(){const now=new Date();return state.transactions.filter(t=>t.type==='expense'&&sameMonth(new Date(t.date),now)).reduce((s,t)=>s+toUAH(t.amount,t.currency),0)}
-function incomeMonth(){const now=new Date();return state.transactions.filter(t=>t.type==='income'&&sameMonth(new Date(t.date),now)).reduce((s,t)=>s+toUAH(t.amount,t.currency),0)}
-function sameMonth(a,b){return a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()}
-function totalBalanceUAH(){return state.balance.uah+state.balance.usd*state.exchangeRate}
-function safeAvailable(){return Math.max(0,totalBalanceUAH()-plannedUAH()-state.settings.safetyBuffer)}
-function rawAfterRequired(){return totalBalanceUAH()-plannedUAH()}
-function daysLeftMonth(){const n=new Date(),end=new Date(n.getFullYear(),n.getMonth()+1,0);return Math.max(1,end.getDate()-n.getDate()+1)}
-function dailyLimit(){return Math.max(0,safeAvailable()/daysLeftMonth())}
-function daysToIncome(){const d=new Date(state.settings.nextIncomeDate+'T12:00:00'),n=new Date();return Math.max(0,Math.ceil((d-n)/86400000))}
-function pct(a,b){return b?Math.max(0,Math.min(100,Math.round(a/b*100))):0}
-function dateLabel(iso){const d=new Date(iso),n=new Date();const d0=new Date(d.getFullYear(),d.getMonth(),d.getDate()),n0=new Date(n.getFullYear(),n.getMonth(),n.getDate());const diff=Math.round((n0-d0)/86400000);if(diff===0)return 'Сьогодні';if(diff===1)return 'Вчора';return new Intl.DateTimeFormat('uk-UA',{day:'numeric',month:'short'}).format(d)}
-function esc(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#039;','"':'&quot;'}[c]))}
-function renderAll(){renderHome();renderMoney();renderGoals();renderBudget();document.getElementById('today').textContent=new Intl.DateTimeFormat('uk-UA',{weekday:'long',day:'numeric',month:'long'}).format(new Date())}
-function renderHome(){
- const safe=safeAvailable(),planned=plannedUAH(),used=expenseMonth();
- document.getElementById('homeView').innerHTML=`
- <div class="hero"><div class="eyebrow">Можна витратити безпечно</div><div class="heroamount">₴ ${fmt(safe)}</div>
- <div class="chips"><span class="chip">$ ${fmt(state.balance.usd,0)} · курс ${fmt(state.exchangeRate,2)}</span><span class="chip good">денний ліміт ₴${fmt(dailyLimit())}</span></div>
- <div class="herofooter"><div><div class="mini-label">Загальний баланс</div><div class="mini-value">₴ ${fmt(totalBalanceUAH())}</div></div><div><div class="mini-label">До наступного доходу</div><div class="mini-value">${daysToIncome()} дн.</div></div><button class="safe-pill" onclick="openAfford()">Перевірити покупку</button></div></div>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Фінансова картина</div></div><div class="grid2">
- <div class="card metric"><span class="ico">◈</span><div><small>Після обов'язкових</small><strong>₴${fmt(rawAfterRequired())}</strong></div></div>
- <div class="card metric"><span class="ico">◌</span><div><small>Safety buffer</small><strong>₴${fmt(state.settings.safetyBuffer)}</strong></div></div>
- <div class="card metric"><span class="ico">↘</span><div><small>Витрачено цього місяця</small><strong>₴${fmt(used)}</strong></div></div>
- <div class="card metric"><span class="ico">▣</span><div><small>Заплановано</small><strong>₴${fmt(planned)}</strong></div></div>
- </div></section>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Цілі</div><div class="link" onclick="showView('goals',document.querySelector('[data-view=goals]'))">Усі</div></div><div class="card">${goalRows(state.goals.slice(0,2))}</div></section>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Швидкі дії</div></div><div class="quick"><button class="primaryquick" onclick="openAfford()"><b>🧠 Чи можу я це купити?</b><span>Безпечна перевірка покупки</span></button><button onclick="openTransaction()"><b>＋ Додати операцію</b><span>Дохід або витрата</span></button></div></section>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Останні операції</div><div class="link" onclick="showView('money',document.querySelector('[data-view=money]'))">Історія</div></div><div class="card">${txRows(state.transactions.slice().sort((a,b)=>new Date(b.date)-new Date(a.date)).slice(0,4))}</div></section>`;
-}
-function renderMoney(){
- let items=state.transactions.slice().sort((a,b)=>new Date(b.date)-new Date(a.date));if(activeFilter!=='all')items=items.filter(x=>x.type===activeFilter);
- document.getElementById('moneyView').innerHTML=`<section class="section" style="margin-top:0"><div class="summaryline"><div><small>Баланс</small><strong>₴${fmt(totalBalanceUAH())}</strong></div><span class="tag">USD $${fmt(state.balance.usd,0)}</span></div></section>
- <section class="section"><div class="grid2"><div class="card metric"><span class="ico">↗</span><div><small>Доходи / місяць</small><strong class="pos">+₴${fmt(incomeMonth())}</strong></div></div><div class="card metric"><span class="ico">↘</span><div><small>Витрати / місяць</small><strong>−₴${fmt(expenseMonth())}</strong></div></div></div></section>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Історія</div><div class="link" onclick="openTransaction()">+ Операція</div></div><div class="toolbar"><button class="filter ${activeFilter==='all'?'active':''}" onclick="setFilter('all')">Усі</button><button class="filter ${activeFilter==='income'?'active':''}" onclick="setFilter('income')">Доходи</button><button class="filter ${activeFilter==='expense'?'active':''}" onclick="setFilter('expense')">Витрати</button></div><div class="card" style="margin-top:10px">${txRows(items)}</div></section>`;
-}
-function txRows(items){if(!items.length)return '<div class="empty">Ще немає операцій. Додай перший дохід або витрату.</div>';return items.map(t=>`<div class="tx row" onclick="openTransaction('${t.id}')"><div class="txicon">${t.emoji||'•'}</div><div class="grow"><div class="name">${esc(t.category||t.description||'Операція')}</div><div class="meta">${dateLabel(t.date)}${t.description?' · '+esc(t.description):''}</div></div><div class="amount ${t.type==='income'?'pos':'neg'}">${t.type==='income'?'+':'−'}${money(t.amount,t.currency)}</div></div>`).join('')}
-function goalRows(items){if(!items.length)return '<div class="empty">Немає цілей. Створи першу.</div>';return items.map(g=>{const p=pct(g.saved,g.target);return `<div class="goalitem row" onclick="openGoal('${g.id}')"><div class="goalicon">${g.emoji||'◎'}</div><div class="grow"><div class="row" style="justify-content:space-between;gap:8px"><div class="name">${esc(g.name)}</div><b style="font-size:12px">${p}%</b></div><div class="meta">${money(g.saved,g.currency)} / ${money(g.target,g.currency)}</div><div class="progress"><span style="width:${p}%"></span></div></div></div>`}).join('')}
-function renderGoals(){document.getElementById('goalsView').innerHTML=`<section class="section" style="margin-top:0"><div class="summaryline"><div><small>Цілі та wishlist</small><strong>${state.goals.length}</strong></div><button class="btn primary" onclick="openGoal()">+ Додати</button></div></section><section class="section"><div class="card">${goalRows(state.goals)}</div></section>`}
-function renderBudget(){const p=plannedUAH(),safe=safeAvailable(),ratio=Math.min(100,Math.round((expenseMonth()/Math.max(1,p))*100));document.getElementById('budgetView').innerHTML=`
- <section class="section" style="margin-top:0"><div class="card"><div class="ringbox"><div class="ring" style="background:conic-gradient(var(--lime) 0 ${ratio}%,#232a35 ${ratio}%)"><strong>${ratio}%</strong></div><div class="grow"><div class="sectiontitle">Бюджет місяця</div><div class="meta">Витрачено ₴${fmt(expenseMonth())} із плану ₴${fmt(p)}</div><div class="meta" style="margin-top:8px">Безпечно доступно: <b class="goodtext">₴${fmt(safe)}</b></div></div></div></div></section>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Обов'язкові платежі</div><div class="link" onclick="openRecurring()">+ Додати</div></div><div class="list">${state.recurring.map(r=>`<div class="listcard row" onclick="openRecurring('${r.id}')"><div class="goalicon">${r.emoji||'▣'}</div><div class="grow"><div class="name">${esc(r.name)}</div><div class="meta">Щомісяця · ${r.enabled?'активний':'вимкнено'}</div></div><div class="amount">${money(r.amount,r.currency)}</div></div>`).join('')||'<div class="empty">Немає платежів</div>'}</div></section>
- <section class="section"><div class="sectionhead"><div class="sectiontitle">Прогноз</div></div><div class="grid2"><div class="card metric"><span class="ico">◒</span><div><small>Днів до кінця місяця</small><strong>${daysLeftMonth()}</strong></div></div><div class="card metric"><span class="ico">⌁</span><div><small>Безпечний ліміт / день</small><strong>₴${fmt(dailyLimit())}</strong></div></div></div></section>`}
-function showView(name,el){document.querySelectorAll('.view').forEach(x=>x.classList.remove('active'));document.getElementById(name+'View').classList.add('active');document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));if(el)el.classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
-function setFilter(f){activeFilter=f;renderMoney()}
-function openModal(html){document.getElementById('modalContent').innerHTML=html;document.getElementById('modal').classList.add('open')}
-function closeModal(){document.getElementById('modal').classList.remove('open')}
-function openTransaction(id){const t=state.transactions.find(x=>x.id===id)||{type:'expense',amount:'',currency:'UAH',category:'Їжа',description:'',date:new Date().toISOString().slice(0,10),emoji:'🍔'};openModal(`<h2>${id?'Редагувати операцію':'Нова операція'}</h2><p>Баланс оновиться автоматично.</p><div class="form">
- <div class="split"><div class="field"><label>Тип</label><select id="txType"><option value="expense" ${t.type==='expense'?'selected':''}>Витрата</option><option value="income" ${t.type==='income'?'selected':''}>Дохід</option></select></div><div class="field"><label>Валюта</label><select id="txCur"><option ${t.currency==='UAH'?'selected':''}>UAH</option><option ${t.currency==='USD'?'selected':''}>USD</option></select></div></div>
- <div class="field"><label>Сума</label><input id="txAmount" type="number" inputmode="decimal" value="${t.amount}" placeholder="0"></div>
- <div class="field"><label>Категорія</label><select id="txCat">${['Їжа','Житло','Комуналка','Транспорт','Покупки','Розваги','Техніка','Одяг','Спільне','Аванс','Зарплата','Готівка','Повернення','Інше'].map(x=>`<option ${x===t.category?'selected':''}>${x}</option>`).join('')}</select></div>
- <div class="field"><label>Дата</label><input id="txDate" type="date" value="${t.date.slice(0,10)}"></div><div class="field"><label>Опис</label><input id="txDesc" value="${esc(t.description)}" placeholder="Необов'язково"></div>
- <div class="actions"><button class="btn ghost" onclick="closeModal()">Скасувати</button><button class="btn primary" onclick="saveTransaction('${id||''}')">${id?'Зберегти':'Додати'}</button></div>${id?`<button class="btn danger" onclick="deleteTransaction('${id}')">Видалити операцію</button>`:''}</div>`)}
-function emojiFor(cat,type){if(type==='income')return '↗';return {'Їжа':'🍔','Житло':'🏠','Комуналка':'💡','Транспорт':'🚕','Покупки':'🛍','Розваги':'🎮','Техніка':'💻','Одяг':'👟','Спільне':'🤝'}[cat]||'•'}
-function saveTransaction(id){const amount=Number(document.getElementById('txAmount').value);if(!(amount>0))return toast('Вкажи суму');const data={id:id||uid('t'),type:txType.value,amount,currency:txCur.value,category:txCat.value,description:txDesc.value.trim(),date:txDate.value,emoji:emojiFor(txCat.value,txType.value)};if(id){const old=state.transactions.find(x=>x.id===id);revertBalance(old);state.transactions[state.transactions.findIndex(x=>x.id===id)]=data}else state.transactions.push(data);applyBalance(data);save();closeModal();toast('Операцію збережено')}
-function applyBalance(t){const s=t.type==='income'?1:-1;if(t.currency==='USD')state.balance.usd+=s*t.amount;else state.balance.uah+=s*t.amount}
-function revertBalance(t){if(!t)return;const s=t.type==='income'?-1:1;if(t.currency==='USD')state.balance.usd+=s*t.amount;else state.balance.uah+=s*t.amount}
-function deleteTransaction(id){const t=state.transactions.find(x=>x.id===id);revertBalance(t);state.transactions=state.transactions.filter(x=>x.id!==id);save();closeModal();toast('Операцію видалено')}
-function openGoal(id){const g=state.goals.find(x=>x.id===id)||{name:'',emoji:'◎',target:'',saved:0,currency:'UAH',priority:2,status:'saving'};openModal(`<h2>${id?'Редагувати ціль':'Нова ціль'}</h2><p>Ціль або покупка з wishlist.</p><div class="form"><div class="split"><div class="field"><label>Emoji</label><input id="gEmoji" value="${esc(g.emoji)}"></div><div class="field"><label>Валюта</label><select id="gCur"><option ${g.currency==='UAH'?'selected':''}>UAH</option><option ${g.currency==='USD'?'selected':''}>USD</option></select></div></div><div class="field"><label>Назва</label><input id="gName" value="${esc(g.name)}" placeholder="Наприклад: ноутбук"></div><div class="split"><div class="field"><label>Потрібно</label><input id="gTarget" type="number" value="${g.target}"></div><div class="field"><label>Накопичено</label><input id="gSaved" type="number" value="${g.saved}"></div></div><div class="actions"><button class="btn ghost" onclick="closeModal()">Скасувати</button><button class="btn primary" onclick="saveGoal('${id||''}')">Зберегти</button></div>${id?`<button class="btn danger" onclick="deleteGoal('${id}')">Видалити ціль</button>`:''}</div>`)}
-function saveGoal(id){const target=Number(gTarget.value),saved=Number(gSaved.value);if(!gName.value.trim()||!(target>0))return toast('Заповни назву і суму');const x={id:id||uid('g'),name:gName.value.trim(),emoji:gEmoji.value||'◎',target,saved,currency:gCur.value,priority:2,status:saved>=target?'can_buy':'saving'};if(id)state.goals[state.goals.findIndex(a=>a.id===id)]=x;else state.goals.push(x);save();closeModal();toast('Ціль збережено')}
-function deleteGoal(id){state.goals=state.goals.filter(x=>x.id!==id);save();closeModal();toast('Ціль видалено')}
-function openRecurring(id){const r=state.recurring.find(x=>x.id===id)||{name:'',emoji:'▣',amount:'',currency:'UAH',enabled:true};openModal(`<h2>${id?'Платіж':'Новий платіж'}</h2><p>Враховується у безпечному балансі.</p><div class="form"><div class="split"><div class="field"><label>Emoji</label><input id="rEmoji" value="${esc(r.emoji)}"></div><div class="field"><label>Валюта</label><select id="rCur"><option ${r.currency==='UAH'?'selected':''}>UAH</option><option ${r.currency==='USD'?'selected':''}>USD</option></select></div></div><div class="field"><label>Назва</label><input id="rName" value="${esc(r.name)}"></div><div class="field"><label>Сума / місяць</label><input id="rAmount" type="number" value="${r.amount}"></div><div class="field"><label>Статус</label><select id="rEnabled"><option value="true" ${r.enabled?'selected':''}>Активний</option><option value="false" ${!r.enabled?'selected':''}>Вимкнено</option></select></div><div class="actions"><button class="btn ghost" onclick="closeModal()">Скасувати</button><button class="btn primary" onclick="saveRecurring('${id||''}')">Зберегти</button></div>${id?`<button class="btn danger" onclick="deleteRecurring('${id}')">Видалити</button>`:''}</div>`)}
-function saveRecurring(id){const amount=Number(rAmount.value);if(!rName.value.trim()||!(amount>0))return toast('Заповни назву і суму');const x={id:id||uid('r'),name:rName.value.trim(),emoji:rEmoji.value||'▣',amount,currency:rCur.value,enabled:rEnabled.value==='true'};if(id)state.recurring[state.recurring.findIndex(a=>a.id===id)]=x;else state.recurring.push(x);save();closeModal();toast('Платіж збережено')}
-function deleteRecurring(id){state.recurring=state.recurring.filter(x=>x.id!==id);save();closeModal();toast('Платіж видалено')}
-function openAfford(){openModal(`<h2>Чи можу я це собі дозволити?</h2><p>Розрахунок враховує баланс, обов'язкові платежі та safety buffer.</p><div class="form"><div class="field"><label>Сума покупки, ₴</label><input id="buyAmount" type="number" inputmode="decimal" placeholder="0" oninput="calcAfford()"></div><div id="affordResult"></div><button class="btn ghost" onclick="closeModal()">Закрити</button></div>`)}
-function calcAfford(){const n=Number(buyAmount.value||0),available=safeAvailable(),left=available-n;if(!n){affordResult.innerHTML='';return}const ok=left>=0;affordResult.innerHTML=`<div class="afford"><div class="eyebrow">${ok?'Покупка безпечна':'Краще зачекати'}</div><div class="big ${ok?'goodtext':'dangertext'}">${ok?'Можна купити':'Не вистачає ₴'+fmt(Math.abs(left))}</div><div class="meta">Після покупки безпечно залишиться ${ok?'₴'+fmt(left):'₴0'}.</div><ul><li>Баланс: ₴${fmt(totalBalanceUAH())}</li><li>Обов'язкові платежі: −₴${fmt(plannedUAH())}</li><li>Safety buffer: −₴${fmt(state.settings.safetyBuffer)}</li></ul></div>`}
-function openSettings(){openModal(`<h2>Налаштування</h2><p>Усі дані зберігаються лише на цьому пристрої.</p><div class="form"><div class="field"><label>Курс USD → UAH</label><input id="sRate" type="number" step="0.01" value="${state.exchangeRate}"></div><div class="field"><label>Safety buffer, ₴</label><input id="sBuffer" type="number" value="${state.settings.safetyBuffer}"></div><div class="field"><label>Дата наступного доходу</label><input id="sIncome" type="date" value="${state.settings.nextIncomeDate}"></div><div class="actions"><button class="btn ghost" onclick="exportData()">Експорт</button><button class="btn primary" onclick="saveSettings()">Зберегти</button></div><button class="btn danger" onclick="resetApp()">Скинути локальні дані</button></div>`)}
-function saveSettings(){const r=Number(sRate.value),b=Number(sBuffer.value);if(!(r>0)||b<0)return toast('Перевір значення');state.exchangeRate=r;state.settings.safetyBuffer=b;state.settings.nextIncomeDate=sIncome.value;save();closeModal();toast('Налаштування збережено')}
-function exportData(){const blob=new Blob([JSON.stringify(state,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='moi-hroshi-backup.json';a.click();URL.revokeObjectURL(a.href);toast('Backup підготовлено')}
-function resetApp(){if(confirm('Скинути всі локальні дані та повернути демо-стан?')){state=clone(baseState);save();closeModal();toast('Дані скинуто')}}
-let toastTimer;function toast(text){const e=document.getElementById('toast');e.textContent=text;e.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>e.classList.remove('show'),1800)}
-renderAll();
-</script>
+
+  <footer>
+    <a class="brand small" href="#"><span>F</span>FlowPay</a>
+    <p>Ціни оновлюються автоматично. Перед покупкою перевірте ціну на сайті продавця.</p>
+  </footer>
+
+  <template id="cardTemplate">
+    <article class="card">
+      <a class="image-wrap product-link" target="_blank" rel="noopener noreferrer">
+        <img class="product-image" alt="" loading="lazy">
+        <span class="badge"></span>
+      </a>
+      <div class="content">
+        <div class="category"></div>
+        <h2><a class="title product-link" target="_blank" rel="noopener noreferrer"></a></h2>
+        <div class="price-row">
+          <div><strong class="price"></strong><del class="old-price"></del></div>
+          <span class="change"></span>
+        </div>
+        <div class="chart-head"><span>Історія ціни</span><span class="range"></span></div>
+        <div class="chart"></div>
+        <div class="card-foot">
+          <span class="updated"></span>
+          <a class="buy product-link" target="_blank" rel="noopener noreferrer">До магазину <b>↗</b></a>
+        </div>
+      </div>
+    </article>
+  </template>
+  <script src="app.js"></script>
 </body>
 </html>
