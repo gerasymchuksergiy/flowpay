@@ -1,13 +1,49 @@
-plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
+plugins {
+ id("com.android.application")
+ id("org.jetbrains.kotlin.android")
+ id("org.jetbrains.kotlin.plugin.compose")
+}
+
+val releaseKeyPath = System.getenv("FLOWPAY_KEYSTORE_PATH")
+val releaseKeyPassword = System.getenv("FLOWPAY_KEYSTORE_PASSWORD")
+
 android {
- namespace="com.flowpay.app"; compileSdk=35
- defaultConfig { applicationId="com.flowpay.app"; minSdk=26; targetSdk=35; versionCode=1; versionName="1.0.0" }
+ namespace = "com.flowpay.app"
+ compileSdk = 35
+
+ defaultConfig {
+  applicationId = "com.flowpay.app"
+  minSdk = 26
+  targetSdk = 35
+  versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
+  versionName = providers.gradleProperty("versionName").orNull ?: "1.0.0"
+ }
+
  compileOptions {
   sourceCompatibility = JavaVersion.VERSION_17
   targetCompatibility = JavaVersion.VERSION_17
  }
  kotlinOptions { jvmTarget = "17" }
- buildFeatures { compose=true }
+ buildFeatures { compose = true; buildConfig = true }
+
+ signingConfigs {
+  if (!releaseKeyPath.isNullOrBlank() && !releaseKeyPassword.isNullOrBlank()) {
+   create("flowPayRelease") {
+    storeFile = file(releaseKeyPath)
+    storePassword = releaseKeyPassword
+    keyAlias = "flowpay"
+    keyPassword = releaseKeyPassword
+   }
+  }
+ }
+ buildTypes {
+  getByName("release") {
+   isMinifyEnabled = false
+   if (signingConfigs.names.contains("flowPayRelease")) {
+    signingConfig = signingConfigs.getByName("flowPayRelease")
+   }
+  }
+ }
 }
 dependencies {
  implementation(platform("androidx.compose:compose-bom:2025.01.01"))

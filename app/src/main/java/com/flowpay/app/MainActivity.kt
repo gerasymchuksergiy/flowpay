@@ -2,12 +2,18 @@ package com.flowpay.app
 
 import android.content.Context
 import android.content.Intent
+import android.content.BroadcastReceiver
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Bundle
+import android.os.Environment
+import android.provider.Settings
+import android.app.DownloadManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -175,12 +181,68 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
 }
 
 data class FxRate(val buy: Double = 0.0, val sell: Double = 0.0)
+data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
 
 suspend fun usdRate(): FxRate = withContext(Dispatchers.IO) {
     val array = JSONArray(URL("https://api.monobank.ua/bank/currency").readText())
     val item = (0 until array.length()).map { array.getJSONObject(it) }
         .first { it.optInt("currencyCodeA") == 840 && it.optInt("currencyCodeB") == 980 }
     FxRate(item.optDouble("rateBuy"), item.optDouble("rateSell"))
+}
+
+suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
+    val connection = URL("https://api.github.com/repos/gerasymchuksergiy/flowpay/releases/latest")
+        .openConnection() as HttpURLConnection
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    connection.setRequestProperty("Accept", "application/vnd.github+json")
+    connection.setRequestProperty("User-Agent", "FlowPay-Android")
+    if (connection.responseCode !in 200..299) return@withContext null
+    val release = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
+    val code = Regex("""versionCode=(\d+)""").find(release.optString("body"))
+        ?.groupValues?.get(1)?.toIntOrNull() ?: return@withContext null
+    val assets = release.optJSONArray("assets") ?: return@withContext null
+    val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
+        .firstOrNull { it.optString("name").endsWith(".apk", true) } ?: return@withContext null
+    UpdateInfo(code, release.optString("tag_name", "нова версія"), apk.optString("browser_download_url"))
+}
+
+fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
+    if (android.os.Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+        context.startActivity(
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+        )
+        onMessage("Дозвольте встановлення для FlowPay і натисніть «Оновити» ще раз")
+        return
+    }
+    val manager = context.getSystemService(DownloadManager::class.java)
+    val request = DownloadManager.Request(Uri.parse(url))
+        .setTitle("Оновлення FlowPay")
+        .setDescription("Завантаження нової версії")
+        .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "FlowPay-update.apk")
+    val id = manager.enqueue(request)
+    onMessage("Завантаження почалося")
+    val receiver = object : BroadcastReceiver() {
+        override fun onReceive(receiverContext: Context, intent: Intent) {
+            if (intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) != id) return
+            runCatching { receiverContext.unregisterReceiver(this) }
+            val apk = manager.getUriForDownloadedFile(id)
+            if (apk == null) {
+                onMessage("Не вдалося завантажити APK")
+                return
+            }
+            receiverContext.startActivity(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(apk, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+    ContextCompat.registerReceiver(
+        context, receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+        ContextCompat.RECEIVER_NOT_EXPORTED
+    )
 }
 
 val Accent = Color(0xffd7ff63)
@@ -660,6 +722,9 @@ fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
 fun SettingsScreen(store: Store, onImported: () -> Unit) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    var available by remember { mutableStateOf<UpdateInfo?>(null) }
+    val scope = rememberCoroutineScope()
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) runCatching {
             context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportJson()) }
@@ -681,6 +746,32 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
             HorizontalDivider()
             ListItem(
                 modifier = Modifier.padding(top = 8.dp),
+                leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
+                headlineContent = { Text("Оновлення FlowPay", fontWeight = FontWeight.Bold) },
+                supportingContent = { Text("Встановлено: ${BuildConfig.VERSION_NAME}") },
+                trailingContent = {
+                    FilledTonalButton(
+                        onClick = {
+                            scope.launch {
+                                checking = true
+                                message = null
+                                val latest = runCatching { latestUpdate() }.getOrNull()
+                                if (latest != null && latest.versionCode > BuildConfig.VERSION_CODE) {
+                                    available = latest
+                                } else {
+                                    message = if (latest == null) "Release ще не опублікований" else "У вас остання версія"
+                                }
+                                checking = false
+                            }
+                        },
+                        enabled = !checking
+                    ) {
+                        if (checking) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Text("Перевірити")
+                    }
+                }
+            )
+            ListItem(
                 leadingContent = { Icon(Icons.Default.UploadFile, null) },
                 headlineContent = { Text("Створити резервну копію") },
                 supportingContent = { Text("Вішліст, платежі та замовлення у JSON") },
@@ -694,6 +785,20 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
             )
             message?.let { Text(it, Modifier.padding(20.dp), color = Accent) }
         }
+    }
+    available?.let { update ->
+        AlertDialog(
+            onDismissRequest = { available = null },
+            title = { Text("Доступне оновлення") },
+            text = { Text("Версія ${update.versionName}. FlowPay завантажить APK і відкриє системне встановлення Android.") },
+            confirmButton = {
+                Button({
+                    installUpdate(context, update.downloadUrl) { message = it }
+                    available = null
+                }) { Text("Оновити") }
+            },
+            dismissButton = { TextButton({ available = null }) { Text("Пізніше") } }
+        )
     }
 }
 
