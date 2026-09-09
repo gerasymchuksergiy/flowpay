@@ -23,10 +23,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -54,7 +57,15 @@ data class Wish(
 )
 
 data class Pay(val name: String, val amount: Double, val day: Int = 1)
-data class Order(val id: String, val name: String, val url: String, val status: String, val tracking: String)
+data class Order(
+    val id: String,
+    val name: String,
+    val url: String,
+    val status: String,
+    val tracking: String = "",
+    val image: String = "",
+    val price: Double = 0.0
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,10 +104,15 @@ class Store(context: Context) {
     fun savePays(items: List<Pay>) = save("pay", items.map { JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day) })
 
     fun orders(): List<Order> = jsonList("orders") {
-        Order(it.optString("id"), it.optString("n"), it.optString("u"), it.optString("s", "Замовлено"), it.optString("t"))
+        Order(
+            it.optString("id"), it.optString("n"), it.optString("u"),
+            it.optString("s", "Замовлено"), it.optString("t"),
+            it.optString("i"), it.optDouble("p", 0.0)
+        )
     }
     fun saveOrders(items: List<Order>) = save("orders", items.map {
-        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("s", it.status).put("t", it.tracking)
+        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url)
+            .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
     })
 
     fun exportJson(): String = JSONObject()
@@ -158,11 +174,13 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     )
 }
 
-suspend fun usdRate(): Double = withContext(Dispatchers.IO) {
+data class FxRate(val buy: Double = 0.0, val sell: Double = 0.0)
+
+suspend fun usdRate(): FxRate = withContext(Dispatchers.IO) {
     val array = JSONArray(URL("https://api.monobank.ua/bank/currency").readText())
-    (0 until array.length()).map { array.getJSONObject(it) }
+    val item = (0 until array.length()).map { array.getJSONObject(it) }
         .first { it.optInt("currencyCodeA") == 840 && it.optInt("currencyCodeB") == 980 }
-        .optDouble("rateSell")
+    FxRate(item.optDouble("rateBuy"), item.optDouble("rateSell"))
 }
 
 val Accent = Color(0xffd7ff63)
@@ -185,24 +203,34 @@ fun FlowPayApp(context: Context) {
     }
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = AppBackground, surface = CardBackground)) {
-        Scaffold(containerColor = AppBackground, bottomBar = {
-            NavigationBar(containerColor = CardBackground) {
+        Scaffold(containerColor = Color.Transparent, bottomBar = {
+            NavigationBar(containerColor = Color(0xff141512), tonalElevation = 0.dp) {
                 val tabs = listOf(
                     Icons.Default.FavoriteBorder to "Бажання",
-                    Icons.Default.Calculate to "План",
+                    Icons.Default.SwapVert to "Курс",
                     Icons.Default.ReceiptLong to "Платежі",
-                    Icons.Default.LocalShipping to "Замовлення",
+                    Icons.Default.LocalShipping to "Покупки",
                     Icons.Default.MoreHoriz to "Ще"
                 )
                 tabs.forEachIndexed { index, item ->
-                    NavigationBarItem(tab == index, { tab = index }, { Icon(item.first, item.second) }, label = { Text(item.second, fontSize = 10.sp) })
+                    NavigationBarItem(
+                        selected = tab == index,
+                        onClick = { tab = index },
+                        icon = { Icon(item.first, item.second) },
+                        label = { Text(item.second, fontSize = 9.sp, maxLines = 1) },
+                        alwaysShowLabel = false
+                    )
                 }
             }
         }) { padding ->
-            Box(Modifier.padding(padding)) {
+            Box(
+                Modifier.padding(padding).fillMaxSize().background(
+                    Brush.verticalGradient(listOf(Color(0xff0d100b), AppBackground, Color.Black))
+                )
+            ) {
                 when (tab) {
                     0 -> WishlistScreen(wishes, { wishes = it; store.saveWishes(it) }, context)
-                    1 -> PlannerScreen(wishes, pays)
+                    1 -> CalculatorScreen()
                     2 -> PaymentsScreen(pays) { pays = it; store.savePays(it) }
                     3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context)
                     else -> SettingsScreen(store) {
@@ -218,10 +246,19 @@ fun FlowPayApp(context: Context) {
 
 @Composable
 fun ScreenHeader(kicker: String, title: String, subtitle: String? = null) {
-    Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 24.dp, bottom = 14.dp)) {
-        Text(kicker, color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        Text(title, fontSize = 34.sp, fontWeight = FontWeight.Black)
-        subtitle?.let { Text(it, color = Color.Gray, fontSize = 14.sp) }
+    Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Surface(color = Accent, shape = RoundedCornerShape(10.dp), modifier = Modifier.size(30.dp)) {
+                Box(contentAlignment = Alignment.Center) {
+                    Text("F", color = Color(0xff10120d), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                }
+            }
+            Spacer(Modifier.width(9.dp))
+            Text(kicker, color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(title, fontSize = 31.sp, fontWeight = FontWeight.Black, lineHeight = 34.sp)
+        subtitle?.let { Text(it, color = Color(0xff9b9d96), fontSize = 14.sp, modifier = Modifier.padding(top = 3.dp)) }
     }
 }
 
@@ -330,7 +367,11 @@ fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> U
     val first = wish.history.firstOrNull() ?: wish.price
     val change = if (first > 0) (wish.price - first) / first * 100 else 0.0
     Card(Modifier.padding(horizontal = 12.dp, vertical = 7.dp).fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
-        AsyncImage(wish.image, wish.name, Modifier.fillMaxWidth().height(220.dp).background(Color(0xff262724)))
+        AsyncImage(
+            wish.image, wish.name,
+            Modifier.fillMaxWidth().height(190.dp).background(Color(0xff262724)),
+            contentScale = ContentScale.Crop
+        )
         Column(Modifier.padding(18.dp)) {
             Row { AssistChip({}, { Text(wish.category) }); Spacer(Modifier.weight(1f)); Text("%+.1f%%".format(change), color = if (change <= 0) Accent else Color(0xffff6b6b), fontWeight = FontWeight.Bold) }
             Text(wish.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
@@ -370,32 +411,84 @@ fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun PlannerScreen(wishes: List<Wish>, pays: List<Pay>) {
-    var advance by remember { mutableStateOf("") }
-    var salary by remember { mutableStateOf("") }
-    var expenses by remember { mutableStateOf("") }
-    var chosen by remember { mutableStateOf<Wish?>(null) }
-    var rate by remember { mutableDoubleStateOf(0.0) }
+fun CalculatorScreen() {
+    var amount by remember { mutableStateOf("") }
+    var hryvniaToDollar by remember { mutableStateOf(true) }
+    var first by remember { mutableStateOf("") }
+    var second by remember { mutableStateOf("") }
+    var operation by remember { mutableStateOf("+") }
+    var rate by remember { mutableStateOf(FxRate()) }
+    var loading by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
-    val income = (advance.toDoubleOrNull() ?: 0.0) + (salary.toDoubleOrNull() ?: 0.0)
-    val reserved = (expenses.toDoubleOrNull() ?: 0.0) + pays.sumOf { it.amount }
-    val available = income - reserved
-    val missing = ((chosen?.price ?: 0.0) - available).coerceAtLeast(0.0)
+
+    fun refresh() {
+        scope.launch {
+            loading = true
+            runCatching { usdRate() }.onSuccess { rate = it }
+            loading = false
+        }
+    }
+    LaunchedEffect(Unit) { refresh() }
+
+    val source = amount.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val exchangeRate = if (hryvniaToDollar) rate.sell else rate.buy
+    val converted = when {
+        exchangeRate <= 0 -> 0.0
+        hryvniaToDollar -> source / exchangeRate
+        else -> source * exchangeRate
+    }
+    val a = first.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val b = second.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val total = when (operation) {
+        "−" -> a - b
+        "×" -> a * b
+        "÷" -> if (b == 0.0) 0.0 else a / b
+        else -> a + b
+    }
+
     LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
         item {
-            ScreenHeader("ПЛАНУВАННЯ", "Калькулятор покупки", "Порахуйте, коли бажання стане доступним")
+            ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки")
             Column(Modifier.padding(horizontal = 20.dp)) {
-                NumberField("Аванс", advance) { advance = it }
-                NumberField("Основна зарплата", salary) { salary = it }
-                NumberField("Інші витрати", expenses) { expenses = it }
-                Text("Оберіть товар", color = Color.Gray, modifier = Modifier.padding(vertical = 8.dp))
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(wishes) { wish -> FilterChip(chosen?.id == wish.id, { chosen = wish }, { Text(wish.name, maxLines = 1) }) }
+                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color(0xff20221d))) {
+                    Column(Modifier.padding(18.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("USD / UAH", color = Color.Gray, fontSize = 12.sp)
+                                Text(
+                                    if (rate.sell > 0) "Купівля ${"%.2f".format(rate.buy)} · продаж ${"%.2f".format(rate.sell)}"
+                                    else "Немає даних",
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            IconButton({ refresh() }) {
+                                if (loading) CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp)
+                                else Icon(Icons.Default.Refresh, "Оновити")
+                            }
+                        }
+                        NumberField(if (hryvniaToDollar) "Сума у гривнях" else "Сума у доларах", amount) { amount = it }
+                        FilledTonalButton({ hryvniaToDollar = !hryvniaToDollar }, Modifier.fillMaxWidth().padding(top = 10.dp)) {
+                            Icon(Icons.Default.SwapVert, null)
+                            Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
+                        }
+                        Text(
+                            if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
+                            Modifier.padding(top = 16.dp), color = Accent, fontSize = 32.sp, fontWeight = FontWeight.Black
+                        )
+                    }
                 }
-                SummaryCard("Вільно після платежів", money(available), if (available >= 0) Accent else Color(0xffff6b6b))
-                chosen?.let { Text(if (missing == 0.0) "На ${it.name} уже вистачає" else "До покупки бракує ${money(missing)}", Modifier.padding(top = 10.dp), fontWeight = FontWeight.Bold) }
-                FilledTonalButton({ scope.launch { rate = runCatching { usdRate() }.getOrDefault(0.0) } }, Modifier.fillMaxWidth().padding(top = 14.dp)) { Text("Оновити курс Monobank") }
-                if (rate > 0) Text("1 USD = ${"%.2f".format(rate)} ₴ · доступно ${"%.2f".format(available / rate)} USD", Modifier.padding(vertical = 12.dp))
+
+                Text("Калькулятор сум", Modifier.padding(top = 24.dp, bottom = 4.dp), fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Box(Modifier.weight(1f)) { NumberField("Перша сума", first) { first = it } }
+                    Box(Modifier.weight(1f)) { NumberField("Друга сума", second) { second = it } }
+                }
+                Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("+", "−", "×", "÷").forEach { symbol ->
+                        FilterChip(operation == symbol, { operation = symbol }, { Text(symbol, fontSize = 18.sp) }, modifier = Modifier.weight(1f))
+                    }
+                }
+                SummaryCard("Результат", NumberFormat.getNumberInstance(Locale("uk", "UA")).format(total), Accent)
             }
         }
     }
@@ -403,58 +496,164 @@ fun PlannerScreen(wishes: List<Wish>, pays: List<Pay>) {
 
 @Composable
 fun PaymentsScreen(items: List<Pay>, save: (List<Pay>) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var amount by remember { mutableStateOf("") }
-    var day by remember { mutableStateOf("1") }
+    var adding by remember { mutableStateOf(false) }
     LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
         item {
-            ScreenHeader("ЩОМІСЯЦЯ", "Регулярні платежі", "Підписки, комунальні та обов'язкові витрати")
+            ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
             Column(Modifier.padding(horizontal = 20.dp)) {
                 SummaryCard("Разом на місяць", money(items.sumOf { it.amount }), Accent)
-                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth().padding(top = 14.dp), label = { Text("Назва платежу") })
-                NumberField("Сума", amount) { amount = it }
-                NumberField("День місяця", day) { day = it }
-                Button({ amount.toDoubleOrNull()?.let { save(items + Pay(name.ifBlank { "Платіж" }, it, day.toIntOrNull()?.coerceIn(1, 31) ?: 1)); name = ""; amount = "" } }, Modifier.fillMaxWidth()) { Text("Додати платіж") }
+                Button({ adding = true }, Modifier.fillMaxWidth().padding(top = 14.dp), shape = RoundedCornerShape(16.dp)) {
+                    Icon(Icons.Default.Add, null); Text(" Додати витрату")
+                }
             }
         }
-        items(items) { pay -> ListItem(headlineContent = { Text(pay.name) }, supportingContent = { Text("${money(pay.amount)} · ${pay.day} числа") }, trailingContent = { IconButton({ save(items - pay) }) { Icon(Icons.Default.DeleteOutline, "Видалити") } }) }
+        if (items.isEmpty()) item { EmptyCard("Додайте оренду квартири, комуналку, інтернет або підписку") }
+        items(items) { pay ->
+            Card(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
+                ListItem(
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    leadingContent = {
+                        Surface(color = Color(0xff30332a), shape = RoundedCornerShape(14.dp), modifier = Modifier.size(44.dp)) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    when {
+                                        pay.name.contains("Оренда", true) -> Icons.Default.Home
+                                        pay.name.contains("Комун", true) -> Icons.Default.Bolt
+                                        pay.name.contains("Інтернет", true) -> Icons.Default.Wifi
+                                        else -> Icons.Default.Autorenew
+                                    }, null, tint = Accent
+                                )
+                            }
+                        }
+                    },
+                    headlineContent = { Text(pay.name, fontWeight = FontWeight.Bold) },
+                    supportingContent = { Text("${pay.day} числа щомісяця") },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(money(pay.amount), fontWeight = FontWeight.Bold)
+                            IconButton({ save(items - pay) }) { Icon(Icons.Default.Close, "Видалити") }
+                        }
+                    }
+                )
+            }
+        }
+    }
+    if (adding) AddPaymentDialog({ adding = false }) {
+        save(items + it)
+        adding = false
     }
 }
 
 @Composable
+fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
+    val types = listOf("Оренда квартири", "Комуналка", "Інтернет", "Мобільний", "Підписка", "Інше")
+    var selected by remember { mutableStateOf(types.first()) }
+    var custom by remember { mutableStateOf("") }
+    var amount by remember { mutableStateOf("") }
+    var day by remember { mutableStateOf("1") }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Нова постійна витрата") },
+        text = {
+            Column {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(types) { type -> FilterChip(selected == type, { selected = type }, { Text(type) }) }
+                }
+                if (selected == "Інше") OutlinedTextField(custom, { custom = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
+                NumberField("Сума, ₴", amount) { amount = it }
+                NumberField("День оплати", day) { day = it }
+            }
+        },
+        confirmButton = {
+            Button({
+                amount.replace(',', '.').toDoubleOrNull()?.let { value ->
+                    add(Pay(if (selected == "Інше") custom.ifBlank { "Інше" } else selected, value, day.toIntOrNull()?.coerceIn(1, 31) ?: 1))
+                }
+            }, enabled = amount.replace(',', '.').toDoubleOrNull() != null) { Text("Додати") }
+        },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+@Composable
 fun OrdersScreen(items: List<Order>, save: (List<Order>) -> Unit, context: Context) {
-    var name by remember { mutableStateOf("") }
-    var link by remember { mutableStateOf("") }
-    var tracking by remember { mutableStateOf("") }
+    var adding by remember { mutableStateOf(false) }
     LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
         item {
-            ScreenHeader("ДОСТАВКА", "Мої замовлення", "Зберігайте магазин, трек-номер і статус")
+            ScreenHeader("ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам")
             Column(Modifier.padding(horizontal = 20.dp)) {
-                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва товару") })
-                OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Посилання на замовлення") })
-                OutlinedTextField(tracking, { tracking = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Трек-номер") })
-                Button({ save(items + Order(System.currentTimeMillis().toString(), name.ifBlank { "Замовлення" }, link, "Замовлено", tracking)); name = ""; link = ""; tracking = "" }, Modifier.fillMaxWidth().padding(top = 10.dp), enabled = name.isNotBlank()) { Text("Додати замовлення") }
+                Button({ adding = true }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
+                    Icon(Icons.Default.AddLink, null); Text(" Додати посилання")
+                }
             }
         }
-        if (items.isEmpty()) item { EmptyCard("Тут з'являться ваші активні замовлення") }
+        if (items.isEmpty()) item { EmptyCard("Скопіюйте посилання на придбаний товар — назва, фото й ціна підтягнуться автоматично") }
         items(items, key = { it.id }) { order ->
             Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
-                Column(Modifier.padding(18.dp)) {
-                    Text(order.name, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                    Text(order.status, color = Accent)
-                    if (order.tracking.isNotBlank()) Text("Трек: ${order.tracking}", color = Color.Gray)
-                    Row {
-                        listOf("Замовлено", "В дорозі", "Отримано").forEach { status -> TextButton({ save(items.map { if (it.id == order.id) it.copy(status = status) else it }) }) { Text(status, fontSize = 11.sp) } }
+                Row(Modifier.padding(12.dp)) {
+                    AsyncImage(
+                        order.image, order.name,
+                        Modifier.size(92.dp).background(Color(0xff292a27), RoundedCornerShape(16.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                    Spacer(Modifier.width(14.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(order.status.uppercase(), color = Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                        Text(order.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                        if (order.price > 0) Text(money(order.price), fontWeight = FontWeight.Black, fontSize = 19.sp)
                     }
-                    Row {
-                        if (order.url.startsWith("http")) TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(order.url))) }) { Text("Відкрити ↗") }
-                        Spacer(Modifier.weight(1f))
-                        IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                }
+                LazyRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(listOf("Замовлено", "В дорозі", "Отримано")) { status ->
+                        FilterChip(order.status == status, { save(items.map { if (it.id == order.id) it.copy(status = status) else it }) }, { Text(status, fontSize = 11.sp) })
                     }
+                }
+                Row(Modifier.padding(horizontal = 10.dp)) {
+                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(order.url))) }) { Text("До магазину ↗") }
+                    Spacer(Modifier.weight(1f))
+                    IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
                 }
             }
         }
     }
+    if (adding) AddOrderDialog({ adding = false }) {
+        save(items + it)
+        adding = false
+    }
+}
+
+@Composable
+fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
+    var link by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Додати покупку") },
+        text = {
+            Column {
+                Text("Вставте посилання на сторінку придбаного товару.")
+                OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text("Посилання") })
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
+            }
+        },
+        confirmButton = {
+            Button({
+                scope.launch {
+                    loading = true
+                    error = null
+                    runCatching { product(link) }
+                        .onSuccess { item ->
+                            add(Order(item.id, item.name, item.url, "Замовлено", image = item.image, price = item.price))
+                        }
+                        .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
+                    loading = false
+                }
+            }, enabled = link.startsWith("http") && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
+        },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
 }
 
 @Composable
