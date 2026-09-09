@@ -6,6 +6,8 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -24,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -95,6 +98,25 @@ class Store(context: Context) {
     fun saveOrders(items: List<Order>) = save("orders", items.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("s", it.status).put("t", it.tracking)
     })
+
+    fun exportJson(): String = JSONObject()
+        .put("version", 1)
+        .put("wishes", JSONArray(prefs.getString("w", "[]")))
+        .put("payments", JSONArray(prefs.getString("pay", "[]")))
+        .put("orders", JSONArray(prefs.getString("orders", "[]")))
+        .toString(2)
+
+    fun importJson(text: String) {
+        val root = JSONObject(text)
+        val wishes = root.getJSONArray("wishes")
+        val payments = root.optJSONArray("payments") ?: JSONArray()
+        val orders = root.optJSONArray("orders") ?: JSONArray()
+        prefs.edit()
+            .putString("w", wishes.toString())
+            .putString("pay", payments.toString())
+            .putString("orders", orders.toString())
+            .apply()
+    }
 
     private fun <T> jsonList(key: String, map: (JSONObject) -> T): List<T> = runCatching {
         val array = JSONArray(prefs.getString(key, "[]"))
@@ -183,7 +205,11 @@ fun FlowPayApp(context: Context) {
                     1 -> PlannerScreen(wishes, pays)
                     2 -> PaymentsScreen(pays) { pays = it; store.savePays(it) }
                     3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context)
-                    else -> SettingsScreen()
+                    else -> SettingsScreen(store) {
+                        wishes = store.wishes()
+                        pays = store.pays()
+                        orders = store.orders()
+                    }
                 }
             }
         }
@@ -202,6 +228,7 @@ fun ScreenHeader(kicker: String, title: String, subtitle: String? = null) {
 @Composable
 fun WishlistScreen(items: List<Wish>, save: (List<Wish>) -> Unit, context: Context) {
     var adding by remember { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<Wish?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -235,10 +262,16 @@ fun WishlistScreen(items: List<Wish>, save: (List<Wish>) -> Unit, context: Conte
         }
         if (items.isEmpty()) item { EmptyCard("Додайте посилання на товар — фото й ціна підтягнуться автоматично") }
         items(items, key = { it.id }) { wish ->
-            WishCard(wish, context, onDelete = { save(items - wish) })
+            WishCard(wish, context, onEdit = { editing = wish }, onDelete = { save(items - wish) })
         }
     }
     if (adding) AddWishDialog({ adding = false }, { wish -> save(items + wish); adding = false })
+    editing?.let { selected ->
+        EditWishDialog(selected, { editing = null }) { changed ->
+            save(items.map { if (it.id == changed.id) changed else it })
+            editing = null
+        }
+    }
 }
 
 @Composable
@@ -269,7 +302,31 @@ fun AddWishDialog(close: () -> Unit, add: (Wish) -> Unit) {
 }
 
 @Composable
-fun WishCard(wish: Wish, context: Context, onDelete: () -> Unit) {
+fun EditWishDialog(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
+    var name by remember { mutableStateOf(wish.name) }
+    var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
+    var category by remember { mutableStateOf(wish.category) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Редагувати товар") },
+        text = {
+            Column {
+                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
+                NumberField("Цільова ціна, ₴", target) { target = it }
+                OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Категорія") })
+            }
+        },
+        confirmButton = {
+            Button({ save(wish.copy(name = name.ifBlank { wish.name }, targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category.ifBlank { "Інше" })) }) {
+                Text("Зберегти")
+            }
+        },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+@Composable
+fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> Unit) {
     val first = wish.history.firstOrNull() ?: wish.price
     val change = if (first > 0) (wish.price - first) / first * 100 else 0.0
     Card(Modifier.padding(horizontal = 12.dp, vertical = 7.dp).fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
@@ -284,6 +341,7 @@ fun WishCard(wish: Wish, context: Context, onDelete: () -> Unit) {
             Row {
                 TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(wish.url))) }) { Text("До магазину ↗") }
                 Spacer(Modifier.weight(1f))
+                IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати") }
                 IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити") }
             }
         }
@@ -400,13 +458,42 @@ fun OrdersScreen(items: List<Order>, save: (List<Order>) -> Unit, context: Conte
 }
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(store: Store, onImported: () -> Unit) {
+    val context = LocalContext.current
+    var message by remember { mutableStateOf<String?>(null) }
+    val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) runCatching {
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportJson()) }
+        }.onSuccess { message = "Резервну копію збережено" }.onFailure { message = "Не вдалося зберегти файл" }
+    }
+    val import = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) runCatching {
+            val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                ?: error("Порожній файл")
+            store.importJson(text)
+        }.onSuccess { onImported(); message = "Дані відновлено" }.onFailure { message = "Файл FlowPay пошкоджений" }
+    }
     LazyColumn {
         item {
             ScreenHeader("FLOWPAY", "Налаштування")
             ListItem(leadingContent = { Icon(Icons.Default.Sync, null) }, headlineContent = { Text("Фонове оновлення") }, supportingContent = { Text("Кожні 12 годин, коли є інтернет") })
             ListItem(leadingContent = { Icon(Icons.Default.NotificationsNone, null) }, headlineContent = { Text("Сповіщення") }, supportingContent = { Text("Про падіння та досягнення цільової ціни") })
             ListItem(leadingContent = { Icon(Icons.Default.Security, null) }, headlineContent = { Text("Приватність") }, supportingContent = { Text("Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK.") })
+            HorizontalDivider()
+            ListItem(
+                modifier = Modifier.padding(top = 8.dp),
+                leadingContent = { Icon(Icons.Default.UploadFile, null) },
+                headlineContent = { Text("Створити резервну копію") },
+                supportingContent = { Text("Вішліст, платежі та замовлення у JSON") },
+                trailingContent = { IconButton({ export.launch("flowpay-backup.json") }) { Icon(Icons.Default.ChevronRight, null) } }
+            )
+            ListItem(
+                leadingContent = { Icon(Icons.Default.Download, null) },
+                headlineContent = { Text("Відновити з файлу") },
+                supportingContent = { Text("Замінить дані на телефоні даними з копії") },
+                trailingContent = { IconButton({ import.launch(arrayOf("application/json", "text/plain")) }) { Icon(Icons.Default.ChevronRight, null) } }
+            )
+            message?.let { Text(it, Modifier.padding(20.dp), color = Accent) }
         }
     }
 }
