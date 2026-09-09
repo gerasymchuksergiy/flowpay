@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-09T18:00:00Z",
+  "updatedAt": "2026-09-09T20:08:02.783136Z",
   "products": [
     {
       "id": "crucial-ram-16gb",
@@ -11,7 +11,12 @@
       "oldPrice": 11855,
       "updatedAt": "2026-09-09T18:00:00Z",
       "needsExactUrl": true,
-      "history": [{"date": "2026-09-09", "price": 11855}]
+      "history": [
+        {
+          "date": "2026-09-09",
+          "price": 11855
+        }
+      ]
     },
     {
       "id": "asics-gel-1130",
@@ -23,7 +28,12 @@
       "oldPrice": 2203.24,
       "updatedAt": "2026-09-09T18:00:00Z",
       "needsExactUrl": true,
-      "history": [{"date": "2026-09-09", "price": 2203.24}]
+      "history": [
+        {
+          "date": "2026-09-09",
+          "price": 2203.24
+        }
+      ]
     }
   ]
 }
