@@ -9,6 +9,20 @@ raw_keys = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY",
 API_KEYS = [key.strip() for key in re.split(r"[,\n]+", raw_keys) if key.strip()]
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
+def verify_keys():
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
+    body = json.dumps({"contents":[{"parts":[{"text":"Reply with OK"}]}]}).encode()
+    for index, api_key in enumerate(API_KEYS, 1):
+        try:
+            req = Request(url, data=body, headers={"Content-Type":"application/json", "x-goog-api-key":api_key})
+            with urlopen(req, timeout=30) as response:
+                json.load(response)
+            print(f"Gemini key {index} verified")
+            return
+        except Exception:
+            print(f"::warning title=Gemini key {index}::Verification failed")
+    raise SystemExit("All configured Gemini keys failed verification")
+
 def get(url):
     req = Request(url, headers={"User-Agent":"Mozilla/5.0 FlowPayPriceTracker/1.0","Accept-Language":"uk-UA,uk;q=0.9"})
     with urlopen(req, timeout=25) as r:
@@ -39,6 +53,7 @@ def extract_price(product, html):
 def main():
     if not API_KEYS:
         raise SystemExit("GEMINI_API_KEYS or GEMINI_API_KEY is required")
+    verify_keys()
     data = json.loads(DATA.read_text())
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     day = now[:10]
