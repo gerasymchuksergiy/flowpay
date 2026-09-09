@@ -4,11 +4,11 @@ import androidx.activity.ComponentActivity;import androidx.activity.compose.setC
 import androidx.compose.foundation.layout.*;import androidx.compose.foundation.lazy.*;import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions;import androidx.compose.material.icons.Icons;import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*;import androidx.compose.runtime.*;import androidx.compose.ui.Modifier;import androidx.compose.ui.graphics.Color;import androidx.compose.ui.text.font.FontWeight;import androidx.compose.ui.text.input.KeyboardType;import androidx.compose.ui.unit.dp;import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage;import kotlinx.coroutines.*;import org.json.*;import java.net.*
+import coil.compose.AsyncImage;import kotlinx.coroutines.*;import org.json.*;import java.net.*;import androidx.work.*
 
 data class Wish(val id:String,val name:String,val url:String,val image:String,val price:Double,val history:List<Double>)
 data class Pay(val name:String,val amount:Double)
-class MainActivity:ComponentActivity(){override fun onCreate(b:Bundle?){super.onCreate(b);setContent{App(this)}}}
+class MainActivity:ComponentActivity(){override fun onCreate(b:Bundle?){super.onCreate(b);if(android.os.Build.VERSION.SDK_INT>=33)requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),7);PriceWorker.schedule(this);setContent{App(this)}}}
 class Store(c:Context){private val p=c.getSharedPreferences("flowpay",0)
  fun wishes():List<Wish>{val a=JSONArray(p.getString("w","[]"));return(0 until a.length()).map{val o=a.getJSONObject(it);val h=o.getJSONArray("h");Wish(o.getString("id"),o.getString("n"),o.getString("u"),o.getString("i"),o.getDouble("p"),(0 until h.length()).map{x->h.getDouble(x)})}}
  fun save(x:List<Wish>){p.edit().putString("w",JSONArray(x.map{JSONObject().put("id",it.id).put("n",it.name).put("u",it.url).put("i",it.image).put("p",it.price).put("h",JSONArray(it.history))}).toString()).apply()}
