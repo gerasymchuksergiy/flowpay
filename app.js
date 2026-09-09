@@ -1,9 +1,117 @@
-const money=n=>new Intl.NumberFormat('uk-UA',{style:'currency',currency:'UAH',maximumFractionDigits:0}).format(n);
-const dateLabel=s=>new Intl.DateTimeFormat('uk-UA',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}).format(new Date(s));
-let products=[],active='Усі';
-const change=p=>{const h=p.history||[];if(h.length<2)return 0;const first=h[0].price;return first?((p.price-first)/first)*100:0};
-function chart(history=[],id='product'){if(!history.length)return '';const vals=history.map(x=>x.price),min=Math.min(...vals),max=Math.max(...vals),w=300,h=72,pad=5,span=max-min||1,gid='g-'+id.replace(/[^a-z0-9-]/gi,'');const pts=vals.map((v,i)=>`${pad+i*(w-pad*2)/Math.max(1,vals.length-1)},${h-pad-(v-min)*(h-pad*2)/span}`).join(' ');const down=vals.at(-1)<=vals[0],color=down?'#8df7b5':'#ff8a8a';return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Графік історії ціни"><defs><linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1"><stop stop-color="${color}" stop-opacity=".23"/><stop offset="1" stop-color="${color}" stop-opacity="0"/></linearGradient></defs><polygon points="${pad},${h} ${pts} ${w-pad},${h}" fill="url(#${gid})"/><polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2.3" vector-effect="non-scaling-stroke"/></svg>`}
-function render(){const list=products.filter(p=>active==='Усі'||p.category===active).sort((a,b)=>{const s=sort.value;if(s==='priceAsc')return a.price-b.price;if(s==='priceDesc')return b.price-a.price;if(s==='updated')return new Date(b.updatedAt)-new Date(a.updatedAt);return change(a)-change(b)});productGrid.innerHTML='';empty.hidden=!!list.length;for(const p of list){const node=cardTemplate.content.cloneNode(true),c=change(p),hist=p.history||[],low=Math.min(...hist.map(x=>x.price),p.price),high=Math.max(...hist.map(x=>x.price),p.price);node.querySelectorAll('.product-link').forEach(a=>a.href=p.url);const img=node.querySelector('.product-image');img.src=p.image;img.alt=p.name;img.onerror=()=>{img.src='https://placehold.co/800x600/14211c/8df7b5?text=FlowPay'};const badge=node.querySelector('.badge');badge.textContent=p.price<=low?'Найнижча ціна':c<0?'Ціна падає':'Відстежується';if(p.price<=low)badge.classList.add('best');node.querySelector('.category').textContent=p.category;node.querySelector('.title').textContent=p.name;node.querySelector('.price').textContent=money(p.price);const old=node.querySelector('.old-price');old.textContent=p.oldPrice>p.price?money(p.oldPrice):'';const ch=node.querySelector('.change');ch.textContent=`${c>0?'+':''}${c.toFixed(1)}%`;ch.className=`change ${c<0?'down':c>0?'up':'flat'}`;node.querySelector('.range').textContent=`${money(low)} — ${money(high)}`;node.querySelector('.chart').innerHTML=chart(hist,p.id);node.querySelector('.updated').textContent=`Оновлено ${dateLabel(p.updatedAt)}`;productGrid.append(node)}}
-function setup(){const cats=['Усі',...new Set(products.map(p=>p.category))];filters.innerHTML=cats.map(c=>`<button class="${c===active?'active':''}" aria-pressed="${c===active}" data-cat="${c}">${c}</button>`).join('');filters.onclick=e=>{if(!e.target.dataset.cat)return;active=e.target.dataset.cat;setup();render()};trackedCount.textContent=products.length;const drops=products.filter(p=>change(p)<0);dropCount.textContent=drops.length;bestSaving.textContent=drops.length?`${Math.abs(Math.min(...drops.map(change))).toFixed(0)}%`:'0%'}
-sort.onchange=render;
-fetch(`data/products.json?v=${Date.now()}`).then(r=>{if(!r.ok)throw Error(r.status);return r.json()}).then(data=>{products=data.products||[];syncText.textContent=`Оновлено ${dateLabel(data.updatedAt)}`;setup();render()}).catch(()=>{syncText.textContent='Не вдалося завантажити ціни';productGrid.innerHTML='<div class="empty">Дані тимчасово недоступні. Оновіть сторінку пізніше.</div>'});
+const money = n => new Intl.NumberFormat('uk-UA', {
+  style: 'currency', currency: 'UAH', maximumFractionDigits: 0
+}).format(n);
+
+const dateLabel = s => new Intl.DateTimeFormat('uk-UA', {
+  day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit'
+}).format(new Date(s));
+
+let products = [];
+let active = 'Усі';
+
+const change = p => {
+  const history = p.history || [];
+  if (history.length < 2) return 0;
+  const first = history[0].price;
+  return first ? ((p.price - first) / first) * 100 : 0;
+};
+
+function chart(history = [], id = 'product') {
+  if (!history.length) return '';
+  const values = history.map(x => x.price);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const width = 300;
+  const height = 72;
+  const pad = 5;
+  const span = max - min || 1;
+  const gradientId = 'g-' + id.replace(/[^a-z0-9-]/gi, '');
+  const points = values.map((value, index) =>
+    `${pad + index * (width - pad * 2) / Math.max(1, values.length - 1)},${height - pad - (value - min) * (height - pad * 2) / span}`
+  ).join(' ');
+  const color = values.at(-1) <= values[0] ? '#34c759' : '#ff3b30';
+  return `<svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Графік історії ціни">
+    <defs><linearGradient id="${gradientId}" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="${color}" stop-opacity=".2"/><stop offset="1" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <polygon points="${pad},${height} ${points} ${width - pad},${height}" fill="url(#${gradientId})"/>
+    <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2.3" vector-effect="non-scaling-stroke"/>
+  </svg>`;
+}
+
+function render() {
+  const list = products.filter(p => active === 'Усі' || p.category === active).sort((a, b) => {
+    if (sort.value === 'priceAsc') return a.price - b.price;
+    if (sort.value === 'priceDesc') return b.price - a.price;
+    if (sort.value === 'updated') return new Date(b.updatedAt) - new Date(a.updatedAt);
+    return change(a) - change(b);
+  });
+  productGrid.innerHTML = '';
+  empty.hidden = Boolean(list.length);
+
+  for (const product of list) {
+    const node = cardTemplate.content.cloneNode(true);
+    const delta = change(product);
+    const history = product.history || [];
+    const low = Math.min(...history.map(x => x.price), product.price);
+    const high = Math.max(...history.map(x => x.price), product.price);
+    node.querySelectorAll('.product-link').forEach(link => link.href = product.url);
+
+    const image = node.querySelector('.product-image');
+    image.src = product.image;
+    image.alt = product.name;
+    image.onerror = () => image.src = 'https://placehold.co/900x700/f5f5f7/1d1d1f?text=FlowPay';
+
+    const badge = node.querySelector('.badge');
+    badge.textContent = product.needsExactUrl
+      ? 'Потрібне точне посилання'
+      : product.price <= low ? 'Найнижча ціна' : delta < 0 ? 'Ціна падає' : 'Відстежується';
+    if (!product.needsExactUrl && product.price <= low) badge.classList.add('best');
+
+    node.querySelector('.category').textContent = product.category;
+    node.querySelector('.title').textContent = product.name;
+    node.querySelector('.price').textContent = money(product.price);
+    node.querySelector('.old-price').textContent = product.oldPrice > product.price ? money(product.oldPrice) : '';
+    const changeLabel = node.querySelector('.change');
+    changeLabel.textContent = `${delta > 0 ? '+' : ''}${delta.toFixed(1)}%`;
+    changeLabel.className = `change ${delta < 0 ? 'down' : delta > 0 ? 'up' : 'flat'}`;
+    node.querySelector('.range').textContent = `${money(low)} — ${money(high)}`;
+    node.querySelector('.chart').innerHTML = chart(history, product.id);
+    node.querySelector('.updated').textContent = `Оновлено ${dateLabel(product.updatedAt)}`;
+    productGrid.append(node);
+  }
+}
+
+function setup() {
+  const categories = ['Усі', ...new Set(products.map(p => p.category))];
+  filters.innerHTML = categories.map(category =>
+    `<button class="${category === active ? 'active' : ''}" aria-pressed="${category === active}" data-cat="${category}">${category}</button>`
+  ).join('');
+  filters.onclick = event => {
+    if (!event.target.dataset.cat) return;
+    active = event.target.dataset.cat;
+    setup();
+    render();
+  };
+  trackedCount.textContent = products.length;
+  const drops = products.filter(p => change(p) < 0);
+  dropCount.textContent = drops.length;
+  bestSaving.textContent = drops.length ? `${Math.abs(Math.min(...drops.map(change))).toFixed(0)}%` : '0%';
+}
+
+sort.onchange = render;
+fetch(`data/products.json?v=${Date.now()}`)
+  .then(response => {
+    if (!response.ok) throw Error(response.status);
+    return response.json();
+  })
+  .then(data => {
+    products = data.products || [];
+    syncText.textContent = `Оновлено ${dateLabel(data.updatedAt)}`;
+    setup();
+    render();
+  })
+  .catch(() => {
+    syncText.textContent = 'Не вдалося завантажити ціни';
+    productGrid.innerHTML = '<div class="empty">Дані тимчасово недоступні. Оновіть сторінку пізніше.</div>';
+  });
