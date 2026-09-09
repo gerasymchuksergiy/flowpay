@@ -1,12 +1,21 @@
-# FlowPay Price Tracker
+# FlowPay Android
 
-Статичний трекер цін для GitHub Pages. Показує актуальні ціни, історію та графіки, а GitHub Actions щодня оновлює дані за допомогою Gemini.
+Особистий Android-вішліст і фінансовий помічник.
 
-## Налаштування
+## MVP
 
-1. У репозиторії відкрийте **Settings → Secrets and variables → Actions**.
-2. Створіть repository secret `GEMINI_API_KEY`.
-3. У **Settings → Pages** оберіть **Deploy from a branch**, `main`, `/ (root)`.
-4. За потреби запустіть **Actions → Update product prices → Run workflow**.
+- додавання товару посиланням із Prom.ua або іншого магазину;
+- автоматичне отримання назви, фото та ціни зі сторінки;
+- локальна історія цін і перехід до магазину;
+- калькулятор авансу й основної зарплати;
+- курс USD/UAH з публічного API Monobank;
+- регулярні платежі та загальна сума;
+- локальне зберігання без секретних ключів у APK.
 
-Ключ ніколи не передається у браузер: він доступний лише Python-скрипту всередині GitHub Actions. Товари й посилання редагуються у `data/products.json`.
+## APK
+
+Після push GitHub Actions збирає APK. Завантаження: **Actions → Build Android APK → Artifacts → FlowPay-debug-apk**.
+
+## Наступні етапи
+
+WorkManager для фонового оновлення, сповіщення про падіння ціни, цільова ціна, графік по датах, категорії, резервна копія та серверний Gemini fallback.

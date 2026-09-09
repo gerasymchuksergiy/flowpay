@@ -1,0 +1,1 @@
+<resources><style name="Theme.FlowPay" parent="android:style/Theme.Material.Light.NoActionBar"><item name="android:fontFamily">sans</item><item name="android:navigationBarColor">#030601</item><item name="android:statusBarColor">#030601</item></style></resources>
