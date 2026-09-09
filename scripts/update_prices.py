@@ -14,14 +14,17 @@ def get(url):
         return r.read(900_000).decode("utf-8", "ignore")
 
 def extract_price(product, html):
-    prompt = f'''Extract the currently purchasable price in UAH for "{product['name']}" from this Ukrainian store page. Ignore installment payments, crossed-out old prices and prices of unrelated products. Return ONLY JSON: {{"price": number|null, "confidence": number}}. Page text:\n{re.sub(r'<[^>]+>', ' ', html)[:120000]}'''
+    prompt = f'''Verify that this page sells the exact product "{product['name']}" and extract its currently purchasable full price in UAH. Ignore installments, crossed-out prices, accessories, different variants and unrelated products. Return ONLY JSON: {{"matchedProduct": boolean, "available": boolean, "price": number|null, "confidence": number}}. Page text:\n{re.sub(r'<[^>]+>', ' ', html)[:120000]}'''
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent?key={API_KEY}"
     body = json.dumps({"contents":[{"parts":[{"text":prompt}]}],"generationConfig":{"responseMimeType":"application/json","temperature":0}}).encode()
     req = Request(url, data=body, headers={"Content-Type":"application/json"})
     with urlopen(req, timeout=60) as r:
         result = json.load(r)
     text = result["candidates"][0]["content"]["parts"][0]["text"]
-    return json.loads(text).get("price")
+    parsed = json.loads(text)
+    if not parsed.get("matchedProduct") or not parsed.get("available") or parsed.get("confidence", 0) < 0.8:
+        raise ValueError("product identity, availability or confidence check failed")
+    return parsed.get("price")
 
 def main():
     if not API_KEY:
@@ -31,9 +34,12 @@ def main():
     day = now[:10]
     changed = 0
     for product in data["products"]:
+        if product.get("needsExactUrl"):
+            print(f"::notice title={product['name']}::Exact product URL is required before automatic tracking")
+            continue
         try:
             price = extract_price(product, get(product["url"]))
-            if not isinstance(price, (int,float)) or price <= 0 or price > product["price"] * 3:
+            if not isinstance(price, (int,float)) or price <= 0 or not (product["price"] * .45 <= price <= product["price"] * 1.8):
                 raise ValueError(f"suspicious price: {price}")
             old = product["price"]
             product["oldPrice"] = max(product.get("oldPrice", old), old)

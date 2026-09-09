@@ -1,11 +1,29 @@
 {
   "updatedAt": "2026-09-09T18:00:00Z",
   "products": [
-    {"id":"sony-wh1000xm5","name":"Sony WH-1000XM5","category":"Аудіо","url":"https://rozetka.com.ua/ua/search/?text=Sony%20WH-1000XM5","image":"https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?auto=format&fit=crop&w=900&q=85","price":13999,"oldPrice":15999,"updatedAt":"2026-09-09T18:00:00Z","history":[{"date":"2026-09-04","price":15499},{"date":"2026-09-05","price":15299},{"date":"2026-09-06","price":14999},{"date":"2026-09-07","price":14999},{"date":"2026-09-08","price":14499},{"date":"2026-09-09","price":13999}]},
-    {"id":"apple-watch-s10","name":"Apple Watch Series 10 GPS 46mm","category":"Гаджети","url":"https://rozetka.com.ua/ua/search/?text=Apple%20Watch%20Series%2010%2046mm","image":"https://images.unsplash.com/photo-1434494878577-86c23bcb06b9?auto=format&fit=crop&w=900&q=85","price":18999,"oldPrice":20999,"updatedAt":"2026-09-09T18:00:00Z","history":[{"date":"2026-09-04","price":20499},{"date":"2026-09-05","price":20499},{"date":"2026-09-06","price":19999},{"date":"2026-09-07","price":19499},{"date":"2026-09-08","price":19499},{"date":"2026-09-09","price":18999}]},
-    {"id":"kindle-paperwhite","name":"Amazon Kindle Paperwhite 16GB","category":"Гаджети","url":"https://rozetka.com.ua/ua/search/?text=Kindle%20Paperwhite%2016GB","image":"https://images.unsplash.com/photo-1592496001020-d31bd830651f?auto=format&fit=crop&w=900&q=85","price":6999,"oldPrice":7299,"updatedAt":"2026-09-09T18:00:00Z","history":[{"date":"2026-09-04","price":7299},{"date":"2026-09-05","price":7299},{"date":"2026-09-06","price":7199},{"date":"2026-09-07","price":7199},{"date":"2026-09-08","price":6999},{"date":"2026-09-09","price":6999}]},
-    {"id":"dyson-v15","name":"Dyson V15 Detect Absolute","category":"Дім","url":"https://rozetka.com.ua/ua/search/?text=Dyson%20V15%20Detect","image":"https://images.unsplash.com/photo-1558317374-067fb5f30001?auto=format&fit=crop&w=900&q=85","price":26999,"oldPrice":29999,"updatedAt":"2026-09-09T18:00:00Z","history":[{"date":"2026-09-04","price":28999},{"date":"2026-09-05","price":28999},{"date":"2026-09-06","price":28499},{"date":"2026-09-07","price":27999},{"date":"2026-09-08","price":26999},{"date":"2026-09-09","price":26999}]},
-    {"id":"asics-gel-1130","name":"ASICS Gel-1130","category":"Одяг","url":"https://rozetka.com.ua/ua/search/?text=ASICS%20Gel-1130","image":"https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=900&q=85","price":4299,"oldPrice":4499,"updatedAt":"2026-09-09T18:00:00Z","history":[{"date":"2026-09-04","price":4499},{"date":"2026-09-05","price":4499},{"date":"2026-09-06","price":4399},{"date":"2026-09-07","price":4399},{"date":"2026-09-08","price":4299},{"date":"2026-09-09","price":4299}]},
-    {"id":"logitech-mx-master-3s","name":"Logitech MX Master 3S","category":"Техніка","url":"https://rozetka.com.ua/ua/search/?text=Logitech%20MX%20Master%203S","image":"https://images.unsplash.com/photo-1527864550417-7fd91fc51a46?auto=format&fit=crop&w=900&q=85","price":4299,"oldPrice":4299,"updatedAt":"2026-09-09T18:00:00Z","history":[{"date":"2026-09-04","price":4199},{"date":"2026-09-05","price":4199},{"date":"2026-09-06","price":4299},{"date":"2026-09-07","price":4299},{"date":"2026-09-08","price":4299},{"date":"2026-09-09","price":4299}]}
+    {
+      "id": "crucial-ram-16gb",
+      "name": "RAM Crucial 16GB",
+      "category": "Техніка",
+      "url": "https://rozetka.com.ua/ua/search/?text=RAM%20Crucial%2016GB",
+      "image": "https://images.unsplash.com/photo-1562976540-1502c2145186?auto=format&fit=crop&w=900&q=85",
+      "price": 11855,
+      "oldPrice": 11855,
+      "updatedAt": "2026-09-09T18:00:00Z",
+      "needsExactUrl": true,
+      "history": [{"date": "2026-09-09", "price": 11855}]
+    },
+    {
+      "id": "asics-gel-1130",
+      "name": "ASICS Gel-1130",
+      "category": "Одяг",
+      "url": "https://rozetka.com.ua/ua/genskie-krossovki/c4634473/producer%3Dasics%3Bseries%3D181108/",
+      "image": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=900&q=85",
+      "price": 2203.24,
+      "oldPrice": 2203.24,
+      "updatedAt": "2026-09-09T18:00:00Z",
+      "needsExactUrl": true,
+      "history": [{"date": "2026-09-09", "price": 2203.24}]
+    }
   ]
 }
