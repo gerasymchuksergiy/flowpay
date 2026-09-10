@@ -247,6 +247,42 @@ class ResearchFindingsTest {
         assertFalse(summary.plansConflict)
     }
 
+    // ------------------------------------------- which build a release holds
+
+    @Test
+    fun `the version code written by the workflow is used when present`() {
+        val body = """
+            Автоматичне оновлення FlowPay.
+            versionCode=42
+        """.trimIndent()
+        assertEquals(42, releaseVersionCode(body, "v1.0.42"))
+        assertEquals(7, releaseVersionCode("versionCode = 7", "whatever"))
+    }
+
+    @Test
+    fun `a release made by hand is read from its tag instead of being ignored`() {
+        // Without this the in-app updater reported that nothing was published.
+        assertEquals(20300, releaseVersionCode("", "v2.3.0"))
+        assertEquals(20300, releaseVersionCode("Просто опис без коду", "2.3.0"))
+        assertEquals(10000, releaseVersionCode("", "v1.0.0"))
+    }
+
+    @Test
+    fun `a later tag always compares higher than an earlier one`() {
+        val older = releaseVersionCode("", "v2.1.9")!!
+        val newer = releaseVersionCode("", "v2.2.0")!!
+        val newest = releaseVersionCode("", "v3.0.0")!!
+
+        assertTrue(older < newer)
+        assertTrue(newer < newest)
+    }
+
+    @Test
+    fun `a release with neither a code nor a version in its tag is skipped`() {
+        assertNull(releaseVersionCode("", "latest"))
+        assertNull(releaseVersionCode("нічого", ""))
+    }
+
     @Test
     fun `the lowest price carries the day it was seen`() {
         val history = listOf(

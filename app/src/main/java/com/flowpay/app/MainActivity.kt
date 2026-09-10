@@ -315,15 +315,15 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     connection.setRequestProperty("User-Agent", "FlowPay-Android")
     if (connection.responseCode !in 200..299) return@withContext null
     val release = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-    val code = Regex("""versionCode=(\d+)""").find(release.optString("body"))
-        ?.groupValues?.get(1)?.toIntOrNull() ?: return@withContext null
+    val tag = release.optString("tag_name")
+    val code = releaseVersionCode(release.optString("body"), tag) ?: return@withContext null
     val assets = release.optJSONArray("assets") ?: return@withContext null
     val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
         .firstOrNull { it.optString("name").endsWith(".apk", true) } ?: return@withContext null
     val downloadUrl = apk.optString("browser_download_url")
     val downloadUri = downloadUrl.toUri()
     if (downloadUri.scheme != "https" || downloadUri.host != "github.com") return@withContext null
-    UpdateInfo(code, release.optString("tag_name", "нова версія"), downloadUrl)
+    UpdateInfo(code, tag.ifBlank { "нова версія" }, downloadUrl)
 }
 
 /**
@@ -2007,47 +2007,62 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
                 }
 
                 Spacer(Modifier.height(Space.md))
-                BentoRow {
-                    StatTile(
-                        Icons.Default.ReceiptLong,
-                        "Витрати на місяць",
-                        money(summary.monthlyExpenses),
-                        even,
-                        muted = summary.monthlyExpenses <= 0
+                // Three figures and their targets in the height one card used to take,
+                // with the rings restating them. This density is what the reference
+                // gets right and a column of single-figure cards does not.
+                StatStrip(
+                    columns = listOf(
+                        StatColumn(
+                            Icons.Default.ReceiptLong,
+                            "Витрати за місяць",
+                            money(summary.monthlyExpenses),
+                            summary.income.takeIf { it > 0 }?.let { money(it) }
+                        ),
+                        StatColumn(
+                            Icons.Default.Savings,
+                            if (summary.overspent) "Не сходиться" else "Вільно",
+                            if (summary.budgetUnknown) "—" else money(summary.freeCash)
+                        ),
+                        StatColumn(
+                            Icons.Default.Flag,
+                            "Плани на місяць",
+                            money(summary.plannedMonthly),
+                            summary.freeCash.takeIf { !summary.budgetUnknown && it > 0 }
+                                ?.let { money(it) }
+                        )
+                    ),
+                    rings = listOf(
+                        summary.savedProgress,
+                        if (summary.income > 0) {
+                            (summary.monthlyExpenses / summary.income).toFloat().coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        },
+                        if (summary.freeCash > 0) {
+                            (summary.plannedMonthly / summary.freeCash).toFloat().coerceIn(0f, 1f)
+                        } else {
+                            0f
+                        }
                     )
-                    StatTile(
-                        Icons.Default.Savings,
-                        if (summary.overspent) "Не сходиться" else "Вільно на місяць",
-                        if (summary.budgetUnknown) "—" else money(summary.freeCash),
-                        even,
-                        muted = summary.budgetUnknown,
-                        alarm = summary.overspent
-                    )
-                }
-                Spacer(Modifier.height(Space.md))
-                BentoRow {
-                    StatTile(
-                        Icons.Default.LocalShipping,
-                        "В дорозі",
-                        summary.parcelsMoving.toString(),
-                        even,
-                        muted = summary.parcelsMoving == 0
-                    )
-                    StatTile(
-                        Icons.Default.Inventory2,
-                        "На відділенні",
-                        summary.parcelsAtBranch.toString(),
-                        even,
-                        muted = summary.parcelsAtBranch == 0,
-                        alarm = summary.parcelsAtBranch > 0
-                    )
-                    StatTile(
-                        Icons.Default.FavoriteBorder,
-                        "Бажань",
-                        summary.wishCount.toString(),
-                        even,
-                        muted = summary.wishCount == 0
-                    )
+                )
+
+                Spacer(Modifier.height(Space.lg))
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                    shape = Radius.lg
+                ) {
+                    Column(Modifier.padding(Space.lg)) {
+                        LeaderRow("Бажань у списку", summary.wishCount.toString())
+                        LeaderRow("Повністю накопичено", summary.readyCount.toString())
+                        LeaderRow("Посилок у дорозі", summary.parcelsMoving.toString())
+                        LeaderRow(
+                            "Чекають на відділенні",
+                            summary.parcelsAtBranch.toString(),
+                            alarm = summary.parcelsAtBranch > 0
+                        )
+                        LeaderRow("Покупок закрито", summary.parcelsDone.toString())
+                    }
                 }
             }
 

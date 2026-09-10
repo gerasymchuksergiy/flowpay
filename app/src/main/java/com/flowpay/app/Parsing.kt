@@ -205,3 +205,24 @@ private fun offerPrice(offers: Any?, depth: Int): Double {
     }
     return 0.0
 }
+
+/**
+ * Works out which build a GitHub release contains.
+ *
+ * The workflow writes `versionCode=N` into the release body, which is exact. But a
+ * release created by hand has no such line, and without a fallback the in-app
+ * updater would ignore it and report that nothing was published. So a tag like
+ * `v2.3.0` is also accepted, read as major, minor and patch and folded into one
+ * comparable number the same way the build does.
+ */
+fun releaseVersionCode(body: String, tag: String): Int? {
+    Regex("""versionCode\s*=\s*(\d+)""", RegexOption.IGNORE_CASE)
+        .find(body)?.groupValues?.get(1)?.toIntOrNull()
+        ?.let { return it }
+
+    val parts = Regex("""(\d+)\.(\d+)\.(\d+)""").find(tag)?.groupValues ?: return null
+    val major = parts[1].toIntOrNull() ?: return null
+    val minor = parts[2].toIntOrNull() ?: return null
+    val patch = parts[3].toIntOrNull() ?: return null
+    return major * 10_000 + minor * 100 + patch
+}

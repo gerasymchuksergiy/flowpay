@@ -16,6 +16,7 @@ data class Overview(
     val savedProgress: Float,
     /** Wishes whose money is already there. */
     val readyCount: Int,
+    val income: Double,
     val monthlyExpenses: Double,
     val freeCash: Double,
     val budgetUnknown: Boolean,
@@ -56,6 +57,7 @@ fun overview(
         savedTotal = saved,
         savedProgress = if (goals > 0) (saved / goals).coerceIn(0.0, 1.0).toFloat() else 0f,
         readyCount = wishes.count { wishGoal(it) > 0 && it.saved >= wishGoal(it) },
+        income = month.income,
         monthlyExpenses = expenses.total,
         freeCash = month.free,
         budgetUnknown = month.unknown,
