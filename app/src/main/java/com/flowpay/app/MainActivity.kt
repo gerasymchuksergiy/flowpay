@@ -78,7 +78,13 @@ data class Wish(
     val deadline: Long = 0L
 )
 
-data class Pay(val name: String, val amount: Double, val day: Int = 1)
+data class Pay(
+    val name: String,
+    val amount: Double,
+    val day: Int = 1,
+    /** "UAH" or "USD". Rent is commonly quoted and paid in dollars. */
+    val currency: String = UAH
+)
 data class Order(
     val id: String,
     val name: String,
@@ -133,8 +139,19 @@ class Store(context: Context) {
             .put("s", it.saved).put("m", it.monthlyPlan).put("dl", it.deadline)
     })
 
-    fun pays(): List<Pay> = jsonList("pay") { Pay(it.optString("n"), it.optDouble("a"), it.optInt("d", 1)) }
-    fun savePays(items: List<Pay>) = save("pay", items.map { JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day) })
+    fun pays(): List<Pay> = jsonList("pay") {
+        Pay(
+            it.optString("n"),
+            it.optDouble("a"),
+            it.optInt("d", 1),
+            // Entries saved before currencies existed were all hryvnia.
+            it.optString("cur", UAH).ifBlank { UAH }
+        )
+    }
+
+    fun savePays(items: List<Pay>) = save("pay", items.map {
+        JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day).put("cur", it.currency)
+    })
 
     fun orders(): List<Order> = jsonList("orders") {
         Order(
@@ -298,6 +315,11 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
 }
 
 private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " ₴"
+private fun dollars(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " $"
+
+/** An amount shown in whichever currency it was entered in. */
+private fun amountIn(value: Double, currency: String) =
+    if (currency == USD) dollars(value) else money(value)
 
 @Composable
 fun FlowPayApp(context: Context) {
@@ -384,15 +406,24 @@ fun FlowPayApp(context: Context) {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
                     0 -> WishlistScreen(
-                        wishes,
-                        { wishes = it; store.saveWishes(it) },
-                        context,
-                        adding,
-                        { adding = it },
-                        openedWish
-                    ) { openedWish = it }
+                        items = wishes,
+                        save = { wishes = it; store.saveWishes(it) },
+                        context = context,
+                        adding = adding,
+                        setAdding = { adding = it },
+                        opened = openedWish,
+                        setOpened = { openedWish = it },
+                        // A bought wish becomes a parcel, and the tab follows it so
+                        // the move is visible rather than something to go looking for.
+                        onBought = { order ->
+                            val next = orders + order
+                            orders = next
+                            store.saveOrders(next)
+                            tab = 3
+                        }
+                    )
                     1 -> CalculatorScreen(store)
-                    2 -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, adding) { adding = it }
+                    2 -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, store, adding) { adding = it }
                     3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context, adding) { adding = it }
                     else -> SettingsScreen(store) {
                         wishes = store.wishes()
@@ -460,7 +491,8 @@ fun WishlistScreen(
     // Held by id rather than by value so the page keeps showing the live item
     // after a price refresh or a change to the savings plan.
     opened: String?,
-    setOpened: (String?) -> Unit
+    setOpened: (String?) -> Unit,
+    onBought: (Order) -> Unit
 ) {
     var editing by remember { mutableStateOf<Wish?>(null) }
     var refreshing by remember { mutableStateOf(false) }
@@ -475,7 +507,22 @@ fun WishlistScreen(
             onBack = { setOpened(null) },
             onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
             onEdit = { editing = openedWish },
-            onDelete = { save(items - openedWish); setOpened(null) }
+            onDelete = { save(items - openedWish); setOpened(null) },
+            onBought = { trackingNumber ->
+                onBought(
+                    Order(
+                        id = openedWish.id,
+                        name = openedWish.name,
+                        url = openedWish.url,
+                        status = "Замовлено",
+                        tracking = trackingNumber,
+                        image = openedWish.image,
+                        price = openedWish.price
+                    )
+                )
+                save(items - openedWish)
+                setOpened(null)
+            }
         )
         editing?.let { selected ->
             EditWishDialog(selected, { editing = null }) { changed ->
@@ -647,7 +694,8 @@ fun WishDetailScreen(
     onBack: () -> Unit,
     onChange: (Wish) -> Unit,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onBought: (String) -> Unit
 ) {
     // Keyed on the item, so opening a different one does not inherit these boxes.
     var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
@@ -656,6 +704,7 @@ fun WishDetailScreen(
     // Which end of the plan is known: the monthly sum, or the date.
     var byDate by remember(wish.id) { mutableStateOf(wish.deadline > 0L) }
     var pickingDate by remember { mutableStateOf(false) }
+    var buying by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -912,6 +961,17 @@ fun WishDetailScreen(
                 }
 
                 Spacer(Modifier.height(Space.xl))
+                // Buying is what the whole page is for, so it gets the filled button
+                // and the full width. Everything else here is secondary.
+                Button(
+                    { buying = true },
+                    Modifier.fillMaxWidth(),
+                    shape = Radius.sm
+                ) {
+                    Icon(Icons.Default.ShoppingCartCheckout, null)
+                    Text("  Я купив це")
+                }
+                Spacer(Modifier.height(Space.md))
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
                     OutlinedButton(
                         {
@@ -938,12 +998,14 @@ fun WishDetailScreen(
                         } else {
                             Icon(Icons.Default.Refresh, null)
                         }
-                        Text(" Оновити ціну")
+                        Text(" Оновити")
                     }
-                    Button(
+                    OutlinedButton(
                         { context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) },
                         Modifier.weight(1f),
-                        shape = Radius.sm
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
                     ) { Text("До магазину ↗") }
                 }
                 message?.let {
@@ -955,6 +1017,13 @@ fun WishDetailScreen(
                     )
                 }
             }
+        }
+    }
+
+    if (buying) {
+        BoughtDialog(wish, { buying = false }) { trackingNumber ->
+            buying = false
+            onBought(trackingNumber)
         }
     }
 
@@ -1237,16 +1306,31 @@ fun CalculatorScreen(store: Store) {
 fun PaymentsScreen(
     items: List<Pay>,
     save: (List<Pay>) -> Unit,
+    store: Store,
     adding: Boolean,
     setAdding: (Boolean) -> Unit
 ) {
-    val monthly = items.sumOf { it.amount }
+    // The rate the exchange screen already fetched and cached. Dollar entries are
+    // converted at the sell rate, since that is what buying dollars costs.
+    val rate = remember { store.fxRate().first }
+    val monthly = monthlyTotal(items, rate.sell)
     var editing by remember { mutableStateOf<Int?>(null) }
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
             ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
             Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
-                SummaryCard("Разом на місяць", money(monthly), monthly <= 0.0)
+                SummaryCard(
+                    "Разом на місяць",
+                    money(monthly.total),
+                    monthly.total <= 0.0,
+                    detail = when {
+                        monthly.rateMissing ->
+                            "Плюс ${dollars(monthly.usd)} — курс ще не завантажено"
+                        monthly.hasUsd ->
+                            "З них ${dollars(monthly.usd)} ≈ ${money(monthly.usdInUah)} по ${"%.2f".format(rate.sell)}"
+                        else -> null
+                    }
+                )
             }
         }
         if (items.isEmpty()) {
@@ -1289,7 +1373,16 @@ fun PaymentsScreen(
                     },
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(money(pay.amount), fontWeight = Type.strong)
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text(amountIn(pay.amount, pay.currency), fontWeight = Type.strong)
+                                if (pay.currency == USD && rate.sell > 0) {
+                                    Text(
+                                        "≈ ${money(pay.amount * rate.sell)}",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                }
+                            }
                             IconButton({ save(items.filterIndexed { i, _ -> i != index }) }) {
                                 Icon(Icons.Default.Close, "Видалити")
                             }
@@ -1320,6 +1413,7 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
     var custom by remember { mutableStateOf("") }
     var amount by remember { mutableStateOf("") }
     var day by remember { mutableStateOf("1") }
+    var currency by remember { mutableStateOf(UAH) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Нова постійна витрата") },
@@ -1329,14 +1423,22 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
                     items(types) { type -> FilterChip(selected == type, { selected = type }, { Text(type) }) }
                 }
                 if (selected == "Інше") OutlinedTextField(custom, { custom = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
-                NumberField("Сума, ₴", amount) { amount = it }
+                CurrencyChips(currency) { currency = it }
+                NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
             }
         },
         confirmButton = {
             Button({
                 amount.replace(',', '.').toDoubleOrNull()?.let { value ->
-                    add(Pay(if (selected == "Інше") custom.ifBlank { "Інше" } else selected, value, day.toIntOrNull()?.coerceIn(1, 31) ?: 1))
+                    add(
+                        Pay(
+                            if (selected == "Інше") custom.ifBlank { "Інше" } else selected,
+                            value,
+                            day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+                            currency
+                        )
+                    )
                 }
             }, enabled = amount.replace(',', '.').toDoubleOrNull() != null) { Text("Додати") }
         },
@@ -1615,29 +1717,100 @@ fun SettingsRow(icon: ImageVector, title: String, detail: String) {
 /** Corrects an existing recurring expense, so a typo no longer means delete and retype. */
 @Composable
 fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
-    var amount by remember { mutableStateOf(pay.amount.toString()) }
+    var amount by remember { mutableStateOf(amountText(pay.amount)) }
     var day by remember { mutableStateOf(pay.day.toString()) }
+    var currency by remember { mutableStateOf(pay.currency) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text(pay.name) },
         text = {
             Column {
-                NumberField("Сума, ₴", amount) { amount = it }
+                CurrencyChips(currency) { currency = it }
+                NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
             }
         },
         confirmButton = {
             Button(
                 {
-                    amount.replace(',', '.').toDoubleOrNull()?.let { value ->
-                        save(pay.copy(amount = value, day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day))
+                    parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                        save(
+                            pay.copy(
+                                amount = value,
+                                day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+                                currency = currency
+                            )
+                        )
                     }
                 },
-                enabled = amount.replace(',', '.').toDoubleOrNull() != null
+                enabled = parseAmount(amount) > 0
             ) { Text("Зберегти") }
         },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )
+}
+
+/**
+ * Turns a wish into a parcel.
+ *
+ * The tracking number is optional, because you often order first and learn the
+ * number hours later. The item keeps its name, photo, link and price, so the
+ * purchases tab shows the same thing you had been saving for, and it can be
+ * filled in from that card afterwards.
+ */
+@Composable
+fun BoughtDialog(wish: Wish, close: () -> Unit, confirm: (String) -> Unit) {
+    var trackingNumber by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Купив це") },
+        text = {
+            Column {
+                Text(wish.name, fontSize = Type.captionSize, color = TextSecondary)
+                Text(
+                    "Товар переїде в Покупки зі статусом «Замовлено». Трек-номер можна " +
+                        "додати зараз або пізніше.",
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    color = TextSecondary,
+                    modifier = Modifier.padding(top = Space.sm)
+                )
+                OutlinedTextField(
+                    trackingNumber,
+                    { trackingNumber = it },
+                    Modifier.fillMaxWidth().padding(top = Space.md),
+                    label = { Text("Трек-номер, якщо вже є") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = {
+            Button({ confirm(trackingNumber.trim()) }) { Text("Перенести в покупки") }
+        },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+/** Picks the currency an expense is actually billed in. */
+@Composable
+fun CurrencyChips(currency: String, set: (String) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = Space.md),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+    ) {
+        FilterChip(
+            currency != USD,
+            { set(UAH) },
+            { Text("Гривня ₴", fontSize = Type.captionSize) },
+            modifier = Modifier.weight(1f)
+        )
+        FilterChip(
+            currency == USD,
+            { set(USD) },
+            { Text("Долар $", fontSize = Type.captionSize) },
+            modifier = Modifier.weight(1f)
+        )
+    }
 }
 
 /**
@@ -1682,7 +1855,13 @@ fun NumberField(label: String, value: String, set: (String) -> Unit) = OutlinedT
  * nothing here, which is the opposite of what an accent is for.
  */
 @Composable
-fun SummaryCard(label: String, value: String, isEmpty: Boolean, hero: Boolean = true) {
+fun SummaryCard(
+    label: String,
+    value: String,
+    isEmpty: Boolean,
+    hero: Boolean = true,
+    detail: String? = null
+) {
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
@@ -1703,6 +1882,15 @@ fun SummaryCard(label: String, value: String, isEmpty: Boolean, hero: Boolean = 
                 },
                 color = if (isEmpty) TextDisabled else Accent
             )
+            detail?.let {
+                Text(
+                    it,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.sm)
+                )
+            }
         }
     }
 }
