@@ -12,33 +12,40 @@ import androidx.compose.ui.unit.sp
 /**
  * Every colour, distance, radius and text size the app is allowed to use.
  *
- * Before this file the screens carried twenty-three different dp values, fourteen
- * text sizes, seven corner radii and eight near identical dark greys, all chosen
- * one at a time. Nothing lined up, which is what made a finished app read as a
- * draft. Pick from the scales below instead of inventing a value.
+ * Before this file the screens were styled a value at a time: twenty-three dp
+ * distances, fourteen text sizes, seven corner radii and eight nearly identical
+ * dark greys. The gap between two of those greys does not read as a decision, it
+ * reads as carelessness, and that is what made a finished app look like a draft.
+ * Pick from the scales below instead of inventing a value.
  */
 
-// Surfaces, darkest to lightest. Each step is a visible jump, not a nudge.
-val AppBackground = Color(0xff090a08)
-val SurfaceLow = Color(0xff121310)
-val SurfaceBase = Color(0xff1a1b18)
-val SurfaceRaised = Color(0xff23251f)
-val SurfaceHigh = Color(0xff2e312a)
+// Surfaces, darkest to lightest, each tinted slightly green so nothing fights the lime.
+val AppBackground = Color(0xff0a0b09)
+val SurfaceLow = Color(0xff121410)
+val SurfaceBase = Color(0xff161814)
+val SurfaceRaised = Color(0xff1e211b)
+val SurfaceHigh = Color(0xff22241e)
 
-// Text. Three levels is enough; a fourth only ever gets confused with the third.
+// Text. Three live levels plus one for absent values.
 val TextPrimary = Color(0xfff1f3ec)
 val TextSecondary = Color(0xff9b9d96)
-val TextMuted = Color(0xff6b6e65)
+val TextDisabled = Color(0xff5c5f56)
 
-// One accent, plus a tinted container for anything secondary, plus one alarm colour.
+// One accent, one tinted container for anything secondary, one alarm colour.
 val Accent = Color(0xffd7ff63)
-val AccentInk = Color(0xff10120d)
+val AccentInk = Color(0xff0a0b09)
 val AccentSoft = Color(0xff2a3318)
-val Negative = Color(0xffff6b6b)
+val Negative = Color(0xffff7a6b)
 
-val HairLine = Color(0xff33362d)
+val HairLine = Color(0xff33362c)
 
-/** Vertical and horizontal rhythm. Six steps, nothing between them. */
+/**
+ * Vertical and horizontal rhythm on a 4dp base.
+ *
+ * The grouping rule that matters: the gap between two groups must be at least
+ * twice the largest gap inside either of them. Evenly spread space stops being
+ * air and becomes emptiness, which is exactly how the old screens read.
+ */
 object Space {
     val xs = 4.dp
     val sm = 8.dp
@@ -46,12 +53,20 @@ object Space {
     val lg = 16.dp
     val xl = 24.dp
     val xxl = 32.dp
+    val huge = 48.dp
 
-    /** Every screen keeps the same side margin so blocks share one left edge. */
+    /** One side margin for every screen, so all blocks share a left edge. */
     val screen = 20.dp
+
+    /**
+     * Bottom padding for a list that sits under the floating action button.
+     * Scaffold insets account for the navigation bar but not for the button, so
+     * without this the last row scrolls underneath it and cannot be reached.
+     */
+    val fabClearance = 96.dp
 }
 
-/** Three radii. A card and a chip should not each have their own. */
+/** Three radii. A card and a chip should not each invent their own. */
 object Radius {
     val sm = RoundedCornerShape(12.dp)
     val md = RoundedCornerShape(18.dp)
@@ -59,35 +74,53 @@ object Radius {
     val pill = RoundedCornerShape(50)
 }
 
-/** Text sizes, paired with the weight and line height each one is meant to carry. */
+/**
+ * Seven levels, three weights.
+ *
+ * Black is reserved for the one hero figure on a screen. It used to appear five
+ * times per screen, and a weight used five times is no longer heavy. On Cyrillic
+ * at this size it also closes up the counters in ж, щ, м and ш, so the title read
+ * as greasy rather than strong.
+ */
 object Type {
-    val displaySize = 28.sp
-    val displayLine = 32.sp
-    val displayWeight = FontWeight.ExtraBold
+    val heroSize = 34.sp
+    val heroLine = 36.sp
+    val heroTracking = (-1.0).sp
 
-    val titleSize = 20.sp
-    val titleLine = 25.sp
-    val titleWeight = FontWeight.Bold
+    val screenTitleSize = 30.sp
+    val screenTitleLine = 34.sp
+    val screenTitleTracking = (-0.6).sp
 
-    val figureSize = 30.sp
-    val figureWeight = FontWeight.Black
+    val sectionSize = 20.sp
+    val sectionLine = 26.sp
+
+    val cardTitleSize = 17.sp
+    val cardTitleLine = 22.sp
 
     val bodySize = 15.sp
-    val bodyLine = 21.sp
+    val bodyLine = 22.sp
 
-    val labelSize = 13.sp
-    val captionSize = 11.sp
+    val captionSize = 13.sp
+    val captionLine = 18.sp
 
-    val kickerSize = 11.sp
-    val kickerWeight = FontWeight.Bold
-    val kickerTracking = 1.4.sp
+    val overlineSize = 11.sp
+    val overlineTracking = 1.2.sp
+
+    val navLabelSize = 10.sp
+    val navLabelTracking = 0.3.sp
+
+    val regular = FontWeight.Normal
+    val medium = FontWeight.SemiBold
+    val strong = FontWeight.Bold
 }
 
 /**
- * The scheme names every role the app touches. Leaving roles unset was the reason
- * the tab indicator, the tonal buttons and the operator chips came out lilac: those
- * components read secondaryContainer, and an unset secondaryContainer falls back to
- * the stock Material purple, which fought the lime everywhere it appeared.
+ * The scheme names every role the app touches.
+ *
+ * Leaving roles unset is why the tab indicator, the tonal buttons and the
+ * operator chips came out lilac: those components read secondaryContainer and
+ * onSecondaryContainer, and an unset container falls back to the stock Material
+ * purple. Two unset roles produced almost all of the clash.
  */
 private val FlowPayColors = darkColorScheme(
     primary = Accent,
@@ -111,7 +144,7 @@ private val FlowPayColors = darkColorScheme(
 
     surface = SurfaceBase,
     onSurface = TextPrimary,
-    surfaceVariant = SurfaceRaised,
+    surfaceVariant = SurfaceHigh,
     onSurfaceVariant = TextSecondary,
     surfaceTint = Accent,
 
@@ -124,11 +157,11 @@ private val FlowPayColors = darkColorScheme(
     surfaceContainerHighest = SurfaceHigh,
 
     outline = HairLine,
-    outlineVariant = Color(0xff26291f),
+    outlineVariant = SurfaceHigh,
 
     error = Negative,
     onError = AccentInk,
-    errorContainer = Color(0xff3a1f1f),
+    errorContainer = Color(0xff331a16),
     onErrorContainer = Negative,
 
     inverseSurface = TextPrimary,
