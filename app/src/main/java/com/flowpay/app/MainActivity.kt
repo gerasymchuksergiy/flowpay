@@ -12,6 +12,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
@@ -29,6 +30,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +43,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -55,6 +58,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.NumberFormat
+import java.time.LocalDate
 import java.util.Locale
 
 data class Wish(
@@ -65,7 +69,11 @@ data class Wish(
     val price: Double,
     val targetPrice: Double = 0.0,
     val category: String = "Інше",
-    val history: List<Double>
+    val history: List<Double>,
+    /** Money already put aside for this item. */
+    val saved: Double = 0.0,
+    /** What the plan is to add each month. */
+    val monthlyPlan: Double = 0.0
 )
 
 data class Pay(val name: String, val amount: Double, val day: Int = 1)
@@ -104,19 +112,22 @@ class Store(context: Context) {
         val history = o.optJSONArray("h") ?: JSONArray()
         Wish(
             id = o.optString("id", System.currentTimeMillis().toString()),
-            name = o.optString("n", "Товар"),
+            name = cleanProductTitle(o.optString("n", "Товар")).ifBlank { "Товар" },
             url = o.optString("u"),
             image = o.optString("i"),
             price = o.optDouble("p", 0.0),
             targetPrice = o.optDouble("t", 0.0),
             category = o.optString("c", "Інше"),
-            history = (0 until history.length()).map { history.optDouble(it) }.filter { it > 0 }
+            history = (0 until history.length()).map { history.optDouble(it) }.filter { it > 0 },
+            saved = o.optDouble("s", 0.0),
+            monthlyPlan = o.optDouble("m", 0.0)
         )
     }
 
     fun saveWishes(items: List<Wish>) = save("w", items.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("i", it.image)
             .put("p", it.price).put("t", it.targetPrice).put("c", it.category).put("h", JSONArray(it.history))
+            .put("s", it.saved).put("m", it.monthlyPlan)
     })
 
     fun pays(): List<Pay> = jsonList("pay") { Pay(it.optString("n"), it.optDouble("a"), it.optInt("d", 1)) }
@@ -133,6 +144,25 @@ class Store(context: Context) {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url)
             .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
     })
+
+    /**
+     * Last known exchange rate and when it was fetched.
+     *
+     * Monobank allows roughly one request a minute per address, so asking on every
+     * visit to the tab earns a rejection and the screen went blank. The last good
+     * rate is kept and shown with its timestamp instead.
+     */
+    fun fxRate(): Pair<FxRate, Long> {
+        val buy = prefs.getFloat("fx_buy", 0f).toDouble()
+        val sell = prefs.getFloat("fx_sell", 0f).toDouble()
+        return FxRate(buy, sell) to prefs.getLong("fx_at", 0L)
+    }
+
+    fun saveFxRate(rate: FxRate, atMillis: Long) = prefs.edit {
+        putFloat("fx_buy", rate.buy.toFloat())
+        putFloat("fx_sell", rate.sell.toFloat())
+        putLong("fx_at", atMillis)
+    }
 
     fun exportJson(): String = JSONObject()
         .put("version", 1)
@@ -274,14 +304,23 @@ fun FlowPayApp(context: Context) {
     var pays by remember { mutableStateOf(store.pays()) }
     var orders by remember { mutableStateOf(store.orders()) }
     var adding by remember { mutableStateOf(false) }
+    var openedWish by remember { mutableStateOf<String?>(null) }
 
-    // The add dialog belongs to whichever tab is showing, so leaving a tab closes it.
-    LaunchedEffect(tab) { adding = false }
+    // Both belong to whichever tab is showing, so leaving a tab clears them.
+    LaunchedEffect(tab) {
+        adding = false
+        openedWish = null
+    }
 
-    val addLabel = when (tab) {
-        0 -> "Додати бажання"
-        2 -> "Додати витрату"
-        3 -> "Додати покупку"
+    // System back closes the item page before it leaves the app.
+    BackHandler(enabled = openedWish != null) { openedWish = null }
+
+    val addLabel = when {
+        // An item page has its own actions, and the button would cover them.
+        openedWish != null -> null
+        tab == 0 -> "Додати бажання"
+        tab == 2 -> "Додати витрату"
+        tab == 3 -> "Додати покупку"
         else -> null
     }
 
@@ -341,8 +380,15 @@ fun FlowPayApp(context: Context) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    0 -> WishlistScreen(wishes, { wishes = it; store.saveWishes(it) }, context, adding) { adding = it }
-                    1 -> CalculatorScreen()
+                    0 -> WishlistScreen(
+                        wishes,
+                        { wishes = it; store.saveWishes(it) },
+                        context,
+                        adding,
+                        { adding = it },
+                        openedWish
+                    ) { openedWish = it }
+                    1 -> CalculatorScreen(store)
                     2 -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, adding) { adding = it }
                     3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context, adding) { adding = it }
                     else -> SettingsScreen(store) {
@@ -407,12 +453,35 @@ fun WishlistScreen(
     save: (List<Wish>) -> Unit,
     context: Context,
     adding: Boolean,
-    setAdding: (Boolean) -> Unit
+    setAdding: (Boolean) -> Unit,
+    // Held by id rather than by value so the page keeps showing the live item
+    // after a price refresh or a change to the savings plan.
+    opened: String?,
+    setOpened: (String?) -> Unit
 ) {
     var editing by remember { mutableStateOf<Wish?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+
+    val openedWish = opened?.let { id -> items.firstOrNull { it.id == id } }
+    if (openedWish != null) {
+        WishDetailScreen(
+            wish = openedWish,
+            context = context,
+            onBack = { setOpened(null) },
+            onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
+            onEdit = { editing = openedWish },
+            onDelete = { save(items - openedWish); setOpened(null) }
+        )
+        editing?.let { selected ->
+            EditWishDialog(selected, { editing = null }) { changed ->
+                save(items.map { if (it.id == changed.id) changed else it })
+                editing = null
+            }
+        }
+        return
+    }
 
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
@@ -463,7 +532,7 @@ fun WishlistScreen(
             }
         }
         items(items, key = { it.id }) { wish ->
-            WishCard(wish, context, onEdit = { editing = wish }, onDelete = { save(items - wish) })
+            WishCard(wish) { setOpened(wish.id) }
         }
     }
     if (adding) AddWishDialog({ setAdding(false) }, { wish -> save(items + wish); setAdding(false) })
@@ -526,12 +595,304 @@ fun EditWishDialog(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
     )
 }
 
+/** A heading that sits closer to its own content than to whatever came before. */
 @Composable
-fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> Unit) {
+fun SectionTitle(text: String) {
+    Text(
+        text,
+        Modifier.padding(horizontal = Space.screen).padding(top = Space.xxl, bottom = Space.md),
+        fontSize = Type.sectionSize,
+        lineHeight = Type.sectionLine,
+        fontWeight = Type.medium
+    )
+}
+
+/** One number of the savings plan, muted while there is nothing to show yet. */
+@Composable
+fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted: Boolean = false) {
+    Card(
+        modifier,
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.sm
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Text(label, color = TextSecondary, fontSize = Type.captionSize)
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                value,
+                fontSize = Type.sectionSize,
+                lineHeight = Type.sectionLine,
+                fontWeight = if (muted) Type.regular else Type.strong,
+                color = if (muted) TextDisabled else TextPrimary
+            )
+        }
+    }
+}
+
+/**
+ * The page behind a wishlist card.
+ *
+ * It exists to answer one question the list cannot: what would it take to actually
+ * buy this. The plan works from the target price when one is set, and from the
+ * current price otherwise, so the number on screen is always the sum that matters.
+ */
+@Composable
+fun WishDetailScreen(
+    wish: Wish,
+    context: Context,
+    onBack: () -> Unit,
+    onChange: (Wish) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    // Keyed on the item, so opening a different one does not inherit these boxes.
+    var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
+    var monthlyText by remember(wish.id) { mutableStateOf(amountText(wish.monthlyPlan)) }
+    var refreshing by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    val goal = if (wish.targetPrice > 0) wish.targetPrice else wish.price
+    val plan = savingsPlan(goal, parseAmount(savedText), parseAmount(monthlyText))
+    val firstPrice = wish.history.firstOrNull() ?: wish.price
+    val change = if (firstPrice > 0) (wish.price - firstPrice) / firstPrice * 100 else 0.0
+
+    // Persist only when a typed character actually changed one of the amounts.
+    LaunchedEffect(savedText, monthlyText) {
+        val saved = parseAmount(savedText)
+        val monthly = parseAmount(monthlyText)
+        if (saved != wish.saved || monthly != wish.monthlyPlan) {
+            onChange(wish.copy(saved = saved, monthlyPlan = monthly))
+        }
+    }
+
+    LazyColumn(contentPadding = PaddingValues(bottom = Space.huge)) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(start = Space.sm, end = Space.sm, top = Space.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = TextPrimary)
+                }
+                Text(
+                    wish.category.uppercase(),
+                    color = Accent,
+                    fontSize = Type.overlineSize,
+                    fontWeight = Type.strong,
+                    letterSpacing = Type.overlineTracking
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати", tint = TextSecondary) }
+                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити", tint = TextSecondary) }
+            }
+
+            if (wish.image.isNotBlank()) {
+                AsyncImage(
+                    wish.image, wish.name,
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.screen)
+                        .height(240.dp)
+                        .clip(Radius.lg)
+                        .background(SurfaceRaised),
+                    contentScale = ContentScale.Crop
+                )
+            }
+
+            Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
+                Text(
+                    wish.name,
+                    fontSize = Type.sectionSize,
+                    lineHeight = Type.sectionLine,
+                    fontWeight = Type.medium
+                )
+                Spacer(Modifier.height(Space.sm))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Text(
+                        money(wish.price),
+                        fontSize = Type.heroSize,
+                        lineHeight = Type.heroLine,
+                        letterSpacing = Type.heroTracking,
+                        fontWeight = FontWeight.Black,
+                        color = Accent
+                    )
+                    Spacer(Modifier.width(Space.md))
+                    Text(
+                        "%+.1f%%".format(change),
+                        color = if (change <= 0) Accent else Negative,
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.strong,
+                        modifier = Modifier.padding(bottom = Space.sm)
+                    )
+                }
+                if (wish.targetPrice > 0) {
+                    Text(
+                        "Ціль: ${money(wish.targetPrice)}",
+                        color = TextSecondary,
+                        fontSize = Type.captionSize
+                    )
+                }
+            }
+
+            SectionTitle("План накопичення")
+            Column(Modifier.padding(horizontal = Space.screen)) {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    shape = Radius.md
+                ) {
+                    Column(Modifier.padding(Space.lg)) {
+                        Text(
+                            if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize
+                        )
+                        Spacer(Modifier.height(Space.xs))
+                        Text(
+                            money(plan.remaining),
+                            fontSize = Type.heroSize,
+                            lineHeight = Type.heroLine,
+                            letterSpacing = Type.heroTracking,
+                            fontWeight = if (plan.reached) Type.regular else FontWeight.Black,
+                            color = if (plan.reached) TextDisabled else Accent
+                        )
+                        Spacer(Modifier.height(Space.md))
+                        LinearProgressIndicator(
+                            progress = { plan.progress },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = Accent,
+                            trackColor = SurfaceHigh
+                        )
+                        Text(
+                            "${money(plan.saved)} з ${money(plan.goal)}",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            modifier = Modifier.padding(top = Space.sm)
+                        )
+                    }
+                }
+
+                NumberField("Вже відкладено, ₴", savedText) { savedText = it }
+                NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
+
+                Spacer(Modifier.height(Space.lg))
+                when {
+                    plan.reached -> PlanTile(
+                        "Можна купувати",
+                        "Гроші вже є",
+                        Modifier.fillMaxWidth()
+                    )
+
+                    plan.needsRate -> PlanTile(
+                        "Скільки чекати",
+                        "Впишіть щомісячну суму",
+                        Modifier.fillMaxWidth(),
+                        muted = true
+                    )
+
+                    else -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                            PlanTile("Час до цілі", monthsLabel(plan.months), Modifier.weight(1f))
+                            PlanTile(
+                                "Орієнтовно",
+                                formatDate(readyDate(plan.months, LocalDate.now())),
+                                Modifier.weight(1f)
+                            )
+                        }
+                        Spacer(Modifier.height(Space.md))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                            PlanTile("Це щотижня", money(plan.weekly), Modifier.weight(1f))
+                            PlanTile("Це щодня", money(plan.daily), Modifier.weight(1f))
+                        }
+                    }
+                }
+            }
+
+            SectionTitle("Історія ціни")
+            Column(Modifier.padding(horizontal = Space.screen)) {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    shape = Radius.md
+                ) {
+                    Column(Modifier.padding(Space.lg)) {
+                        PriceChart(wish.history, Modifier.fillMaxWidth().height(120.dp))
+                        Text(
+                            "${measurementsLabel(wish.history.size)} · історія до 90",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            modifier = Modifier.padding(top = Space.md)
+                        )
+                        if (wish.history.size > 1) {
+                            Text(
+                                "Найнижча ${money(wish.history.min())} · найвища ${money(wish.history.max())}",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(Space.xl))
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                    OutlinedButton(
+                        {
+                            scope.launch {
+                                refreshing = true
+                                message = null
+                                runCatching { product(wish.url) }
+                                    .onSuccess {
+                                        onChange(refreshedWish(wish, it))
+                                        message = "Ціну оновлено"
+                                    }
+                                    .onFailure { message = "Не вдалося прочитати сторінку" }
+                                refreshing = false
+                            }
+                        },
+                        Modifier.weight(1f),
+                        enabled = !refreshing,
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                    ) {
+                        if (refreshing) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                        } else {
+                            Icon(Icons.Default.Refresh, null)
+                        }
+                        Text(" Оновити ціну")
+                    }
+                    Button(
+                        { context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) },
+                        Modifier.weight(1f),
+                        shape = Radius.sm
+                    ) { Text("До магазину ↗") }
+                }
+                message?.let {
+                    Text(
+                        it,
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.md)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun WishCard(wish: Wish, onOpen: () -> Unit) {
     val first = wish.history.firstOrNull() ?: wish.price
     val change = if (first > 0) (wish.price - first) / first * 100 else 0.0
+    val goal = if (wish.targetPrice > 0) wish.targetPrice else wish.price
+    val plan = savingsPlan(goal, wish.saved, wish.monthlyPlan)
+    // The whole card opens the item page. Edit and delete moved there, which also
+    // took them out from under the floating action button.
     Card(
-        Modifier.padding(horizontal = Space.screen, vertical = Space.sm).fillMaxWidth(),
+        onClick = onOpen,
+        modifier = Modifier.padding(horizontal = Space.screen, vertical = Space.sm).fillMaxWidth(),
         shape = Radius.lg
     ) {
         // A photo earns its 190dp. Without one the block was a dead grey rectangle,
@@ -570,21 +931,28 @@ fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> U
                     fontSize = Type.captionSize
                 )
             }
-            PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = Space.md))
-            Text(
-                "${measurementsLabel(wish.history.size)} · історія до 90",
-                color = TextSecondary,
-                fontSize = Type.captionSize
-            )
-            // Everything sits on the left. The floating action button owns the
-            // bottom right of the screen, and it was covering these controls.
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) }) {
-                    Text("До магазину ↗")
-                }
-                IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати") }
-                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити") }
-                Spacer(Modifier.weight(1f))
+            if (wish.saved > 0 || wish.monthlyPlan > 0) {
+                Spacer(Modifier.height(Space.md))
+                LinearProgressIndicator(
+                    progress = { plan.progress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Accent,
+                    trackColor = SurfaceHigh
+                )
+                Text(
+                    if (plan.reached) "Накопичено повністю"
+                    else "Відкладено ${money(plan.saved)} з ${money(plan.goal)}",
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    modifier = Modifier.padding(top = Space.sm)
+                )
+            } else {
+                PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = Space.md))
+                Text(
+                    "${measurementsLabel(wish.history.size)} · історія до 90",
+                    color = TextSecondary,
+                    fontSize = Type.captionSize
+                )
             }
         }
     }
@@ -612,24 +980,44 @@ fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun CalculatorScreen() {
+fun CalculatorScreen(store: Store) {
     var amount by remember { mutableStateOf("") }
     var hryvniaToDollar by remember { mutableStateOf(true) }
     var first by remember { mutableStateOf("") }
     var second by remember { mutableStateOf("") }
     var operation by remember { mutableStateOf("+") }
-    var rate by remember { mutableStateOf(FxRate()) }
-    var loading by remember { mutableStateOf(true) }
+    val cached = remember { store.fxRate() }
+    var rate by remember { mutableStateOf(cached.first) }
+    var fetchedAt by remember { mutableLongStateOf(cached.second) }
+    var loading by remember { mutableStateOf(false) }
+    var rateError by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun refresh() {
         scope.launch {
             loading = true
-            runCatching { usdRate() }.onSuccess { rate = it }
+            rateError = false
+            runCatching { usdRate() }
+                .onSuccess { fresh ->
+                    if (fresh.sell > 0) {
+                        rate = fresh
+                        fetchedAt = System.currentTimeMillis()
+                        store.saveFxRate(fresh, fetchedAt)
+                    } else {
+                        rateError = true
+                    }
+                }
+                .onFailure { rateError = true }
             loading = false
         }
     }
-    LaunchedEffect(Unit) { refresh() }
+
+    // Only reach for the network when the cached rate is actually stale. The
+    // refresh button always asks, which is what it is for.
+    LaunchedEffect(Unit) {
+        val age = System.currentTimeMillis() - fetchedAt
+        if (rate.sell <= 0 || age > 30 * 60 * 1000L) refresh()
+    }
 
     val source = amount.replace(',', '.').toDoubleOrNull() ?: 0.0
     val exchangeRate = if (hryvniaToDollar) rate.sell else rate.buy
@@ -658,9 +1046,23 @@ fun CalculatorScreen() {
                                 Text("USD / UAH", color = TextSecondary, fontSize = Type.captionSize)
                                 Text(
                                     if (rate.sell > 0) "Купівля ${"%.2f".format(rate.buy)} · продаж ${"%.2f".format(rate.sell)}"
-                                    else "Немає даних",
+                                    else "Курс ще не завантажено",
                                     fontWeight = FontWeight.Bold
                                 )
+                                if (fetchedAt > 0) {
+                                    Text(
+                                        "станом на ${timeLabel(fetchedAt)}" +
+                                            if (rateError) " · оновити не вдалося" else "",
+                                        color = if (rateError) Negative else TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                } else if (rateError) {
+                                    Text(
+                                        "Monobank обмежує запити, спробуйте за хвилину",
+                                        color = Negative,
+                                        fontSize = Type.captionSize
+                                    )
+                                }
                             }
                             IconButton({ refresh() }) {
                                 if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
