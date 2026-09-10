@@ -150,8 +150,21 @@ class Store(context: Context) {
     }
 }
 
+fun isSupportedWebUrl(value: String): Boolean = runCatching {
+    val url = URL(value.trim())
+    url.protocol in setOf("http", "https") && url.host.isNotBlank()
+}.getOrDefault(false)
+
+fun refreshedWish(previous: Wish, current: Wish): Wish = previous.copy(
+    image = current.image.ifBlank { previous.image },
+    price = current.price,
+    history = (previous.history + current.price).filter { it > 0 }.takeLast(90)
+)
+
 suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
-    val connection = URL(link).openConnection() as HttpURLConnection
+    val normalizedLink = link.trim()
+    require(isSupportedWebUrl(normalizedLink)) { "Вкажіть коректне HTTP або HTTPS посилання" }
+    val connection = URL(normalizedLink).openConnection() as HttpURLConnection
     connection.instanceFollowRedirects = true
     connection.connectTimeout = 15_000
     connection.readTimeout = 15_000
@@ -173,7 +186,7 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     Wish(
         id = System.currentTimeMillis().toString(),
         name = meta("og:title").replace("&quot;", "\"").ifBlank { "Новий товар" },
-        url = link,
+        url = normalizedLink,
         image = meta("og:image"),
         price = price,
         history = listOf(price)
@@ -204,7 +217,10 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     val assets = release.optJSONArray("assets") ?: return@withContext null
     val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
         .firstOrNull { it.optString("name").endsWith(".apk", true) } ?: return@withContext null
-    UpdateInfo(code, release.optString("tag_name", "нова версія"), apk.optString("browser_download_url"))
+    val downloadUrl = apk.optString("browser_download_url")
+    val downloadUri = Uri.parse(downloadUrl)
+    if (downloadUri.scheme != "https" || downloadUri.host != "github.com") return@withContext null
+    UpdateInfo(code, release.optString("tag_name", "нова версія"), downloadUrl)
 }
 
 fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
@@ -216,11 +232,19 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
         return
     }
     val manager = context.getSystemService(DownloadManager::class.java)
-    val request = DownloadManager.Request(Uri.parse(url))
+    val downloadUri = Uri.parse(url)
+    require(downloadUri.scheme == "https" && downloadUri.host == "github.com") {
+        "Некоректне джерело оновлення"
+    }
+    val request = DownloadManager.Request(downloadUri)
         .setTitle("Оновлення FlowPay")
         .setDescription("Завантаження нової версії")
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "FlowPay-update.apk")
+        .setDestinationInExternalFilesDir(
+            context,
+            Environment.DIRECTORY_DOWNLOADS,
+            "FlowPay-update-${System.currentTimeMillis()}.apk"
+        )
     val id = manager.enqueue(request)
     onMessage("Завантаження почалося")
     val receiver = object : BroadcastReceiver() {
@@ -257,12 +281,6 @@ fun FlowPayApp(context: Context) {
     var wishes by remember { mutableStateOf(store.wishes()) }
     var pays by remember { mutableStateOf(store.pays()) }
     var orders by remember { mutableStateOf(store.orders()) }
-
-    LaunchedEffect(Unit) {
-        if (wishes.isEmpty()) runCatching {
-            product("https://prom.ua/ua/p2522203669-muzhskie-krossovki-asics.html")
-        }.onSuccess { wishes = listOf(it); store.saveWishes(wishes) }
-    }
 
     MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = AppBackground, surface = CardBackground)) {
         Scaffold(containerColor = Color.Transparent, bottomBar = {
@@ -347,7 +365,7 @@ fun WishlistScreen(items: List<Wish>, save: (List<Wish>) -> Unit, context: Conte
                         val fresh = items.map { old ->
                             runCatching { product(old.url) }.getOrNull()?.let { now ->
                                 updated++
-                                old.copy(name = now.name, image = now.image.ifBlank { old.image }, price = now.price, history = (old.history + now.price).takeLast(90))
+                                refreshedWish(old, now)
                             } ?: old
                         }
                         save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
@@ -389,7 +407,7 @@ fun AddWishDialog(close: () -> Unit, add: (Wish) -> Unit) {
                     .onSuccess(add).onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
                 loading = false
             }
-        }, enabled = link.startsWith("http") && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
+        }, enabled = isSupportedWebUrl(link) && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
     }, dismissButton = { TextButton(close) { Text("Скасувати") } }, title = { Text("Новий товар") }, text = {
         Column {
             OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
@@ -712,7 +730,7 @@ fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
                         .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
                     loading = false
                 }
-            }, enabled = link.startsWith("http") && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
+            }, enabled = isSupportedWebUrl(link) && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
         },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )

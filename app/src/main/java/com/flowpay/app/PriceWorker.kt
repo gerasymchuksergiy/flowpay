@@ -23,12 +23,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                 if (previous.targetPrice > 0 && previous.price > previous.targetPrice && current.price <= previous.targetPrice) {
                     notify(previous.name, "Досягнуто ціль ${previous.targetPrice.toInt()} ₴")
                 }
-                previous.copy(
-                    name = current.name.ifBlank { previous.name },
-                    image = current.image.ifBlank { previous.image },
-                    price = current.price,
-                    history = (previous.history + current.price).filter { it > 0 }.takeLast(90)
-                )
+                refreshedWish(previous, current)
             } ?: previous
         }
         store.saveWishes(fresh)
