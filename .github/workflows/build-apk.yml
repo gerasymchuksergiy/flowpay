@@ -25,10 +25,8 @@ jobs:
       - name: Install Android 16 SDK
         run: yes | sdkmanager --install "platforms;android-36" "build-tools;36.0.0" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.11.1"
       - name: Test, lint and build debug APK
-        run: gradle testDebugUnitTest lintDebug assembleDebug -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }}
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }}
       - uses: actions/upload-artifact@v4
         with:
           name: FlowPay-debug-apk
@@ -80,8 +78,6 @@ jobs:
         run: yes | sdkmanager --install "platforms;android-36" "build-tools;36.0.0" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
         if: ${{ steps.signing.outputs.enabled == 'true' }}
-        with:
-          gradle-version: "8.11.1"
       - name: Prepare private signing key
         if: ${{ steps.signing.outputs.enabled == 'true' }}
         run: echo "$SIGNING_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/flowpay-release.p12"
@@ -91,7 +87,7 @@ jobs:
           FLOWPAY_KEYSTORE_PATH: ${{ runner.temp }}/flowpay-release.p12
           FLOWPAY_KEYSTORE_PASSWORD: ${{ env.SIGNING_KEY_PASSWORD }}
         run: |
-          gradle assembleRelease -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }}
+          ./gradlew assembleRelease -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }}
           mv app/build/outputs/apk/release/app-release.apk "FlowPay-1.0.${{ github.run_number }}.apk"
       - name: Upload signed APK artifact
         if: ${{ steps.signing.outputs.enabled == 'true' }}

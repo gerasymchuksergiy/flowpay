@@ -33,6 +33,29 @@ FlowPay налаштований під **Redmi Note 14** з **Xiaomi HyperOS 3 
 
 Кнопка **Оновити** перевіряє всі товари одразу. Фонова перевірка працює автоматично.
 
+## Як зібрати локально
+
+Потрібні JDK 17 і Android SDK з платформою 36 та build-tools 36.0.0. Шлях до SDK беруть із `local.properties` (файл не потрапляє в git):
+
+```
+sdk.dir=C:/Users/<користувач>/AppData/Local/Android/Sdk
+```
+
+Збірка виконується через Gradle wrapper:
+
+```
+./gradlew testDebugUnitTest lintDebug assembleDebug
+```
+
+На цій машині форкнуті JVM не можуть створити внутрішній канал у теці `AppData\Local\Temp`, бо там ламається Unix-сокет, і Gradle падає з `Unable to establish loopback connection`. Обхід — вказати іншу теку для таких сокетів перед збіркою:
+
+```
+export JAVA_TOOL_OPTIONS='-Djdk.net.unixdomain.tmpdir=C:\Temp'
+export GRADLE_OPTS='-Djdk.net.unixdomain.tmpdir=C:\Temp'
+```
+
+На Linux у GitHub Actions цього не потрібно.
+
 ## Як завантажити APK
 
 Для тестування відкрийте **Actions → Build Android APK → остання зелена збірка → Artifacts → FlowPay-debug-apk**. Усередині ZIP міститься debug APK. Збірка запускається на кожну гілку, а не лише на `main`.

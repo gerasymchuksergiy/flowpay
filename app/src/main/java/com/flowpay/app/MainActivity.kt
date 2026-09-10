@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
-import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
@@ -16,6 +15,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -142,11 +143,11 @@ class Store(context: Context) {
         val wishes = root.getJSONArray("wishes")
         val payments = root.optJSONArray("payments") ?: JSONArray()
         val orders = root.optJSONArray("orders") ?: JSONArray()
-        prefs.edit()
-            .putString("w", wishes.toString())
-            .putString("pay", payments.toString())
-            .putString("orders", orders.toString())
-            .apply()
+        prefs.edit {
+            putString("w", wishes.toString())
+            putString("pay", payments.toString())
+            putString("orders", orders.toString())
+        }
     }
 
     private fun <T> jsonList(key: String, map: (JSONObject) -> T): List<T> = runCatching {
@@ -155,7 +156,7 @@ class Store(context: Context) {
     }.getOrDefault(emptyList())
 
     private fun save(key: String, values: List<JSONObject>) {
-        prefs.edit().putString(key, JSONArray(values).toString()).apply()
+        prefs.edit { putString(key, JSONArray(values).toString()) }
     }
 }
 
@@ -227,21 +228,21 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
         .firstOrNull { it.optString("name").endsWith(".apk", true) } ?: return@withContext null
     val downloadUrl = apk.optString("browser_download_url")
-    val downloadUri = Uri.parse(downloadUrl)
+    val downloadUri = downloadUrl.toUri()
     if (downloadUri.scheme != "https" || downloadUri.host != "github.com") return@withContext null
     UpdateInfo(code, release.optString("tag_name", "нова версія"), downloadUrl)
 }
 
 fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
-    if (android.os.Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+    if (!context.packageManager.canRequestPackageInstalls()) {
         context.startActivity(
-            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${context.packageName}".toUri())
         )
         onMessage("Дозвольте встановлення для FlowPay і натисніть «Оновити» ще раз")
         return
     }
     val manager = context.getSystemService(DownloadManager::class.java)
-    val downloadUri = Uri.parse(url)
+    val downloadUri = url.toUri()
     require(downloadUri.scheme == "https" && downloadUri.host == "github.com") {
         "Некоректне джерело оновлення"
     }
@@ -472,7 +473,7 @@ fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> U
             PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = 10.dp))
             Text("${wish.history.size} вимірювань · останні 90", color = Color.Gray, fontSize = 11.sp)
             Row {
-                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(wish.url))) }) { Text("До магазину ↗") }
+                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) }) { Text("До магазину ↗") }
                 Spacer(Modifier.weight(1f))
                 IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати") }
                 IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити") }
@@ -701,7 +702,7 @@ fun OrdersScreen(items: List<Order>, save: (List<Order>) -> Unit, context: Conte
                     }
                 }
                 Row(Modifier.padding(horizontal = 10.dp)) {
-                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(order.url))) }) { Text("До магазину ↗") }
+                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) { Text("До магазину ↗") }
                     Spacer(Modifier.weight(1f))
                     IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
                 }
