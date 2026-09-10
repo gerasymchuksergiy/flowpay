@@ -279,10 +279,6 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
     )
 }
 
-val Accent = Color(0xffd7ff63)
-val AppBackground = Color(0xff090a08)
-val CardBackground = Color(0xff1a1b18)
-val TextPrimary = Color(0xfff1f3ec)
 private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " ₴"
 
 @Composable
@@ -293,17 +289,9 @@ fun FlowPayApp(context: Context) {
     var pays by remember { mutableStateOf(store.pays()) }
     var orders by remember { mutableStateOf(store.orders()) }
 
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Accent,
-            background = AppBackground,
-            surface = CardBackground,
-            onBackground = TextPrimary,
-            onSurface = TextPrimary
-        )
-    ) {
+    FlowPayTheme {
         Scaffold(containerColor = Color.Transparent, contentColor = TextPrimary, bottomBar = {
-            NavigationBar(containerColor = Color(0xff141512), tonalElevation = 0.dp) {
+            NavigationBar(containerColor = SurfaceLow, tonalElevation = 0.dp) {
                 val tabs = listOf(
                     Icons.Default.FavoriteBorder to "Бажання",
                     Icons.Default.SwapVert to "Курс",
@@ -326,7 +314,7 @@ fun FlowPayApp(context: Context) {
                 Modifier
                     .fillMaxSize()
                     .background(
-                        Brush.verticalGradient(listOf(Color(0xff0d100b), AppBackground, Color.Black))
+                        Brush.verticalGradient(listOf(SurfaceLow, AppBackground, Color.Black))
                     )
                     .padding(padding)
             ) {
@@ -352,7 +340,7 @@ fun ScreenHeader(kicker: String, title: String, subtitle: String? = null) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(color = Accent, shape = RoundedCornerShape(10.dp), modifier = Modifier.size(30.dp)) {
                 Box(contentAlignment = Alignment.Center) {
-                    Text("F", color = Color(0xff10120d), fontWeight = FontWeight.Black, fontSize = 18.sp)
+                    Text("F", color = AccentInk, fontWeight = FontWeight.Black, fontSize = 18.sp)
                 }
             }
             Spacer(Modifier.width(9.dp))
@@ -360,7 +348,7 @@ fun ScreenHeader(kicker: String, title: String, subtitle: String? = null) {
         }
         Spacer(Modifier.height(10.dp))
         Text(title, fontSize = 31.sp, fontWeight = FontWeight.Black, lineHeight = 34.sp)
-        subtitle?.let { Text(it, color = Color(0xff9b9d96), fontSize = 14.sp, modifier = Modifier.padding(top = 3.dp)) }
+        subtitle?.let { Text(it, color = TextSecondary, fontSize = 14.sp, modifier = Modifier.padding(top = 3.dp)) }
     }
 }
 
@@ -397,7 +385,7 @@ fun WishlistScreen(items: List<Wish>, save: (List<Wish>) -> Unit, context: Conte
                     Text(" Оновити")
                 }
             }
-            message?.let { Text(it, Modifier.padding(horizontal = 22.dp, vertical = 8.dp), color = Color.Gray) }
+            message?.let { Text(it, Modifier.padding(horizontal = 22.dp, vertical = 8.dp), color = TextSecondary) }
         }
         if (items.isEmpty()) item { EmptyCard("Додайте посилання на товар — фото й ціна підтягнуться автоматично") }
         items(items, key = { it.id }) { wish ->
@@ -471,16 +459,16 @@ fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> U
     Card(Modifier.padding(horizontal = 12.dp, vertical = 7.dp).fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
         AsyncImage(
             wish.image, wish.name,
-            Modifier.fillMaxWidth().height(190.dp).background(Color(0xff262724)),
+            Modifier.fillMaxWidth().height(190.dp).background(SurfaceHigh),
             contentScale = ContentScale.Crop
         )
         Column(Modifier.padding(18.dp)) {
-            Row { AssistChip({}, { Text(wish.category) }); Spacer(Modifier.weight(1f)); Text("%+.1f%%".format(change), color = if (change <= 0) Accent else Color(0xffff6b6b), fontWeight = FontWeight.Bold) }
+            Row { AssistChip({}, { Text(wish.category) }); Spacer(Modifier.weight(1f)); Text("%+.1f%%".format(change), color = if (change <= 0) Accent else Negative, fontWeight = FontWeight.Bold) }
             Text(wish.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
             Text(money(wish.price), fontSize = 29.sp, color = Accent, fontWeight = FontWeight.Black)
-            if (wish.targetPrice > 0) Text("Ціль: ${money(wish.targetPrice)}", color = Color.LightGray)
+            if (wish.targetPrice > 0) Text("Ціль: ${money(wish.targetPrice)}", color = TextSecondary)
             PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = 10.dp))
-            Text("${wish.history.size} вимірювань · останні 90", color = Color.Gray, fontSize = 11.sp)
+            Text("${wish.history.size} вимірювань · останні 90", color = TextSecondary, fontSize = 11.sp)
             Row {
                 TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) }) { Text("До магазину ↗") }
                 Spacer(Modifier.weight(1f))
@@ -496,7 +484,7 @@ fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
     val points = values.filter { it > 0 }
     Canvas(modifier) {
         if (points.size < 2) {
-            drawLine(Color.DarkGray, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 2f, StrokeCap.Round)
+            drawLine(TextMuted, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 2f, StrokeCap.Round)
             return@Canvas
         }
         val min = points.min()
@@ -508,7 +496,7 @@ fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
             val y = size.height - ((value - min) / range * size.height).toFloat()
             if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        drawPath(path, if (points.last() <= points.first()) Accent else Color(0xffff6b6b), style = Stroke(5f, cap = StrokeCap.Round))
+        drawPath(path, if (points.last() <= points.first()) Accent else Negative, style = Stroke(5f, cap = StrokeCap.Round))
     }
 }
 
@@ -552,11 +540,11 @@ fun CalculatorScreen() {
         item {
             ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки")
             Column(Modifier.padding(horizontal = 20.dp)) {
-                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color(0xff20221d))) {
+                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = SurfaceRaised)) {
                     Column(Modifier.padding(18.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text("USD / UAH", color = Color.Gray, fontSize = 12.sp)
+                                Text("USD / UAH", color = TextSecondary, fontSize = 12.sp)
                                 Text(
                                     if (rate.sell > 0) "Купівля ${"%.2f".format(rate.buy)} · продаж ${"%.2f".format(rate.sell)}"
                                     else "Немає даних",
@@ -615,7 +603,7 @@ fun PaymentsScreen(items: List<Pay>, save: (List<Pay>) -> Unit) {
                 ListItem(
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     leadingContent = {
-                        Surface(color = Color(0xff30332a), shape = RoundedCornerShape(14.dp), modifier = Modifier.size(44.dp)) {
+                        Surface(color = SurfaceHigh, shape = RoundedCornerShape(14.dp), modifier = Modifier.size(44.dp)) {
                             Box(contentAlignment = Alignment.Center) {
                                 Icon(
                                     when {
@@ -695,7 +683,7 @@ fun OrdersScreen(items: List<Order>, save: (List<Order>) -> Unit, context: Conte
                 Row(Modifier.padding(12.dp)) {
                     AsyncImage(
                         order.image, order.name,
-                        Modifier.size(92.dp).background(Color(0xff292a27), RoundedCornerShape(16.dp)),
+                        Modifier.size(92.dp).background(SurfaceHigh, Radius.sm),
                         contentScale = ContentScale.Crop
                     )
                     Spacer(Modifier.width(14.dp))
@@ -849,13 +837,13 @@ fun NumberField(label: String, value: String, set: (String) -> Unit) = OutlinedT
 
 @Composable
 fun SummaryCard(label: String, value: String, color: Color) {
-    Card(Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = Color(0xff242520)), shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(18.dp)) { Text(label, color = Color.Gray); Text(value, fontSize = 28.sp, fontWeight = FontWeight.Black, color = color) }
+    Card(Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = SurfaceRaised), shape = RoundedCornerShape(20.dp)) {
+        Column(Modifier.padding(18.dp)) { Text(label, color = TextSecondary); Text(value, fontSize = 28.sp, fontWeight = FontWeight.Black, color = color) }
     }
 }
 
 @Composable
 fun EmptyCard(text: String) {
-    Card(Modifier.padding(20.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) { Text(text, Modifier.padding(24.dp), color = Color.Gray) }
+    Card(Modifier.padding(20.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) { Text(text, Modifier.padding(24.dp), color = TextSecondary) }
 }
 
