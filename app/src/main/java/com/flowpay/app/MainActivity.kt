@@ -21,10 +21,12 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -33,6 +35,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -180,37 +183,19 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     connection.readTimeout = 15_000
     connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
     val html = connection.inputStream.bufferedReader().use { it.readText() }
-    fun meta(key: String): String {
-        val patterns = listOf(
-            Regex("""<meta[^>]+(?:property|name)=["']${Regex.escape(key)}["'][^>]+content=["']([^"']+)""", RegexOption.IGNORE_CASE),
-            Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${Regex.escape(key)}["']""", RegexOption.IGNORE_CASE)
-        )
-        return patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.get(1) }.orEmpty()
-    }
-    val rawPrice = meta("product:price:amount").ifBlank {
-        Regex("""\"price\"\s*:\s*[\"']?([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1).orEmpty()
-    }
-    val price = rawPrice.replace(',', '.').toDoubleOrNull() ?: 0.0
-    require(price > 0) { "Не вдалося знайти ціну на сторінці" }
-    Wish(
-        id = System.currentTimeMillis().toString(),
-        name = meta("og:title").replace("&quot;", "\"").ifBlank { "Новий товар" },
-        url = normalizedLink,
-        image = meta("og:image"),
-        price = price,
-        history = listOf(price)
-    )
+    parseProduct(html, normalizedLink, System.currentTimeMillis().toString())
 }
 
 data class FxRate(val buy: Double = 0.0, val sell: Double = 0.0)
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
 
 suspend fun usdRate(): FxRate = withContext(Dispatchers.IO) {
-    val array = JSONArray(URL("https://api.monobank.ua/bank/currency").readText())
-    val item = (0 until array.length()).map { array.getJSONObject(it) }
-        .first { it.optInt("currencyCodeA") == 840 && it.optInt("currencyCodeB") == 980 }
-    FxRate(item.optDouble("rateBuy"), item.optDouble("rateSell"))
+    // Monobank rate limits this endpoint, so a hung request must not sit forever.
+    val connection = URL("https://api.monobank.ua/bank/currency").openConnection() as HttpURLConnection
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    val body = connection.inputStream.bufferedReader().use { it.readText() }
+    parseUsdRate(body)
 }
 
 suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
@@ -587,15 +572,19 @@ fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> U
             }
             PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = Space.md))
             Text(
-                "${wish.history.size} вимірювань · останні 90",
+                "${measurementsLabel(wish.history.size)} · історія до 90",
                 color = TextSecondary,
                 fontSize = Type.captionSize
             )
-            Row {
-                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) }) { Text("До магазину ↗") }
-                Spacer(Modifier.weight(1f))
+            // Everything sits on the left. The floating action button owns the
+            // bottom right of the screen, and it was covering these controls.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) }) {
+                    Text("До магазину ↗")
+                }
                 IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати") }
                 IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -748,10 +737,11 @@ fun PaymentsScreen(
     setAdding: (Boolean) -> Unit
 ) {
     val monthly = items.sumOf { it.amount }
+    var editing by remember { mutableStateOf<Int?>(null) }
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
             ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
-            Column(Modifier.padding(horizontal = Space.screen)) {
+            Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
                 SummaryCard("Разом на місяць", money(monthly), monthly <= 0.0)
             }
         }
@@ -765,12 +755,13 @@ fun PaymentsScreen(
                 )
             }
         }
-        items(items) { pay ->
+        itemsIndexed(items) { index, pay ->
             Card(
                 Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
                 shape = Radius.md
             ) {
                 ListItem(
+                    modifier = Modifier.clickable { editing = index },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     leadingContent = {
                         Surface(color = SurfaceRaised, shape = Radius.sm, modifier = Modifier.size(44.dp)) {
@@ -795,7 +786,9 @@ fun PaymentsScreen(
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(money(pay.amount), fontWeight = Type.strong)
-                            IconButton({ save(items - pay) }) { Icon(Icons.Default.Close, "Видалити") }
+                            IconButton({ save(items.filterIndexed { i, _ -> i != index }) }) {
+                                Icon(Icons.Default.Close, "Видалити")
+                            }
                         }
                     }
                 )
@@ -805,6 +798,14 @@ fun PaymentsScreen(
     if (adding) AddPaymentDialog({ setAdding(false) }) {
         save(items + it)
         setAdding(false)
+    }
+    editing?.let { index ->
+        items.getOrNull(index)?.let { pay ->
+            EditPaymentDialog(pay, { editing = null }) { changed ->
+                save(items.mapIndexed { i, item -> if (i == index) changed else item })
+                editing = null
+            }
+        }
     }
 }
 
@@ -847,6 +848,7 @@ fun OrdersScreen(
     adding: Boolean,
     setAdding: (Boolean) -> Unit
 ) {
+    var tracking by remember { mutableStateOf<Order?>(null) }
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
             ScreenHeader("ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам")
@@ -893,6 +895,13 @@ fun OrdersScreen(
                         if (order.price > 0) {
                             Text(money(order.price), fontWeight = Type.strong, fontSize = Type.bodySize)
                         }
+                        if (order.tracking.isNotBlank()) {
+                            Text(
+                                "Трек: ${order.tracking}",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
+                        }
                     }
                 }
                 LazyRow(
@@ -907,10 +916,15 @@ fun OrdersScreen(
                         )
                     }
                 }
-                Row(Modifier.padding(horizontal = Space.sm)) {
-                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) { Text("До магазину ↗") }
-                    Spacer(Modifier.weight(1f))
+                // Left aligned for the same reason as the wish card: the floating
+                // action button sits over the bottom right corner.
+                Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) {
+                        Text("До магазину ↗")
+                    }
+                    IconButton({ tracking = order }) { Icon(Icons.Default.Edit, "Трек-номер") }
                     IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                    Spacer(Modifier.weight(1f))
                 }
             }
         }
@@ -919,11 +933,18 @@ fun OrdersScreen(
         save(items + it)
         setAdding(false)
     }
+    tracking?.let { selected ->
+        TrackingDialog(selected, { tracking = null }) { number ->
+            save(items.map { if (it.id == selected.id) it.copy(tracking = number) else it })
+            tracking = null
+        }
+    }
 }
 
 @Composable
 fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
     var link by remember { mutableStateOf("") }
+    var trackingNumber by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -934,6 +955,13 @@ fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
             Column {
                 Text("Вставте посилання на сторінку придбаного товару.")
                 OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Посилання") })
+                OutlinedTextField(
+                    trackingNumber,
+                    { trackingNumber = it },
+                    Modifier.fillMaxWidth().padding(top = Space.md),
+                    label = { Text("Трек-номер, якщо вже є") },
+                    singleLine = true
+                )
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
             }
         },
@@ -944,7 +972,14 @@ fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
                     error = null
                     runCatching { product(link) }
                         .onSuccess { item ->
-                            add(Order(item.id, item.name, item.url, "Замовлено", image = item.image, price = item.price))
+                            add(
+                                Order(
+                                    item.id, item.name, item.url, "Замовлено",
+                                    tracking = trackingNumber.trim(),
+                                    image = item.image,
+                                    price = item.price
+                                )
+                            )
                         }
                         .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
                     loading = false
@@ -977,10 +1012,16 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
     LazyColumn {
         item {
             ScreenHeader("FLOWPAY", "Налаштування")
-            ListItem(leadingContent = { Icon(Icons.Default.Sync, null) }, headlineContent = { Text("Фонове оновлення") }, supportingContent = { Text("Кожні 12 годин, коли є інтернет") })
-            ListItem(leadingContent = { Icon(Icons.Default.NotificationsNone, null) }, headlineContent = { Text("Сповіщення") }, supportingContent = { Text("Про падіння та досягнення цільової ціни") })
-            ListItem(leadingContent = { Icon(Icons.Default.Security, null) }, headlineContent = { Text("Приватність") }, supportingContent = { Text("Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK.") })
-            HorizontalDivider()
+            // Filled list items painted a large lighter block across the screen and
+            // left a hard seam under the header. They sit on the page instead.
+            SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин, коли є інтернет")
+            SettingsRow(Icons.Default.NotificationsNone, "Сповіщення", "Про падіння та досягнення цільової ціни")
+            SettingsRow(
+                Icons.Default.Security,
+                "Приватність",
+                "Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK."
+            )
+            HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
             ListItem(
                 modifier = Modifier.padding(top = Space.sm),
                 leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
@@ -1040,6 +1081,90 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
             dismissButton = { TextButton({ available = null }) { Text("Пізніше") } }
         )
     }
+}
+
+/**
+ * One line of the settings page. Painted on the page rather than on its own filled
+ * surface, so the screen stays one colour instead of showing a lighter slab.
+ */
+@Composable
+fun SettingsRow(icon: ImageVector, title: String, detail: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = Space.screen, vertical = Space.md),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(icon, null, tint = TextSecondary)
+        Spacer(Modifier.width(Space.lg))
+        Column {
+            Text(title, fontSize = Type.cardTitleSize, fontWeight = Type.medium)
+            Text(
+                detail,
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
+    }
+}
+
+/** Corrects an existing recurring expense, so a typo no longer means delete and retype. */
+@Composable
+fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
+    var amount by remember { mutableStateOf(pay.amount.toString()) }
+    var day by remember { mutableStateOf(pay.day.toString()) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text(pay.name) },
+        text = {
+            Column {
+                NumberField("Сума, ₴", amount) { amount = it }
+                NumberField("День оплати", day) { day = it }
+            }
+        },
+        confirmButton = {
+            Button(
+                {
+                    amount.replace(',', '.').toDoubleOrNull()?.let { value ->
+                        save(pay.copy(amount = value, day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day))
+                    }
+                },
+                enabled = amount.replace(',', '.').toDoubleOrNull() != null
+            ) { Text("Зберегти") }
+        },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+/**
+ * Sets the tracking number of a parcel.
+ *
+ * The field existed on the model and was written to backups from the start, but
+ * nothing in the app could ever fill it in, so a delivery tracker had no tracking
+ * number. You normally learn the number after ordering, which is why it is edited
+ * here rather than only at creation.
+ */
+@Composable
+fun TrackingDialog(order: Order, close: () -> Unit, save: (String) -> Unit) {
+    var number by remember { mutableStateOf(order.tracking) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Трек-номер") },
+        text = {
+            Column {
+                Text(order.name, color = TextSecondary, fontSize = Type.captionSize)
+                OutlinedTextField(
+                    number,
+                    { number = it },
+                    Modifier.fillMaxWidth().padding(top = Space.md),
+                    label = { Text("Номер відправлення") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = { Button({ save(number.trim()) }) { Text("Зберегти") } },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
 }
 
 @Composable

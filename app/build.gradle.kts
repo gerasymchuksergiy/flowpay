@@ -38,7 +38,9 @@ android {
  }
  buildTypes {
   getByName("release") {
-   isMinifyEnabled = false
+   isMinifyEnabled = true
+   isShrinkResources = true
+   proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
    if (signingConfigs.names.contains("flowPayRelease")) {
     signingConfig = signingConfigs.getByName("flowPayRelease")
    }
@@ -54,5 +56,8 @@ dependencies {
  implementation("io.coil-kt:coil-compose:2.7.0")
  implementation("androidx.work:work-runtime-ktx:2.11.2")
  testImplementation("junit:junit:4.13.2")
+ // org.json ships in the Android SDK as stubs that throw in unit tests, so the
+ // real implementation is needed to exercise the Monobank feed parsing.
+ testImplementation("org.json:json:20250107")
 }
 
