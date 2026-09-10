@@ -10,8 +10,10 @@ import android.os.Environment
 import android.provider.Settings
 import android.app.DownloadManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.compose.foundation.Canvas
@@ -76,6 +78,10 @@ data class Order(
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         if (android.os.Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
         }
@@ -836,3 +842,4 @@ fun SummaryCard(label: String, value: String, color: Color) {
 fun EmptyCard(text: String) {
     Card(Modifier.padding(20.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) { Text(text, Modifier.padding(24.dp), color = Color.Gray) }
 }
+

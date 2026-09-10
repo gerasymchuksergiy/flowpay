@@ -19,9 +19,11 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: android-actions/setup-android@v3
+      - name: Install Android 16 SDK
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.10.2"
+          gradle-version: "8.11.1"
       - name: Test, lint and build debug APK
         run: gradle testDebugUnitTest lintDebug assembleDebug -PversionCode=${{ github.run_number }} -PversionName=1.0.${{ github.run_number }}
       - uses: actions/upload-artifact@v4
@@ -60,10 +62,13 @@ jobs:
           java-version: "17"
       - uses: android-actions/setup-android@v3
         if: ${{ steps.signing.outputs.enabled == 'true' }}
+      - name: Install Android 16 SDK
+        if: ${{ steps.signing.outputs.enabled == 'true' }}
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
       - uses: gradle/actions/setup-gradle@v4
         if: ${{ steps.signing.outputs.enabled == 'true' }}
         with:
-          gradle-version: "8.10.2"
+          gradle-version: "8.11.1"
       - name: Prepare private signing key
         if: ${{ steps.signing.outputs.enabled == 'true' }}
         run: echo "$SIGNING_KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/flowpay-release.p12"
@@ -92,3 +97,4 @@ jobs:
             versionCode=${{ github.run_number }}
           files: FlowPay-*.apk
           make_latest: true
+
