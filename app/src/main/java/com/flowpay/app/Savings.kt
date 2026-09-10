@@ -102,3 +102,30 @@ fun timeLabel(epochMillis: Long): String {
         .toLocalTime()
     return "%02d:%02d".format(time.hour, time.minute)
 }
+
+/**
+ * Whole months available between today and a deadline.
+ *
+ * Deliberately truncating: two and a half months away means two full
+ * contributions, and rounding that up to three would leave the money short on the
+ * day it is needed. Zero means the deadline is today, past, or less than a month
+ * out, and the whole remainder has to be found at once.
+ */
+fun monthsUntil(today: LocalDate, deadline: LocalDate): Int {
+    if (!deadline.isAfter(today)) return 0
+    return java.time.temporal.ChronoUnit.MONTHS.between(today, deadline).toInt().coerceAtLeast(0)
+}
+
+/**
+ * The plan when the date is fixed rather than the monthly amount.
+ *
+ * Works out the rate the deadline demands, then runs it back through
+ * [savingsPlan] so the weekly and daily figures are derived the same way in both
+ * directions.
+ */
+fun deadlinePlan(goal: Double, saved: Double, today: LocalDate, deadline: LocalDate): SavingsPlan {
+    val remaining = (goal.coerceAtLeast(0.0) - saved.coerceAtLeast(0.0)).coerceAtLeast(0.0)
+    val months = monthsUntil(today, deadline)
+    val monthly = monthlyRateFor(remaining, months)
+    return savingsPlan(goal, saved, monthly)
+}

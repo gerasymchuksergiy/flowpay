@@ -73,7 +73,9 @@ data class Wish(
     /** Money already put aside for this item. */
     val saved: Double = 0.0,
     /** What the plan is to add each month. */
-    val monthlyPlan: Double = 0.0
+    val monthlyPlan: Double = 0.0,
+    /** Buy-by date as an epoch day. Zero means the plan runs from a monthly sum. */
+    val deadline: Long = 0L
 )
 
 data class Pay(val name: String, val amount: Double, val day: Int = 1)
@@ -120,14 +122,15 @@ class Store(context: Context) {
             category = o.optString("c", "Інше"),
             history = (0 until history.length()).map { history.optDouble(it) }.filter { it > 0 },
             saved = o.optDouble("s", 0.0),
-            monthlyPlan = o.optDouble("m", 0.0)
+            monthlyPlan = o.optDouble("m", 0.0),
+            deadline = o.optLong("dl", 0L)
         )
     }
 
     fun saveWishes(items: List<Wish>) = save("w", items.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("i", it.image)
             .put("p", it.price).put("t", it.targetPrice).put("c", it.category).put("h", JSONArray(it.history))
-            .put("s", it.saved).put("m", it.monthlyPlan)
+            .put("s", it.saved).put("m", it.monthlyPlan).put("dl", it.deadline)
     })
 
     fun pays(): List<Pay> = jsonList("pay") { Pay(it.optString("n"), it.optDouble("a"), it.optInt("d", 1)) }
@@ -636,6 +639,7 @@ fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted:
  * buy this. The plan works from the target price when one is set, and from the
  * current price otherwise, so the number on screen is always the sum that matters.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun WishDetailScreen(
     wish: Wish,
@@ -648,21 +652,32 @@ fun WishDetailScreen(
     // Keyed on the item, so opening a different one does not inherit these boxes.
     var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
     var monthlyText by remember(wish.id) { mutableStateOf(amountText(wish.monthlyPlan)) }
+    var deadlineDay by remember(wish.id) { mutableLongStateOf(wish.deadline) }
+    // Which end of the plan is known: the monthly sum, or the date.
+    var byDate by remember(wish.id) { mutableStateOf(wish.deadline > 0L) }
+    var pickingDate by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
+    val today = remember { LocalDate.now() }
     val goal = if (wish.targetPrice > 0) wish.targetPrice else wish.price
-    val plan = savingsPlan(goal, parseAmount(savedText), parseAmount(monthlyText))
+    val deadlineDate = if (deadlineDay > 0L) LocalDate.ofEpochDay(deadlineDay) else null
+    val monthsLeft = deadlineDate?.let { monthsUntil(today, it) } ?: 0
+    val plan = if (byDate && deadlineDate != null) {
+        deadlinePlan(goal, parseAmount(savedText), today, deadlineDate)
+    } else {
+        savingsPlan(goal, parseAmount(savedText), parseAmount(monthlyText))
+    }
     val firstPrice = wish.history.firstOrNull() ?: wish.price
     val change = if (firstPrice > 0) (wish.price - firstPrice) / firstPrice * 100 else 0.0
 
-    // Persist only when a typed character actually changed one of the amounts.
-    LaunchedEffect(savedText, monthlyText) {
+    // Persist only when something the user typed or picked actually changed.
+    LaunchedEffect(savedText, monthlyText, deadlineDay) {
         val saved = parseAmount(savedText)
         val monthly = parseAmount(monthlyText)
-        if (saved != wish.saved || monthly != wish.monthlyPlan) {
-            onChange(wish.copy(saved = saved, monthlyPlan = monthly))
+        if (saved != wish.saved || monthly != wish.monthlyPlan || deadlineDay != wish.deadline) {
+            onChange(wish.copy(saved = saved, monthlyPlan = monthly, deadline = deadlineDay))
         }
     }
 
@@ -774,13 +789,63 @@ fun WishDetailScreen(
                 }
 
                 NumberField("Вже відкладено, ₴", savedText) { savedText = it }
-                NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
+
+                // The plan can be read from either end. Say what you can put aside
+                // and it answers when; say when you want it and it answers how much.
+                Row(
+                    Modifier.fillMaxWidth().padding(top = Space.lg),
+                    horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                ) {
+                    FilterChip(
+                        !byDate,
+                        { byDate = false; deadlineDay = 0L },
+                        { Text("Знаю суму", fontSize = Type.captionSize) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    FilterChip(
+                        byDate,
+                        { byDate = true },
+                        { Text("Знаю дату", fontSize = Type.captionSize) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
+                if (byDate) {
+                    OutlinedButton(
+                        { pickingDate = true },
+                        Modifier.fillMaxWidth().padding(top = Space.md),
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                    ) {
+                        Icon(Icons.Default.CalendarMonth, null)
+                        Text(
+                            if (deadlineDate != null) "  Купити до ${formatDate(deadlineDate)}"
+                            else "  Обрати дату покупки"
+                        )
+                    }
+                } else {
+                    NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
+                }
 
                 Spacer(Modifier.height(Space.lg))
                 when {
                     plan.reached -> PlanTile(
                         "Можна купувати",
                         "Гроші вже є",
+                        Modifier.fillMaxWidth()
+                    )
+
+                    byDate && deadlineDate == null -> PlanTile(
+                        "Скільки відкладати",
+                        "Оберіть дату покупки",
+                        Modifier.fillMaxWidth(),
+                        muted = true
+                    )
+
+                    byDate && monthsLeft == 0 -> PlanTile(
+                        "Менше місяця до дати",
+                        "Потрібно ${money(plan.remaining)} одразу",
                         Modifier.fillMaxWidth()
                     )
 
@@ -791,12 +856,24 @@ fun WishDetailScreen(
                         muted = true
                     )
 
+                    byDate -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                            PlanTile("Відкладати щомісяця", money(plan.monthly), Modifier.weight(1f))
+                            PlanTile("Внесків до дати", monthsLabel(monthsLeft), Modifier.weight(1f))
+                        }
+                        Spacer(Modifier.height(Space.md))
+                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                            PlanTile("Це щотижня", money(plan.weekly), Modifier.weight(1f))
+                            PlanTile("Це щодня", money(plan.daily), Modifier.weight(1f))
+                        }
+                    }
+
                     else -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
                             PlanTile("Час до цілі", monthsLabel(plan.months), Modifier.weight(1f))
                             PlanTile(
                                 "Орієнтовно",
-                                formatDate(readyDate(plan.months, LocalDate.now())),
+                                formatDate(readyDate(plan.months, today)),
                                 Modifier.weight(1f)
                             )
                         }
@@ -878,6 +955,31 @@ fun WishDetailScreen(
                     )
                 }
             }
+        }
+    }
+
+    if (pickingDate) {
+        val millisPerDay = 86_400_000L
+        val state = rememberDatePickerState(
+            initialSelectedDateMillis = (deadlineDate ?: today.plusMonths(3)).toEpochDay() * millisPerDay,
+            selectableDates = object : SelectableDates {
+                // A deadline in the past cannot be planned for.
+                override fun isSelectableDate(utcTimeMillis: Long) =
+                    utcTimeMillis / millisPerDay >= today.toEpochDay()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickingDate = false },
+            confirmButton = {
+                TextButton({
+                    // The picker works in UTC midnights, so this is an exact day.
+                    state.selectedDateMillis?.let { deadlineDay = it / millisPerDay }
+                    pickingDate = false
+                }) { Text("Обрати") }
+            },
+            dismissButton = { TextButton({ pickingDate = false }) { Text("Скасувати") } }
+        ) {
+            DatePicker(state)
         }
     }
 }

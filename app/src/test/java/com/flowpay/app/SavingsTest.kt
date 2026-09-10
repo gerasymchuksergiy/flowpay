@@ -122,6 +122,82 @@ class SavingsTest {
     }
 
     @Test
+    fun `months until a deadline counts only whole months`() {
+        val today = LocalDate.of(2026, 9, 10)
+
+        assertEquals(3, monthsUntil(today, LocalDate.of(2026, 12, 10)))
+        // One day short of three months is two full contributions, not three.
+        assertEquals(2, monthsUntil(today, LocalDate.of(2026, 12, 9)))
+        assertEquals(0, monthsUntil(today, LocalDate.of(2026, 10, 9)))
+        assertEquals(12, monthsUntil(today, LocalDate.of(2027, 9, 10)))
+    }
+
+    @Test
+    fun `a deadline today or in the past leaves no months`() {
+        val today = LocalDate.of(2026, 9, 10)
+
+        assertEquals(0, monthsUntil(today, today))
+        assertEquals(0, monthsUntil(today, LocalDate.of(2026, 1, 1)))
+    }
+
+    @Test
+    fun `a deadline plan splits what is left across the months available`() {
+        val plan = deadlinePlan(
+            goal = 3000.0,
+            saved = 600.0,
+            today = LocalDate.of(2026, 9, 10),
+            deadline = LocalDate.of(2026, 12, 10)
+        )
+
+        assertEquals(2400.0, plan.remaining, 0.001)
+        assertEquals(800.0, plan.monthly, 0.001)
+        assertEquals(3, plan.months)
+        assertFalse(plan.needsRate)
+    }
+
+    @Test
+    fun `a deadline under a month demands the whole remainder at once`() {
+        val plan = deadlinePlan(
+            goal = 3000.0,
+            saved = 0.0,
+            today = LocalDate.of(2026, 9, 10),
+            deadline = LocalDate.of(2026, 9, 25)
+        )
+
+        assertEquals(3000.0, plan.remaining, 0.001)
+        assertEquals(0.0, plan.monthly, 0.001)
+        assertTrue(plan.needsRate)
+    }
+
+    @Test
+    fun `a deadline plan on a goal already met asks for nothing`() {
+        val plan = deadlinePlan(
+            goal = 2000.0,
+            saved = 2000.0,
+            today = LocalDate.of(2026, 9, 10),
+            deadline = LocalDate.of(2027, 3, 10)
+        )
+
+        assertEquals(0.0, plan.monthly, 0.001)
+        assertTrue(plan.reached)
+        assertFalse(plan.needsRate)
+    }
+
+    @Test
+    fun `both directions of the plan agree`() {
+        val today = LocalDate.of(2026, 9, 10)
+        val deadline = LocalDate.of(2027, 3, 10)
+
+        val fromDate = deadlinePlan(goal = 6000.0, saved = 0.0, today = today, deadline = deadline)
+        // Feeding the rate it produced back in must reproduce the same timing.
+        val fromRate = savingsPlan(goal = 6000.0, saved = 0.0, monthly = fromDate.monthly)
+
+        assertEquals(1000.0, fromDate.monthly, 0.001)
+        assertEquals(6, fromRate.months)
+        assertEquals(deadline, readyDate(fromRate.months, today))
+    }
+
+    @Test
     fun `typed amounts accept a comma and reject nonsense`() {
         assertEquals(1500.5, parseAmount("1500,5"), 0.001)
         assertEquals(1500.5, parseAmount(" 1500.5 "), 0.001)
