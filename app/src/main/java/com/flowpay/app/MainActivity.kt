@@ -82,7 +82,10 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
         )
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
+        val notificationsGranted = android.os.Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!notificationsGranted) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
         }
         PriceWorker.schedule(this)
@@ -310,9 +313,12 @@ fun FlowPayApp(context: Context) {
             }
         }) { padding ->
             Box(
-                Modifier.padding(padding).fillMaxSize().background(
-                    Brush.verticalGradient(listOf(Color(0xff0d100b), AppBackground, Color.Black))
-                )
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(listOf(Color(0xff0d100b), AppBackground, Color.Black))
+                    )
+                    .padding(padding)
             ) {
                 when (tab) {
                     0 -> WishlistScreen(wishes, { wishes = it; store.saveWishes(it) }, context)

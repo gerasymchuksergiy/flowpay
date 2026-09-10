@@ -35,7 +35,9 @@ FlowPay налаштований під **Redmi Note 14** з **Xiaomi HyperOS 3 
 
 ## Як завантажити APK
 
-Для тестування відкрийте **Actions → Build Android APK → остання зелена збірка → Artifacts → FlowPay-debug-apk**. Усередині ZIP міститься debug APK.
+Для тестування відкрийте **Actions → Build Android APK → остання зелена збірка → Artifacts → FlowPay-debug-apk**. Усередині ZIP міститься debug APK. Збірка запускається на кожну гілку, а не лише на `main`.
+
+Якщо збірка впала, у тому ж переліку артефактів буде **FlowPay-build-reports** зі звітами тестів і lint.
 
 Для звичайного використання встановлюйте підписаний APK зі сторінки **Releases**. Наступні підписані версії можна встановлювати через розділ оновлень самого FlowPay.
 
