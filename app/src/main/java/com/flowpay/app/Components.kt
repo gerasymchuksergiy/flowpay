@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * The pieces that carry the app's look.
@@ -426,36 +427,6 @@ fun LeaderRow(label: String, value: String, modifier: Modifier = Modifier, alarm
     }
 }
 
-/** A section heading with a lime action on the right, the way "See all" reads. */
-@Composable
-fun SectionRow(
-    title: String,
-    modifier: Modifier = Modifier,
-    actionLabel: String? = null,
-    onAction: (() -> Unit)? = null
-) {
-    Row(
-        modifier.fillMaxWidth().padding(top = Space.xxl, bottom = Space.md),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            title,
-            fontSize = Type.sectionSize,
-            lineHeight = Type.sectionLine,
-            fontWeight = Type.medium
-        )
-        Spacer(Modifier.weight(1f))
-        if (actionLabel != null && onAction != null) {
-            Text(
-                actionLabel,
-                color = Accent,
-                fontSize = Type.captionSize,
-                fontWeight = Type.medium,
-                modifier = Modifier.clickable(onClick = onAction)
-            )
-        }
-    }
-}
 
 /**
  * What a screen with nothing on it shows.
@@ -521,6 +492,74 @@ fun PlaceholderRows(fields: List<Pair<String, String>>, modifier: Modifier = Mod
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * A dark pill sitting on top of a photo.
+ *
+ * The reference labels its photo cards this way rather than putting the label
+ * underneath: a translucent dark capsule with a lime icon and a short line. It
+ * keeps the image whole and still reads at a glance.
+ */
+@Composable
+fun PhotoChip(text: String, modifier: Modifier = Modifier, icon: ImageVector? = null, tint: Color = Accent) {
+    Row(
+        modifier
+            .background(AppBackground.copy(alpha = 0.72f), Radius.pill)
+            .padding(horizontal = Space.md, vertical = Space.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        icon?.let {
+            Icon(it, null, modifier = Modifier.size(14.dp), tint = tint)
+            Spacer(Modifier.width(Space.xs))
+        }
+        Text(text, color = tint, fontSize = Type.captionSize, fontWeight = Type.medium)
+    }
+}
+
+/**
+ * A product photo with its headline facts laid over it.
+ *
+ * A percentage that moved is the news, so it goes on the image as a large lime
+ * numeral the way the reference overlays its workout numbers, and the verdict sits
+ * in a capsule in the corner. Without a photo there is no block at all rather than
+ * a dead grey rectangle.
+ */
+@Composable
+fun PhotoHeader(
+    imageUrl: String,
+    description: String,
+    modifier: Modifier = Modifier,
+    height: Dp = 190.dp,
+    overlayNumber: String? = null,
+    overlayNumberColor: Color = Accent,
+    chip: String? = null,
+    chipIcon: ImageVector? = null,
+    chipColor: Color = Accent,
+    content: @Composable (Modifier) -> Unit
+) {
+    Box(modifier.fillMaxWidth().height(height)) {
+        content(Modifier.fillMaxWidth().height(height))
+        overlayNumber?.let {
+            Text(
+                it,
+                color = overlayNumberColor,
+                fontSize = 46.sp,
+                lineHeight = 48.sp,
+                letterSpacing = (-1.5).sp,
+                fontWeight = FontWeight.Black,
+                modifier = Modifier.align(Alignment.TopEnd).padding(Space.md)
+            )
+        }
+        chip?.let {
+            PhotoChip(
+                it,
+                Modifier.align(Alignment.BottomStart).padding(Space.md),
+                chipIcon,
+                chipColor
+            )
         }
     }
 }

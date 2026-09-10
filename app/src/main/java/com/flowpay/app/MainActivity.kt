@@ -871,16 +871,27 @@ fun WishDetailScreen(
             }
 
             if (wish.image.isNotBlank()) {
-                AsyncImage(
-                    wish.image, wish.name,
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Space.screen)
-                        .height(240.dp)
-                        .clip(Radius.lg)
-                        .background(SurfaceRaised),
-                    contentScale = ContentScale.Crop
-                )
+                PhotoHeader(
+                    imageUrl = wish.image,
+                    description = wish.name,
+                    modifier = Modifier.padding(horizontal = Space.screen),
+                    height = 240.dp,
+                    overlayNumber = "%+.0f%%".format(change).takeIf { change <= -1.0 },
+                    chip = verdictLabel(insight.verdict)
+                        .takeIf { insight.verdict != BuyVerdict.UNKNOWN },
+                    chipIcon = Icons.Default.Bolt,
+                    chipColor = when (insight.verdict) {
+                        BuyVerdict.GOOD -> Accent
+                        BuyVerdict.POOR -> Negative
+                        else -> TextPrimary
+                    }
+                ) { imageModifier ->
+                    AsyncImage(
+                        wish.image, wish.name,
+                        imageModifier.clip(Radius.lg).background(SurfaceRaised),
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
 
             Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
@@ -1216,14 +1227,30 @@ fun WishCard(wish: Wish, onOpen: () -> Unit) {
         modifier = Modifier.padding(horizontal = Space.screen, vertical = Space.sm).fillMaxWidth(),
         shape = Radius.lg
     ) {
-        // A photo earns its 190dp. Without one the block was a dead grey rectangle,
-        // so the name carries the card instead.
+        // A photo earns its 190dp, and carries the news on top of itself: the price
+        // move as a large numeral, the verdict in a capsule. Without a photo there is
+        // no block rather than a dead grey rectangle.
         if (wish.image.isNotBlank()) {
-            AsyncImage(
-                wish.image, wish.name,
-                Modifier.fillMaxWidth().height(190.dp).background(SurfaceRaised),
-                contentScale = ContentScale.Crop
-            )
+            val insightForPhoto = priceInsight(wish.history, wish.price, wish.checkedDay)
+            PhotoHeader(
+                imageUrl = wish.image,
+                description = wish.name,
+                overlayNumber = "%+.0f%%".format(change).takeIf { change <= -1.0 },
+                chip = verdictLabel(insightForPhoto.verdict)
+                    .takeIf { insightForPhoto.verdict != BuyVerdict.UNKNOWN },
+                chipIcon = Icons.Default.Bolt,
+                chipColor = when (insightForPhoto.verdict) {
+                    BuyVerdict.GOOD -> Accent
+                    BuyVerdict.POOR -> Negative
+                    else -> TextPrimary
+                }
+            ) { imageModifier ->
+                AsyncImage(
+                    wish.image, wish.name,
+                    imageModifier.background(SurfaceRaised),
+                    contentScale = ContentScale.Crop
+                )
+            }
         }
         Column(Modifier.padding(Space.lg)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
