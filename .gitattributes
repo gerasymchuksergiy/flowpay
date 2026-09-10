@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.jar binary
+*.png binary
+*.jpg binary
+*.webp binary
+*.p12 binary
+*.keystore binary
+*.apk binary
