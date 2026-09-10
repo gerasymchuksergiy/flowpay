@@ -891,13 +891,10 @@ fun WishDetailScreen(
                 )
                 Spacer(Modifier.height(Space.sm))
                 Row(verticalAlignment = Alignment.Bottom) {
-                    Text(
-                        money(wish.price),
-                        fontSize = Type.heroSize,
-                        lineHeight = Type.heroLine,
-                        letterSpacing = Type.heroTracking,
-                        fontWeight = FontWeight.Black,
-                        color = Accent
+                    FigureWithTarget(
+                        value = money(wish.price),
+                        target = wish.targetPrice.takeIf { it > 0 }?.let { "ціль ${money(it)}" },
+                        valueSize = Type.heroSize
                     )
                     Spacer(Modifier.width(Space.md))
                     Text(
@@ -908,52 +905,26 @@ fun WishDetailScreen(
                         modifier = Modifier.padding(bottom = Space.sm)
                     )
                 }
-                if (wish.targetPrice > 0) {
-                    Text(
-                        "Ціль: ${money(wish.targetPrice)}",
-                        color = TextSecondary,
-                        fontSize = Type.captionSize
-                    )
-                }
             }
 
             SectionTitle("План накопичення")
             Column(Modifier.padding(horizontal = Space.screen)) {
-                Card(
-                    Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
-                    shape = Radius.md
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        Text(
-                            if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
-                            color = TextSecondary,
-                            fontSize = Type.captionSize
-                        )
-                        Spacer(Modifier.height(Space.xs))
-                        Text(
-                            money(plan.remaining),
-                            fontSize = Type.heroSize,
-                            lineHeight = Type.heroLine,
-                            letterSpacing = Type.heroTracking,
-                            fontWeight = if (plan.reached) Type.regular else FontWeight.Black,
-                            color = if (plan.reached) TextDisabled else Accent
-                        )
-                        Spacer(Modifier.height(Space.md))
-                        LinearProgressIndicator(
-                            progress = { plan.progress },
-                            modifier = Modifier.fillMaxWidth(),
-                            color = Accent,
-                            trackColor = SurfaceHigh
-                        )
-                        Text(
-                            "${money(plan.saved)} з ${money(plan.goal)}",
-                            color = TextSecondary,
-                            fontSize = Type.captionSize,
-                            modifier = Modifier.padding(top = Space.sm)
-                        )
+                HeroPanel(
+                    label = if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
+                    value = money(plan.remaining),
+                    caption = "${money(plan.saved)} з ${money(plan.goal)}",
+                    muted = plan.reached,
+                    trailing = {
+                        ProgressRing(plan.progress, diameter = 84.dp, stroke = 9.dp) {
+                            Text(
+                                "${(plan.progress * 100).toInt()}%",
+                                color = if (plan.reached) TextSecondary else AccentInk,
+                                fontSize = Type.captionSize,
+                                fontWeight = Type.strong
+                            )
+                        }
                     }
-                }
+                )
 
                 NumberField("Вже відкладено, ₴", savedText) { savedText = it }
 
@@ -1088,7 +1059,7 @@ fun WishDetailScreen(
                     shape = Radius.md
                 ) {
                     Column(Modifier.padding(Space.lg)) {
-                        PriceChart(wish.history, Modifier.fillMaxWidth().height(120.dp))
+                        PriceBars(wish.history, Modifier.fillMaxWidth().height(120.dp))
                         Spacer(Modifier.height(Space.md))
                         Text(
                             verdictLabel(insight.verdict),
@@ -1272,22 +1243,13 @@ fun WishCard(wish: Wish, onOpen: () -> Unit) {
                 fontWeight = Type.medium,
                 maxLines = 2
             )
-            Text(money(wish.price), fontSize = Type.sectionSize, color = Accent, fontWeight = Type.strong)
-            if (wish.targetPrice > 0) {
-                Text(
-                    "Ціль: ${money(wish.targetPrice)}",
-                    color = TextSecondary,
-                    fontSize = Type.captionSize
-                )
-            }
+            FigureWithTarget(
+                value = money(wish.price),
+                target = wish.targetPrice.takeIf { it > 0 }?.let { "ціль ${money(it)}" }
+            )
             if (wish.saved > 0 || wish.monthlyPlan > 0) {
                 Spacer(Modifier.height(Space.md))
-                LinearProgressIndicator(
-                    progress = { plan.progress },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = Accent,
-                    trackColor = SurfaceHigh
-                )
+                PillProgress(plan.progress)
                 Text(
                     if (plan.reached) "Накопичено повністю"
                     else "Відкладено ${money(plan.saved)} з ${money(plan.goal)}",
@@ -1296,7 +1258,7 @@ fun WishCard(wish: Wish, onOpen: () -> Unit) {
                     modifier = Modifier.padding(top = Space.sm)
                 )
             } else {
-                PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = Space.md))
+                PriceBars(wish.history, Modifier.fillMaxWidth().height(60.dp).padding(top = Space.md))
                 val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
                 // A quietly broken parser showing a week-old price as current is worse
                 // than no price at all, so staleness is stated rather than hidden.
@@ -1331,41 +1293,6 @@ fun WishCard(wish: Wish, onOpen: () -> Unit) {
     }
 }
 
-@Composable
-fun PriceChart(history: List<PricePoint>, modifier: Modifier = Modifier) {
-    val points = history.filter { it.price > 0 }
-    Canvas(modifier) {
-        if (points.size < 2) {
-            drawLine(TextDisabled, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 2f, StrokeCap.Round)
-            return@Canvas
-        }
-        val min = points.minOf { it.price }
-        val max = points.maxOf { it.price }
-        val range = (max - min).takeIf { it > 0 } ?: 1.0
-
-        // A price that held for a month should occupy a month of the width. Spacing
-        // by date says that; spacing by index would draw every change equally wide
-        // and flatten the shape of what actually happened. Histories carried over
-        // from before dates existed fall back to even spacing.
-        val days = points.map { it.day }
-        val firstDay = days.first()
-        val lastDay = days.last()
-        val span = (lastDay - firstDay).takeIf { it > 0 && days.all { day -> day > 0 } }
-
-        val path = Path()
-        points.forEachIndexed { index, point ->
-            val x = if (span != null) {
-                size.width * (point.day - firstDay).toFloat() / span.toFloat()
-            } else {
-                size.width * index / (points.size - 1)
-            }
-            val y = size.height - ((point.price - min) / range * size.height).toFloat()
-            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        val fell = points.last().price <= points.first().price
-        drawPath(path, if (fell) Accent else Negative, style = Stroke(5f, cap = StrokeCap.Round))
-    }
-}
 
 @Composable
 fun CalculatorScreen(store: Store) {
@@ -1470,14 +1397,11 @@ fun CalculatorScreen(store: Store) {
                             Icon(Icons.Default.SwapVert, null)
                             Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
                         }
-                        Text(
-                            if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
-                            Modifier.padding(top = Space.lg),
-                            color = if (converted == 0.0) TextDisabled else Accent,
-                            fontSize = Type.heroSize,
-                            lineHeight = Type.heroLine,
-                            letterSpacing = Type.heroTracking,
-                            fontWeight = if (converted == 0.0) Type.regular else FontWeight.Black
+                        Spacer(Modifier.height(Space.lg))
+                        HeroPanel(
+                            label = if (hryvniaToDollar) "У доларах" else "У гривнях",
+                            value = if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
+                            muted = converted == 0.0
                         )
                     }
                 }
@@ -1539,17 +1463,17 @@ fun PaymentsScreen(
         item {
             ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
             Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
-                SummaryCard(
-                    "Разом на місяць",
-                    money(monthly.total),
-                    monthly.total <= 0.0,
-                    detail = when {
+                HeroPanel(
+                    label = "Разом на місяць",
+                    value = money(monthly.total),
+                    caption = when {
                         monthly.rateMissing ->
                             "Плюс ${dollars(monthly.usd)} — курс ще не завантажено"
                         monthly.hasUsd ->
                             "З них ${dollars(monthly.usd)} ≈ ${money(monthly.usdInUah)} по ${"%.2f".format(rate.sell)}"
                         else -> null
-                    }
+                    },
+                    muted = monthly.total <= 0.0
                 )
                 Spacer(Modifier.height(Space.md))
                 Card(
@@ -1616,18 +1540,14 @@ fun PaymentsScreen(
                     modifier = Modifier.clickable { editing = index },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     leadingContent = {
-                        Surface(color = SurfaceRaised, shape = Radius.sm, modifier = Modifier.size(44.dp)) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    when {
-                                        pay.name.contains("Оренда", true) -> Icons.Default.Home
-                                        pay.name.contains("Комун", true) -> Icons.Default.Bolt
-                                        pay.name.contains("Інтернет", true) -> Icons.Default.Wifi
-                                        else -> Icons.Default.Autorenew
-                                    }, null, tint = Accent
-                                )
+                        IconChip(
+                            when {
+                                pay.name.contains("Оренда", true) -> Icons.Default.Home
+                                pay.name.contains("Комун", true) -> Icons.Default.Bolt
+                                pay.name.contains("Інтернет", true) -> Icons.Default.Wifi
+                                else -> Icons.Default.Autorenew
                             }
-                        }
+                        )
                     },
                     headlineContent = {
                         Text(pay.name, fontSize = Type.cardTitleSize, fontWeight = Type.medium)
@@ -2026,51 +1946,36 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
             ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається")
 
             Column(Modifier.padding(horizontal = Space.screen)) {
-                Card(
-                    Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
-                    shape = Radius.md
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        Text("Відкладено на бажання", color = TextSecondary, fontSize = Type.captionSize)
-                        Spacer(Modifier.height(Space.xs))
-                        Text(
-                            money(summary.savedTotal),
-                            fontSize = Type.heroSize,
-                            lineHeight = Type.heroLine,
-                            letterSpacing = Type.heroTracking,
-                            fontWeight = if (summary.savedTotal > 0) FontWeight.Black else Type.regular,
-                            color = if (summary.savedTotal > 0) Accent else TextDisabled
-                        )
+                // The one loud block on this screen, with the ring reading the same
+                // number a second way.
+                HeroPanel(
+                    label = "Відкладено на бажання",
+                    value = money(summary.savedTotal),
+                    caption = buildList {
                         if (summary.wishTotal > 0) {
-                            Spacer(Modifier.height(Space.md))
-                            LinearProgressIndicator(
-                                progress = { summary.savedProgress },
-                                modifier = Modifier.fillMaxWidth(),
-                                color = Accent,
-                                trackColor = SurfaceHigh
-                            )
-                            Text(
-                                "з ${money(summary.wishTotal)} на ${summary.wishCount} позицій" +
-                                    if (summary.readyCount > 0) " · готових ${summary.readyCount}" else "",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.sm)
-                            )
+                            add("з ${money(summary.wishTotal)} на ${summary.wishCount} позицій")
                         }
-                        summary.monthsToFundAll?.let { months ->
-                            if (months > 0) {
+                        if (summary.readyCount > 0) add("готових ${summary.readyCount}")
+                        summary.monthsToFundAll?.takeIf { it > 0 }?.let {
+                            add("все разом ${monthsLabel(it)}")
+                        }
+                    }.joinToString(" · ").ifBlank { null },
+                    muted = summary.savedTotal <= 0,
+                    trailing = if (summary.wishTotal > 0) {
+                        {
+                            ProgressRing(summary.savedProgress, diameter = 84.dp, stroke = 9.dp) {
                                 Text(
-                                    "Вільними грошима все разом — ${monthsLabel(months)}",
-                                    color = TextSecondary,
+                                    "${(summary.savedProgress * 100).toInt()}%",
+                                    color = AccentInk,
                                     fontSize = Type.captionSize,
-                                    modifier = Modifier.padding(top = Space.xs)
+                                    fontWeight = Type.strong
                                 )
                             }
                         }
+                    } else {
+                        null
                     }
-                }
+                )
 
                 if (summary.plansConflict) {
                     Spacer(Modifier.height(Space.md))
@@ -2100,33 +2005,46 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
                 }
 
                 Spacer(Modifier.height(Space.md))
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                    PlanTile(
+                BentoRow {
+                    StatTile(
+                        Icons.Default.ReceiptLong,
                         "Витрати на місяць",
                         money(summary.monthlyExpenses),
-                        Modifier.weight(1f),
+                        even,
                         muted = summary.monthlyExpenses <= 0
                     )
-                    PlanTile(
+                    StatTile(
+                        Icons.Default.Savings,
                         if (summary.overspent) "Не сходиться" else "Вільно на місяць",
-                        if (summary.budgetUnknown) "не вказано дохід" else money(summary.freeCash),
-                        Modifier.weight(1f),
-                        muted = summary.budgetUnknown
+                        if (summary.budgetUnknown) "—" else money(summary.freeCash),
+                        even,
+                        muted = summary.budgetUnknown,
+                        alarm = summary.overspent
                     )
                 }
                 Spacer(Modifier.height(Space.md))
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                    PlanTile(
+                BentoRow {
+                    StatTile(
+                        Icons.Default.LocalShipping,
                         "В дорозі",
                         summary.parcelsMoving.toString(),
-                        Modifier.weight(1f),
+                        even,
                         muted = summary.parcelsMoving == 0
                     )
-                    PlanTile(
-                        "Чекають на відділенні",
+                    StatTile(
+                        Icons.Default.Inventory2,
+                        "На відділенні",
                         summary.parcelsAtBranch.toString(),
-                        Modifier.weight(1f),
-                        muted = summary.parcelsAtBranch == 0
+                        even,
+                        muted = summary.parcelsAtBranch == 0,
+                        alarm = summary.parcelsAtBranch > 0
+                    )
+                    StatTile(
+                        Icons.Default.FavoriteBorder,
+                        "Бажань",
+                        summary.wishCount.toString(),
+                        even,
+                        muted = summary.wishCount == 0
                     )
                 }
             }
