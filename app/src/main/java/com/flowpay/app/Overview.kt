@@ -1,0 +1,67 @@
+package com.flowpay.app
+
+/**
+ * The one place that answers "how am I doing" across all four screens at once.
+ *
+ * Each screen knows its own corner: wishes know prices, expenses know the month,
+ * parcels know where they are. None of them could say whether the whole thing adds
+ * up, which is the question you actually open the app with.
+ */
+
+data class Overview(
+    val wishCount: Int,
+    /** Sum of what every wish is aiming at. */
+    val wishTotal: Double,
+    val savedTotal: Double,
+    val savedProgress: Float,
+    /** Wishes whose money is already there. */
+    val readyCount: Int,
+    val monthlyExpenses: Double,
+    val freeCash: Double,
+    val budgetUnknown: Boolean,
+    val overspent: Boolean,
+    /** Ordered or in transit: nothing to do but wait. */
+    val parcelsMoving: Int,
+    /** Waiting at a branch, which is the one that asks something of you. */
+    val parcelsAtBranch: Int,
+    val parcelsDone: Int,
+    /**
+     * Months to fund everything still unfunded at the current free cash. Zero when
+     * there is nothing left to save, and null when it cannot be known.
+     */
+    val monthsToFundAll: Int?
+)
+
+fun overview(
+    wishes: List<Wish>,
+    pays: List<Pay>,
+    orders: List<Order>,
+    income: Double,
+    usdSellRate: Double
+): Overview {
+    val goals = wishes.sumOf { wishGoal(it) }
+    val saved = wishes.sumOf { it.saved.coerceAtLeast(0.0) }
+    val expenses = monthlyTotal(pays, usdSellRate)
+    val month = budget(income, expenses)
+    val remaining = (goals - saved).coerceAtLeast(0.0)
+    return Overview(
+        wishCount = wishes.size,
+        wishTotal = goals,
+        savedTotal = saved,
+        savedProgress = if (goals > 0) (saved / goals).coerceIn(0.0, 1.0).toFloat() else 0f,
+        readyCount = wishes.count { wishGoal(it) > 0 && it.saved >= wishGoal(it) },
+        monthlyExpenses = expenses.total,
+        freeCash = month.free,
+        budgetUnknown = month.unknown,
+        overspent = month.overspent,
+        parcelsMoving = orders.count { it.status == ORDERED || it.status == IN_TRANSIT },
+        parcelsAtBranch = orders.count { it.status == AT_BRANCH },
+        parcelsDone = orders.count { it.status == RECEIVED },
+        monthsToFundAll = when {
+            remaining <= 0.0 -> 0
+            month.free > 0.0 -> savingsPlan(goals, saved, month.free).months
+            // No income entered, or the month does not fit: there is no rate to divide by.
+            else -> null
+        }
+    )
+}

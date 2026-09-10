@@ -113,6 +113,7 @@ class MainActivity : ComponentActivity() {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
         }
         PriceWorker.schedule(this)
+        ReminderWorker.schedule(this)
         setContent { FlowPayApp(this) }
     }
 }
@@ -170,6 +171,16 @@ class Store(context: Context) {
             .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
             .put("sd", it.statusDetail).put("ca", it.checkedAt)
     })
+
+    /** Epoch day the payment reminder last ran, so a day is never repeated. */
+    fun lastReminderDay(): Long = prefs.getLong("reminded", 0L)
+
+    fun saveLastReminderDay(day: Long) = prefs.edit { putLong("reminded", day) }
+
+    /** How the wishlist is ordered, remembered between sessions. */
+    fun wishSort(): WishSort = wishSortFrom(prefs.getString("wish_sort", "") ?: "")
+
+    fun saveWishSort(sort: WishSort) = prefs.edit { putString("wish_sort", sort.name) }
 
     /** Monthly income, used to work out what is free after the standing costs. */
     fun income(): Double = prefs.getFloat("income", 0f).toDouble()
@@ -359,12 +370,6 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
     )
 }
 
-private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " ₴"
-private fun dollars(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " $"
-
-/** An amount shown in whichever currency it was entered in. */
-private fun amountIn(value: Double, currency: String) =
-    if (currency == USD) dollars(value) else money(value)
 
 @Composable
 fun FlowPayApp(context: Context) {
@@ -387,10 +392,8 @@ fun FlowPayApp(context: Context) {
 
     // Recomputed whenever expenses change, so the wishlist plan and the expenses
     // screen never disagree about what is free this month.
-    val monthBudget = budget(
-        remember(pays) { store.income() },
-        monthlyTotal(pays, remember { store.fxRate().first }.sell)
-    )
+    val usdSell = remember { store.fxRate().first }.sell
+    val monthBudget = budget(remember(pays) { store.income() }, monthlyTotal(pays, usdSell))
 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
@@ -424,7 +427,7 @@ fun FlowPayApp(context: Context) {
                         Icons.Default.SwapVert to "Курс",
                         Icons.Default.ReceiptLong to "Платежі",
                         Icons.Default.LocalShipping to "Покупки",
-                        Icons.Default.MoreHoriz to "Ще"
+                        Icons.Default.Insights to "Огляд"
                     )
                     tabs.forEachIndexed { index, item ->
                         NavigationBarItem(
@@ -460,6 +463,7 @@ fun FlowPayApp(context: Context) {
                     0 -> WishlistScreen(
                         items = wishes,
                         save = { wishes = it; store.saveWishes(it) },
+                        store = store,
                         context = context,
                         adding = adding,
                         setAdding = { adding = it },
@@ -478,7 +482,10 @@ fun FlowPayApp(context: Context) {
                     1 -> CalculatorScreen(store)
                     2 -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, store, adding) { adding = it }
                     3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context, adding) { adding = it }
-                    else -> SettingsScreen(store) {
+                    else -> SettingsScreen(
+                        summary = overview(wishes, pays, orders, monthBudget.income, usdSell),
+                        store = store
+                    ) {
                         wishes = store.wishes()
                         pays = store.pays()
                         orders = store.orders()
@@ -538,6 +545,7 @@ fun ScreenHeader(
 fun WishlistScreen(
     items: List<Wish>,
     save: (List<Wish>) -> Unit,
+    store: Store,
     context: Context,
     adding: Boolean,
     setAdding: (Boolean) -> Unit,
@@ -549,6 +557,7 @@ fun WishlistScreen(
     onBought: (Order) -> Unit
 ) {
     var editing by remember { mutableStateOf<Wish?>(null) }
+    var sort by remember { mutableStateOf(store.wishSort()) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -626,6 +635,23 @@ fun WishlistScreen(
                 )
             }
         }
+        if (items.size > 1) {
+            item {
+                LazyRow(
+                    Modifier.padding(bottom = Space.md),
+                    contentPadding = PaddingValues(horizontal = Space.screen),
+                    horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                ) {
+                    items(WishSort.entries.toList()) { option ->
+                        FilterChip(
+                            sort == option,
+                            { sort = option; store.saveWishSort(option) },
+                            { Text(option.label, fontSize = Type.captionSize) }
+                        )
+                    }
+                }
+            }
+        }
         if (items.isEmpty()) {
             item {
                 GhostSlots(
@@ -636,7 +662,7 @@ fun WishlistScreen(
                 )
             }
         }
-        items(items, key = { it.id }) { wish ->
+        items(sortWishes(items, sort), key = { it.id }) { wish ->
             WishCard(wish) { setOpened(wish.id) }
         }
     }
@@ -766,7 +792,7 @@ fun WishDetailScreen(
     val scope = rememberCoroutineScope()
 
     val today = remember { LocalDate.now() }
-    val goal = if (wish.targetPrice > 0) wish.targetPrice else wish.price
+    val goal = wishGoal(wish)
     val deadlineDate = if (deadlineDay > 0L) LocalDate.ofEpochDay(deadlineDay) else null
     val monthsLeft = deadlineDate?.let { monthsUntil(today, it) } ?: 0
     val plan = if (byDate && deadlineDate != null) {
@@ -774,8 +800,7 @@ fun WishDetailScreen(
     } else {
         savingsPlan(goal, parseAmount(savedText), parseAmount(monthlyText))
     }
-    val firstPrice = wish.history.firstOrNull() ?: wish.price
-    val change = if (firstPrice > 0) (wish.price - firstPrice) / firstPrice * 100 else 0.0
+    val change = priceChangePercent(wish)
 
     // Persist only when something the user typed or picked actually changed.
     LaunchedEffect(savedText, monthlyText, deadlineDay) {
@@ -1138,9 +1163,8 @@ fun WishDetailScreen(
 
 @Composable
 fun WishCard(wish: Wish, onOpen: () -> Unit) {
-    val first = wish.history.firstOrNull() ?: wish.price
-    val change = if (first > 0) (wish.price - first) / first * 100 else 0.0
-    val goal = if (wish.targetPrice > 0) wish.targetPrice else wish.price
+    val change = priceChangePercent(wish)
+    val goal = wishGoal(wish)
     val plan = savingsPlan(goal, wish.saved, wish.monthlyPlan)
     // The whole card opens the item page. Edit and delete moved there, which also
     // took them out from under the floating action button.
@@ -1504,7 +1528,7 @@ fun PaymentsScreen(
                     trailingContent = {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(horizontalAlignment = Alignment.End) {
-                                Text(amountIn(pay.amount, pay.currency), fontWeight = Type.strong)
+                                Text(amountLabel(pay.amount, pay.currency), fontWeight = Type.strong)
                                 if (pay.currency == USD && rate.sell > 0) {
                                     Text(
                                         "≈ ${money(pay.amount * rate.sell)}",
@@ -1828,7 +1852,7 @@ fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
 }
 
 @Composable
-fun SettingsScreen(store: Store, onImported: () -> Unit) {
+fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
@@ -1848,7 +1872,88 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
     }
     LazyColumn {
         item {
-            ScreenHeader("FLOWPAY", "Налаштування")
+            ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається")
+
+            Column(Modifier.padding(horizontal = Space.screen)) {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    shape = Radius.md
+                ) {
+                    Column(Modifier.padding(Space.lg)) {
+                        Text("Відкладено на бажання", color = TextSecondary, fontSize = Type.captionSize)
+                        Spacer(Modifier.height(Space.xs))
+                        Text(
+                            money(summary.savedTotal),
+                            fontSize = Type.heroSize,
+                            lineHeight = Type.heroLine,
+                            letterSpacing = Type.heroTracking,
+                            fontWeight = if (summary.savedTotal > 0) FontWeight.Black else Type.regular,
+                            color = if (summary.savedTotal > 0) Accent else TextDisabled
+                        )
+                        if (summary.wishTotal > 0) {
+                            Spacer(Modifier.height(Space.md))
+                            LinearProgressIndicator(
+                                progress = { summary.savedProgress },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Accent,
+                                trackColor = SurfaceHigh
+                            )
+                            Text(
+                                "з ${money(summary.wishTotal)} на ${summary.wishCount} позицій" +
+                                    if (summary.readyCount > 0) " · готових ${summary.readyCount}" else "",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.sm)
+                            )
+                        }
+                        summary.monthsToFundAll?.let { months ->
+                            if (months > 0) {
+                                Text(
+                                    "Вільними грошима все разом — ${monthsLabel(months)}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(Space.md))
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                    PlanTile(
+                        "Витрати на місяць",
+                        money(summary.monthlyExpenses),
+                        Modifier.weight(1f),
+                        muted = summary.monthlyExpenses <= 0
+                    )
+                    PlanTile(
+                        if (summary.overspent) "Не сходиться" else "Вільно на місяць",
+                        if (summary.budgetUnknown) "не вказано дохід" else money(summary.freeCash),
+                        Modifier.weight(1f),
+                        muted = summary.budgetUnknown
+                    )
+                }
+                Spacer(Modifier.height(Space.md))
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                    PlanTile(
+                        "В дорозі",
+                        summary.parcelsMoving.toString(),
+                        Modifier.weight(1f),
+                        muted = summary.parcelsMoving == 0
+                    )
+                    PlanTile(
+                        "Чекають на відділенні",
+                        summary.parcelsAtBranch.toString(),
+                        Modifier.weight(1f),
+                        muted = summary.parcelsAtBranch == 0
+                    )
+                }
+            }
+
+            SectionTitle("Налаштування")
             // Filled list items painted a large lighter block across the screen and
             // left a hard seam under the header. They sit on the page instead.
             SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин перевіряються ціни та статуси посилок")

@@ -2,8 +2,9 @@
 # shipped by Compose, Coil and WorkManager cover almost everything. The two rules
 # below guard the places Android instantiates a class by name.
 
-# WorkManager builds the worker from the class name recorded in its database.
+# WorkManager builds its workers from the class names recorded in its database.
 -keep class com.flowpay.app.PriceWorker { *; }
+-keep class com.flowpay.app.ReminderWorker { *; }
 
 # The launcher activity is named in the manifest.
 -keep class com.flowpay.app.MainActivity { *; }

@@ -1,5 +1,8 @@
 package com.flowpay.app
 
+import java.text.NumberFormat
+import java.util.Locale
+
 /**
  * Recurring expenses are not all in one currency. Rent is often quoted and paid in
  * dollars while everything else is in hryvnia, so the monthly total has to convert
@@ -75,3 +78,30 @@ fun budget(income: Double, expenses: MonthlyTotal): Budget {
         unknown = safeIncome <= 0.0
     )
 }
+
+/**
+ * The day of the month a payment actually lands on.
+ *
+ * A payment set for the 31st has to happen on the 28th in February. Clamping to
+ * the month's length is what a bank does, and without it a reminder for the 31st
+ * would silently never fire in four months of the year.
+ */
+fun effectivePaymentDay(day: Int, monthLength: Int): Int = day.coerceIn(1, monthLength)
+
+/** Payments falling due on exactly this date. */
+fun paymentsDueOn(items: List<Pay>, date: java.time.LocalDate): List<Pay> {
+    val monthLength = date.lengthOfMonth()
+    return items.filter { effectivePaymentDay(it.day, monthLength) == date.dayOfMonth }
+}
+
+private val UK = Locale("uk", "UA")
+
+/** "2 203,24 ₴" */
+fun money(value: Double): String = NumberFormat.getNumberInstance(UK).format(value) + " ₴"
+
+/** "250 $" */
+fun dollars(value: Double): String = NumberFormat.getNumberInstance(UK).format(value) + " $"
+
+/** An amount shown in whichever currency it was entered in. */
+fun amountLabel(value: Double, currency: String): String =
+    if (currency == USD) dollars(value) else money(value)
