@@ -7,6 +7,13 @@ plugins {
 val releaseKeyPath = System.getenv("FLOWPAY_KEYSTORE_PATH")
 val releaseKeyPassword = System.getenv("FLOWPAY_KEYSTORE_PASSWORD")
 
+// The phone will only accept an update signed with the same certificate as the
+// copy already installed, so the alias is configurable rather than fixed: the
+// existing install was signed by the local debug keystore, whose alias is
+// androiddebugkey, and a release build has to be able to reuse that exact key.
+val releaseKeyAlias = System.getenv("FLOWPAY_KEYSTORE_ALIAS") ?: "flowpay"
+val releaseKeyStoreType = System.getenv("FLOWPAY_KEYSTORE_TYPE")
+
 android {
  namespace = "com.flowpay.app"
  compileSdk = 36
@@ -31,8 +38,9 @@ android {
    create("flowPayRelease") {
     storeFile = file(releaseKeyPath)
     storePassword = releaseKeyPassword
-    keyAlias = "flowpay"
+    keyAlias = releaseKeyAlias
     keyPassword = releaseKeyPassword
+    releaseKeyStoreType?.takeIf { it.isNotBlank() }?.let { storeType = it }
    }
   }
  }
