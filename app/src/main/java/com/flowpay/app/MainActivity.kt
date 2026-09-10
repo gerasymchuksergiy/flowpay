@@ -23,6 +23,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -1575,6 +1577,7 @@ fun PaymentsScreen(
                                 pay.name.contains("Оренда", true) -> Icons.Default.Home
                                 pay.name.contains("Комун", true) -> Icons.Default.Bolt
                                 pay.name.contains("Інтернет", true) -> Icons.Default.Wifi
+                                pay.name.contains("Мобіл", true) -> Icons.Default.Smartphone
                                 else -> Icons.Default.Autorenew
                             }
                         )
@@ -1591,7 +1594,7 @@ fun PaymentsScreen(
                                 Text(amountLabel(pay.amount, pay.currency), fontWeight = Type.strong)
                                 if (pay.currency == USD && rate.sell > 0) {
                                     Text(
-                                        "≈ ${money(pay.amount * rate.sell)}",
+                                        "≈ ${approxMoney(pay.amount * rate.sell)}",
                                         color = TextSecondary,
                                         fontSize = Type.captionSize
                                     )
@@ -1629,9 +1632,11 @@ fun PaymentsScreen(
 
 @Composable
 fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
-    val types = listOf("Оренда квартири", "Комуналка", "Інтернет", "Мобільний", "Підписка", "Інше")
-    var selected by remember { mutableStateOf(types.first()) }
-    var custom by remember { mutableStateOf("") }
+    // The chips fill the name in, they are not the name. Two subscriptions are
+    // rarely the same subscription, so the field is always present and always
+    // editable: tapping a chip simply types the word for you.
+    val presets = listOf("Оренда квартири", "Комуналка", "Інтернет", "Мобільний", "Підписка")
+    var name by remember { mutableStateOf(presets.first()) }
     var amount by remember { mutableStateOf("") }
     var day by remember { mutableStateOf("1") }
     var currency by remember { mutableStateOf(UAH) }
@@ -1639,29 +1644,40 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
         onDismissRequest = close,
         title = { Text("Нова постійна витрата") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                    items(types) { type -> FilterChip(selected == type, { selected = type }, { Text(type) }) }
+                    items(presets) { preset ->
+                        FilterChip(name == preset, { name = preset }, { Text(preset) })
+                    }
                 }
-                if (selected == "Інше") OutlinedTextField(custom, { custom = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
+                OutlinedTextField(
+                    name,
+                    { name = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Назва") },
+                    singleLine = true
+                )
                 CurrencyChips(currency) { currency = it }
                 NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
             }
         },
         confirmButton = {
-            Button({
-                amount.replace(',', '.').toDoubleOrNull()?.let { value ->
-                    add(
-                        Pay(
-                            if (selected == "Інше") custom.ifBlank { "Інше" } else selected,
-                            value,
-                            day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
-                            currency
+            Button(
+                {
+                    parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                        add(
+                            Pay(
+                                name.trim().ifBlank { "Інше" },
+                                value,
+                                day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+                                currency
+                            )
                         )
-                    )
-                }
-            }, enabled = amount.replace(',', '.').toDoubleOrNull() != null) { Text("Додати") }
+                    }
+                },
+                enabled = parseAmount(amount) > 0 && name.isNotBlank()
+            ) { Text("Додати") }
         },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )
@@ -2195,17 +2211,30 @@ fun SettingsRow(icon: ImageVector, title: String, detail: String) {
     }
 }
 
-/** Corrects an existing recurring expense, so a typo no longer means delete and retype. */
+/**
+ * Corrects an existing recurring expense, so a typo no longer means delete and retype.
+ *
+ * The name is editable here too. It used to be the dialog's title and nothing
+ * more, which left a misspelled subscription misspelled for good.
+ */
 @Composable
 fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
+    var name by remember { mutableStateOf(pay.name) }
     var amount by remember { mutableStateOf(amountText(pay.amount)) }
     var day by remember { mutableStateOf(pay.day.toString()) }
     var currency by remember { mutableStateOf(pay.currency) }
     AlertDialog(
         onDismissRequest = close,
-        title = { Text(pay.name) },
+        title = { Text("Змінити витрату") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                OutlinedTextField(
+                    name,
+                    { name = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Назва") },
+                    singleLine = true
+                )
                 CurrencyChips(currency) { currency = it }
                 NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
@@ -2217,6 +2246,7 @@ fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
                     parseAmount(amount).takeIf { it > 0 }?.let { value ->
                         save(
                             pay.copy(
+                                name = name.trim().ifBlank { pay.name },
                                 amount = value,
                                 day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
                                 currency = currency
@@ -2224,7 +2254,7 @@ fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
                         )
                     }
                 },
-                enabled = parseAmount(amount) > 0
+                enabled = parseAmount(amount) > 0 && name.isNotBlank()
             ) { Text("Зберегти") }
         },
         dismissButton = { TextButton(close) { Text("Скасувати") } }

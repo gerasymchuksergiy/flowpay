@@ -96,11 +96,30 @@ fun paymentsDueOn(items: List<Pay>, date: java.time.LocalDate): List<Pay> {
 
 private val UK = Locale("uk", "UA")
 
+/**
+ * Two decimal places at most, and none when the amount is whole.
+ *
+ * The default number format allows three, which turned a converted rent into
+ * "11 200,225 ₴" — a figure carrying a tenth of a kopeck.
+ */
+private fun amountFormat(): NumberFormat = NumberFormat.getNumberInstance(UK).apply {
+    maximumFractionDigits = 2
+    minimumFractionDigits = 0
+}
+
 /** "2 203,24 ₴" */
-fun money(value: Double): String = NumberFormat.getNumberInstance(UK).format(value) + " ₴"
+fun money(value: Double): String = amountFormat().format(value) + " ₴"
 
 /** "250 $" */
-fun dollars(value: Double): String = NumberFormat.getNumberInstance(UK).format(value) + " $"
+fun dollars(value: Double): String = amountFormat().format(value) + " $"
+
+/**
+ * A converted figure, rounded to whole hryvnia.
+ *
+ * It is an estimate at today's rate, so kopecks would claim a precision the
+ * number does not have.
+ */
+fun approxMoney(value: Double): String = money(kotlin.math.round(value))
 
 /** An amount shown in whichever currency it was entered in. */
 fun amountLabel(value: Double, currency: String): String =

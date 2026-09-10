@@ -119,4 +119,43 @@ class PaymentsTest {
         assertEquals(280.0, total.usd, 0.001)
         assertEquals(12_320.0, total.total, 0.001)
     }
+
+    // ------------------------------------------------------- how it reads
+
+    /**
+     * Groups of thousands are separated by a non-breaking space in this locale,
+     * which is right on screen and unreadable in a failure message.
+     */
+    private fun shown(text: String) = text.replace('\u00a0', ' ')
+
+    @Test
+    fun `hryvnia never shows a fraction of a kopeck`() {
+        // 250 $ at 44,8009 is 11 200,225 — three decimals, which the screen showed.
+        assertEquals("11 200,23 ₴", shown(money(11_200.225)))
+    }
+
+    @Test
+    fun `a whole amount carries no decimals at all`() {
+        assertEquals("40 000 ₴", shown(money(40_000.0)))
+        assertEquals("250 $", shown(dollars(250.0)))
+    }
+
+    @Test
+    fun `kopecks and cents survive when they are real`() {
+        assertEquals("2 203,24 ₴", shown(money(2_203.24)))
+        assertEquals("9,59 $", shown(dollars(9.59)))
+    }
+
+    @Test
+    fun `a converted figure is rounded to whole hryvnia`() {
+        // An estimate at today's rate has no business claiming kopecks.
+        assertEquals("11 200 ₴", shown(approxMoney(250.0 * 44.8009)))
+        assertEquals("45 ₴", shown(approxMoney(44.6)))
+    }
+
+    @Test
+    fun `an amount is labelled in the currency it was entered in`() {
+        assertEquals("9,59 $", shown(amountLabel(9.59, USD)))
+        assertEquals("8 000 ₴", shown(amountLabel(8_000.0, UAH)))
+    }
 }
