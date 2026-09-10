@@ -75,6 +75,41 @@ class PaymentsTest {
     }
 
     @Test
+    fun `free money is income less everything standing`() {
+        val month = budget(45_000.0, monthlyTotal(listOf(rentInDollars, utilities, internet), 44.8))
+
+        assertEquals(45_000.0, month.income, 0.001)
+        assertEquals(13_900.0, month.expenses, 0.001)
+        assertEquals(31_100.0, month.free, 0.001)
+        assertFalse(month.overspent)
+        assertFalse(month.unknown)
+    }
+
+    @Test
+    fun `a month that does not fit reports a shortfall rather than clamping to zero`() {
+        val month = budget(10_000.0, monthlyTotal(listOf(rentInDollars, utilities), 44.8))
+
+        assertEquals(-3_600.0, month.free, 0.001)
+        assertTrue(month.overspent)
+    }
+
+    @Test
+    fun `no income means nothing can be said about free money`() {
+        val month = budget(0.0, monthlyTotal(listOf(utilities), 44.8))
+
+        assertTrue(month.unknown)
+        assertFalse(month.overspent)
+    }
+
+    @Test
+    fun `income with no expenses is entirely free`() {
+        val month = budget(20_000.0, monthlyTotal(emptyList(), 44.8))
+
+        assertEquals(20_000.0, month.free, 0.001)
+        assertFalse(month.overspent)
+    }
+
+    @Test
     fun `several dollar expenses are summed before conversion`() {
         val total = monthlyTotal(
             listOf(rentInDollars, Pay("Хостинг", 30.0, currency = USD)),

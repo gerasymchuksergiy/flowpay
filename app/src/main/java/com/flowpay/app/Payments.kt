@@ -46,3 +46,32 @@ fun monthlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
         rateMissing = hasUsd && rate <= 0.0
     )
 }
+
+data class Budget(
+    val income: Double,
+    val expenses: Double,
+    /** Income minus expenses. Negative when the month does not fit. */
+    val free: Double,
+    val overspent: Boolean,
+    /** No income has been entered, so nothing here means anything yet. */
+    val unknown: Boolean
+)
+
+/**
+ * What is left each month once the standing costs are paid.
+ *
+ * This is the number that turns a wishlist into a plan: it is the most that can
+ * realistically go towards a wish without touching anything else. Left unclamped
+ * on purpose, because a month that does not fit is worth saying out loud.
+ */
+fun budget(income: Double, expenses: MonthlyTotal): Budget {
+    val safeIncome = income.coerceAtLeast(0.0)
+    val free = safeIncome - expenses.total
+    return Budget(
+        income = safeIncome,
+        expenses = expenses.total,
+        free = free,
+        overspent = safeIncome > 0.0 && free < 0.0,
+        unknown = safeIncome <= 0.0
+    )
+}

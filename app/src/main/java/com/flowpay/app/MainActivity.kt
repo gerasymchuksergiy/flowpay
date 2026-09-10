@@ -92,7 +92,11 @@ data class Order(
     val status: String,
     val tracking: String = "",
     val image: String = "",
-    val price: Double = 0.0
+    val price: Double = 0.0,
+    /** The carrier's own wording plus where it saw the parcel last. */
+    val statusDetail: String = "",
+    /** When the carrier was last asked, as epoch millis. Zero means never. */
+    val checkedAt: Long = 0L
 )
 
 class MainActivity : ComponentActivity() {
@@ -156,14 +160,21 @@ class Store(context: Context) {
     fun orders(): List<Order> = jsonList("orders") {
         Order(
             it.optString("id"), it.optString("n"), it.optString("u"),
-            it.optString("s", "Замовлено"), it.optString("t"),
-            it.optString("i"), it.optDouble("p", 0.0)
+            it.optString("s", ORDERED), it.optString("t"),
+            it.optString("i"), it.optDouble("p", 0.0),
+            it.optString("sd"), it.optLong("ca", 0L)
         )
     }
     fun saveOrders(items: List<Order>) = save("orders", items.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url)
             .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
+            .put("sd", it.statusDetail).put("ca", it.checkedAt)
     })
+
+    /** Monthly income, used to work out what is free after the standing costs. */
+    fun income(): Double = prefs.getFloat("income", 0f).toDouble()
+
+    fun saveIncome(value: Double) = prefs.edit { putFloat("income", value.toFloat()) }
 
     /**
      * Last known exchange rate and when it was fetched.
@@ -268,6 +279,40 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     UpdateInfo(code, release.optString("tag_name", "нова версія"), downloadUrl)
 }
 
+/**
+ * Asks Nova Poshta where a parcel is.
+ *
+ * Their tracking method answers with an empty API key, so this needs no
+ * registration and no secret in the APK. Returns null when the number is not
+ * theirs or the call failed, which is deliberately different from a parcel that
+ * simply has not moved.
+ */
+suspend fun parcelStatus(number: String): ParcelStatus? = withContext(Dispatchers.IO) {
+    val clean = number.filter { !it.isWhitespace() }
+    if (detectCarrier(clean) != CARRIER_NOVA_POSHTA) return@withContext null
+    val body = JSONObject()
+        .put("apiKey", "")
+        .put("modelName", "TrackingDocument")
+        .put("calledMethod", "getStatusDocuments")
+        .put(
+            "methodProperties",
+            JSONObject().put(
+                "Documents",
+                JSONArray().put(JSONObject().put("DocumentNumber", clean).put("Phone", ""))
+            )
+        )
+        .toString()
+    val connection = URL("https://api.novaposhta.ua/v2.0/json/").openConnection() as HttpURLConnection
+    connection.requestMethod = "POST"
+    connection.doOutput = true
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    connection.setRequestProperty("Content-Type", "application/json")
+    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+    if (connection.responseCode !in 200..299) return@withContext null
+    parseNovaPoshtaStatus(connection.inputStream.bufferedReader().use { it.readText() })
+}
+
 fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
     if (!context.packageManager.canRequestPackageInstalls()) {
         context.startActivity(
@@ -339,6 +384,13 @@ fun FlowPayApp(context: Context) {
 
     // System back closes the item page before it leaves the app.
     BackHandler(enabled = openedWish != null) { openedWish = null }
+
+    // Recomputed whenever expenses change, so the wishlist plan and the expenses
+    // screen never disagree about what is free this month.
+    val monthBudget = budget(
+        remember(pays) { store.income() },
+        monthlyTotal(pays, remember { store.fxRate().first }.sell)
+    )
 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
@@ -415,6 +467,7 @@ fun FlowPayApp(context: Context) {
                         setOpened = { openedWish = it },
                         // A bought wish becomes a parcel, and the tab follows it so
                         // the move is visible rather than something to go looking for.
+                        freeCash = monthBudget.free,
                         onBought = { order ->
                             val next = orders + order
                             orders = next
@@ -492,6 +545,7 @@ fun WishlistScreen(
     // after a price refresh or a change to the savings plan.
     opened: String?,
     setOpened: (String?) -> Unit,
+    freeCash: Double,
     onBought: (Order) -> Unit
 ) {
     var editing by remember { mutableStateOf<Wish?>(null) }
@@ -508,6 +562,7 @@ fun WishlistScreen(
             onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
             onEdit = { editing = openedWish },
             onDelete = { save(items - openedWish); setOpened(null) },
+            freeCash = freeCash,
             onBought = { trackingNumber ->
                 onBought(
                     Order(
@@ -695,6 +750,7 @@ fun WishDetailScreen(
     onChange: (Wish) -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    freeCash: Double,
     onBought: (String) -> Unit
 ) {
     // Keyed on the item, so opening a different one does not inherit these boxes.
@@ -857,6 +913,33 @@ fun WishDetailScreen(
                         { Text("Знаю дату", fontSize = Type.captionSize) },
                         modifier = Modifier.weight(1f)
                     )
+                }
+
+                // The link between the two halves of the app: what the expenses
+                // screen says is spare is the most that can go here each month.
+                if (!byDate && freeCash > 0) {
+                    val fromFree = savingsPlan(goal, parseAmount(savedText), freeCash)
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = Space.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "Вільно після витрат ${money(freeCash)} на місяць",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                            if (!fromFree.reached) {
+                                Text(
+                                    "цією сумою — ${monthsLabel(fromFree.months)}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                        }
+                        TextButton({ monthlyText = amountText(freeCash) }) { Text("Взяти") }
+                    }
                 }
 
                 if (byDate) {
@@ -1314,6 +1397,9 @@ fun PaymentsScreen(
     // converted at the sell rate, since that is what buying dollars costs.
     val rate = remember { store.fxRate().first }
     val monthly = monthlyTotal(items, rate.sell)
+    var income by remember { mutableDoubleStateOf(store.income()) }
+    var editingIncome by remember { mutableStateOf(false) }
+    val month = budget(income, monthly)
     var editing by remember { mutableStateOf<Int?>(null) }
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
@@ -1331,6 +1417,50 @@ fun PaymentsScreen(
                         else -> null
                     }
                 )
+                Spacer(Modifier.height(Space.md))
+                Card(
+                    onClick = { editingIncome = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                    shape = Radius.md
+                ) {
+                    Row(
+                        Modifier.padding(Space.lg),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                if (month.unknown) "Вкажіть дохід" else "Вільно на місяць",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
+                            Spacer(Modifier.height(Space.xs))
+                            Text(
+                                when {
+                                    month.unknown -> "щоб бачити, скільки лишається"
+                                    else -> money(month.free)
+                                },
+                                fontSize = if (month.unknown) Type.bodySize else Type.sectionSize,
+                                lineHeight = Type.sectionLine,
+                                fontWeight = if (month.unknown) Type.regular else Type.strong,
+                                color = when {
+                                    month.unknown -> TextDisabled
+                                    month.overspent -> Negative
+                                    else -> Accent
+                                }
+                            )
+                            if (!month.unknown) {
+                                Text(
+                                    if (month.overspent) "Витрати перевищують дохід ${money(month.income)}"
+                                    else "З доходу ${money(month.income)}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                        }
+                        Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
+                    }
+                }
             }
         }
         if (items.isEmpty()) {
@@ -1396,6 +1526,13 @@ fun PaymentsScreen(
         save(items + it)
         setAdding(false)
     }
+    if (editingIncome) {
+        IncomeDialog(income, { editingIncome = false }) { value ->
+            income = value
+            store.saveIncome(value)
+            editingIncome = false
+        }
+    }
     editing?.let { index ->
         items.getOrNull(index)?.let { pay ->
             EditPaymentDialog(pay, { editing = null }) { changed ->
@@ -1455,17 +1592,64 @@ fun OrdersScreen(
     setAdding: (Boolean) -> Unit
 ) {
     var tracking by remember { mutableStateOf<Order?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val trackable = items.count { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
+
+    fun checkAll() {
+        scope.launch {
+            checking = true
+            message = null
+            var moved = 0
+            val now = System.currentTimeMillis()
+            val fresh = items.map { order ->
+                if (detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA) return@map order
+                val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                    ?: return@map order
+                if (status.stage.isNotBlank() && status.stage != order.status) moved++
+                applyStatus(order, status, now)
+            }
+            save(fresh)
+            checking = false
+            message = when {
+                trackable == 0 -> "Немає номерів Нової Пошти для перевірки"
+                moved > 0 -> "Оновлено, змінилось статусів: $moved"
+                else -> "Перевірено, змін немає"
+            }
+        }
+    }
+
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
-            ScreenHeader("ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам")
+            ScreenHeader(
+                "ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам",
+                trailing = {
+                    IconButton(onClick = { checkAll() }, enabled = !checking && trackable > 0) {
+                        if (checking) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                        } else {
+                            Icon(Icons.Default.Sync, "Перевірити статуси", tint = TextSecondary)
+                        }
+                    }
+                }
+            )
+            message?.let {
+                Text(
+                    it,
+                    Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
+                    color = TextSecondary,
+                    fontSize = Type.captionSize
+                )
+            }
         }
         if (items.isEmpty()) {
             item {
                 GhostSlots(
                     listOf(
                         "замовлено" to "оформлено, ще не відправлено",
-                        "в дорозі" to "їде, є трек-номер",
-                        "отримано" to "покупка закрита"
+                        "в дорозі" to "їде, статус тягнеться сам",
+                        "на відділенні" to "прибуло, можна забирати"
                     )
                 )
             }
@@ -1508,13 +1692,38 @@ fun OrdersScreen(
                                 fontSize = Type.captionSize
                             )
                         }
+                        if (order.statusDetail.isNotBlank()) {
+                            Text(
+                                order.statusDetail,
+                                color = TextPrimary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.xs)
+                            )
+                        }
+                        if (order.checkedAt > 0) {
+                            Text(
+                                "перевірено ${timeLabel(order.checkedAt)}",
+                                color = TextDisabled,
+                                fontSize = Type.captionSize
+                            )
+                        } else if (order.tracking.isNotBlank() &&
+                            detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA
+                        ) {
+                            Text(
+                                "Автоперевірка працює для номерів Нової Пошти",
+                                color = TextDisabled,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                        }
                     }
                 }
                 LazyRow(
                     Modifier.padding(horizontal = Space.lg),
                     horizontalArrangement = Arrangement.spacedBy(Space.sm)
                 ) {
-                    items(listOf("Замовлено", "В дорозі", "Отримано")) { status ->
+                    items(PARCEL_STAGES) { status ->
                         FilterChip(
                             order.status == status,
                             { save(items.map { if (it.id == order.id) it.copy(status = status) else it }) },
@@ -1529,6 +1738,28 @@ fun OrdersScreen(
                         Text("До магазину ↗")
                     }
                     IconButton({ tracking = order }) { Icon(Icons.Default.Edit, "Трек-номер") }
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                                message = if (status == null) {
+                                    "Не вдалося отримати статус"
+                                } else {
+                                    save(
+                                        items.map {
+                                            if (it.id == order.id) {
+                                                applyStatus(it, status, System.currentTimeMillis())
+                                            } else {
+                                                it
+                                            }
+                                        }
+                                    )
+                                    status.text
+                                }
+                            }
+                        },
+                        enabled = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
+                    ) { Icon(Icons.Default.Sync, "Перевірити статус") }
                     IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
                     Spacer(Modifier.weight(1f))
                 }
@@ -1620,8 +1851,12 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
             ScreenHeader("FLOWPAY", "Налаштування")
             // Filled list items painted a large lighter block across the screen and
             // left a hard seam under the header. They sit on the page instead.
-            SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин, коли є інтернет")
-            SettingsRow(Icons.Default.NotificationsNone, "Сповіщення", "Про падіння та досягнення цільової ціни")
+            SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин перевіряються ціни та статуси посилок")
+            SettingsRow(
+                Icons.Default.NotificationsNone,
+                "Сповіщення",
+                "Про падіння ціни, досягнення цілі та рух посилки. Ціни й доставка мають окремі канали."
+            )
             SettingsRow(
                 Icons.Default.Security,
                 "Приватність",
@@ -1787,6 +2022,35 @@ fun BoughtDialog(wish: Wish, close: () -> Unit, confirm: (String) -> Unit) {
         confirmButton = {
             Button({ confirm(trackingNumber.trim()) }) { Text("Перенести в покупки") }
         },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+/**
+ * Sets the monthly income.
+ *
+ * Only ever stored on the phone, and only used to subtract the standing costs from
+ * it, so the wishlist can plan against a real figure instead of a guess.
+ */
+@Composable
+fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
+    var text by remember { mutableStateOf(amountText(current)) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Дохід на місяць") },
+        text = {
+            Column {
+                Text(
+                    "Потрібен лише для того, щоб порахувати, скільки лишається після " +
+                        "постійних витрат. Нікуди не надсилається.",
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+                NumberField("Сума, ₴", text) { text = it }
+            }
+        },
+        confirmButton = { Button({ save(parseAmount(text)) }) { Text("Зберегти") } },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )
 }
