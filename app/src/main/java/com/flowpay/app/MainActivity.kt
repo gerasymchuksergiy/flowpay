@@ -690,12 +690,13 @@ fun WishlistScreen(
         }
         if (items.isEmpty()) {
             item {
-                GhostSlots(
-                    listOf(
-                        "назва товару" to "ціна і ціль",
-                        "назва товару" to "ціна і ціль"
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    EmptyInvite(
+                        "Ще нічого не хочеться",
+                        "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
+                            "далі стежить за ціною сам і скаже, коли вигідно купувати."
                     )
-                )
+                }
             }
         }
         items(sortWishes(items, sort), key = { it.id }) { wish ->
@@ -1523,11 +1524,12 @@ fun PaymentsScreen(
         }
         if (items.isEmpty()) {
             item {
-                GhostSlots(
+                PlaceholderRows(
                     listOf(
                         "оренда, комуналка" to "сума і день оплати",
                         "інтернет, підписки" to "сума і день оплати"
-                    )
+                    ),
+                    Modifier.padding(horizontal = Space.screen)
                 )
             }
         }
@@ -1699,13 +1701,13 @@ fun OrdersScreen(
         }
         if (items.isEmpty()) {
             item {
-                GhostSlots(
-                    listOf(
-                        "замовлено" to "оформлено, ще не відправлено",
-                        "в дорозі" to "їде, статус тягнеться сам",
-                        "на відділенні" to "прибуло, можна забирати"
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    EmptyInvite(
+                        "Посилок немає",
+                        "Додайте покупку з трек-номером Нової Пошти. Статус і залишок " +
+                            "безкоштовного зберігання підтягнуться самі."
                     )
-                )
+                }
             }
         }
         items(items, key = { it.id }) { order ->
@@ -2360,38 +2362,4 @@ fun SummaryCard(
     }
 }
 
-/**
- * What an empty screen shows instead of a grey card saying there is no data.
- *
- * Each slot is an outlined placeholder the height of a real row, labelled with the
- * fields it will hold. The emptiness takes on the shape of the future content, so
- * it reads as a system waiting rather than a screen that failed to load. Left
- * aligned on the same edge as the title, and never stretched to fill the screen.
- */
-@Composable
-fun GhostSlots(fields: List<Pair<String, String>>) {
-    Column(
-        Modifier.fillMaxWidth().padding(horizontal = Space.screen),
-        verticalArrangement = Arrangement.spacedBy(Space.md)
-    ) {
-        fields.forEach { (primary, secondary) ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .height(88.dp)
-                    .border(1.dp, HairLine, Radius.md)
-                    .padding(Space.lg),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(Modifier.size(56.dp).background(SurfaceRaised, Radius.sm))
-                Spacer(Modifier.width(Space.md))
-                Column {
-                    Text(primary, color = TextDisabled, fontSize = Type.bodySize)
-                    Spacer(Modifier.height(Space.xs))
-                    Text(secondary, color = TextDisabled, fontSize = Type.captionSize)
-                }
-            }
-        }
-    }
-}
 

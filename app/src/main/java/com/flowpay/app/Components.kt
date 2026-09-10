@@ -42,8 +42,13 @@ import androidx.compose.ui.unit.dp
 /**
  * The one loud block on a screen: a lime panel carrying the figure that matters.
  *
- * Nothing else on the same screen may be lime, apart from the navigation
- * indicator. If two of these appear together, both stop working.
+ * The panel is lime whether or not there is a figure yet. Greying it out when the
+ * value is zero was a mistake: an app with nothing in it then had no accent
+ * anywhere and read as a stack of grey slabs, which is the opposite of the point.
+ * A dark zero on lime still looks decided. `muted` only softens the number.
+ *
+ * Nothing else on the same screen may be lime, apart from the navigation indicator
+ * and the action button. If two of these appear together, both stop working.
  */
 @Composable
 fun HeroPanel(
@@ -56,10 +61,7 @@ fun HeroPanel(
 ) {
     Card(
         modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            // A figure that is absent does not deserve the loudest surface on screen.
-            containerColor = if (muted) SurfaceRaised else Accent
-        ),
+        colors = CardDefaults.cardColors(containerColor = Accent),
         shape = Radius.lg
     ) {
         Row(
@@ -69,24 +71,24 @@ fun HeroPanel(
             Column(Modifier.weight(1f)) {
                 Text(
                     label,
-                    color = if (muted) TextSecondary else AccentInk.copy(alpha = 0.7f),
+                    color = AccentInk.copy(alpha = 0.65f),
                     fontSize = Type.captionSize,
                     fontWeight = Type.medium
                 )
                 Spacer(Modifier.height(Space.sm))
                 Text(
                     value,
-                    color = if (muted) TextDisabled else AccentInk,
+                    color = if (muted) AccentInk.copy(alpha = 0.45f) else AccentInk,
                     fontSize = Type.heroSize,
                     lineHeight = Type.heroLine,
                     letterSpacing = Type.heroTracking,
-                    fontWeight = if (muted) Type.regular else FontWeight.Black
+                    fontWeight = if (muted) Type.medium else FontWeight.Black
                 )
                 caption?.let {
                     Spacer(Modifier.height(Space.xs))
                     Text(
                         it,
-                        color = if (muted) TextSecondary else AccentInk.copy(alpha = 0.7f),
+                        color = AccentInk.copy(alpha = 0.65f),
                         fontSize = Type.captionSize,
                         lineHeight = Type.captionLine
                     )
@@ -169,7 +171,8 @@ fun StatTile(
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
         shape = Radius.md
     ) {
-        Column(Modifier.padding(Space.lg)) {
+        // A fixed floor so a row of three stays a row of three when one label wraps.
+        Column(Modifier.height(124.dp).padding(Space.lg)) {
             Box(
                 Modifier.size(32.dp).background(SurfaceHigh, Radius.sm),
                 contentAlignment = Alignment.Center
@@ -197,8 +200,77 @@ fun StatTile(
                 label,
                 color = TextSecondary,
                 fontSize = Type.captionSize,
-                lineHeight = Type.captionLine
+                lineHeight = Type.captionLine,
+                maxLines = 2
             )
+        }
+    }
+}
+
+/**
+ * What a screen with nothing on it shows.
+ *
+ * A lime panel with an invitation, rather than hairline placeholders holding grey
+ * labels. Outlined ghosts read as a form that failed to load; the reference look
+ * answers an empty screen with its loudest surface and a sentence.
+ */
+@Composable
+fun EmptyInvite(title: String, text: String, modifier: Modifier = Modifier) {
+    Card(
+        modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = Accent),
+        shape = Radius.lg
+    ) {
+        Column(Modifier.padding(Space.xl)) {
+            Text(
+                title,
+                color = AccentInk,
+                fontSize = Type.screenTitleSize,
+                lineHeight = Type.screenTitleLine,
+                letterSpacing = Type.screenTitleTracking,
+                fontWeight = FontWeight.Black
+            )
+            Spacer(Modifier.height(Space.sm))
+            Text(
+                text,
+                color = AccentInk.copy(alpha = 0.75f),
+                fontSize = Type.bodySize,
+                lineHeight = Type.bodyLine
+            )
+        }
+    }
+}
+
+/**
+ * Placeholder rows for a screen that already carries a lime panel of its own.
+ *
+ * Solid surfaces rather than outlines, because a hairline box on a dark ground
+ * reads as a rendering failure.
+ */
+@Composable
+fun PlaceholderRows(fields: List<Pair<String, String>>, modifier: Modifier = Modifier) {
+    Column(
+        modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(Space.md)
+    ) {
+        fields.forEach { (primary, secondary) ->
+            Card(
+                Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                shape = Radius.md
+            ) {
+                Row(
+                    Modifier.padding(Space.lg),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(44.dp).background(SurfaceHigh, Radius.sm))
+                    Spacer(Modifier.width(Space.md))
+                    Column {
+                        Text(primary, color = TextSecondary, fontSize = Type.bodySize)
+                        Text(secondary, color = TextDisabled, fontSize = Type.captionSize)
+                    }
+                }
+            }
         }
     }
 }
