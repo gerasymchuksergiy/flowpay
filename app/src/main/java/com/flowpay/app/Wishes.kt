@@ -21,7 +21,7 @@ enum class WishSort(val label: String) {
  * Negative means it got cheaper, which is the direction worth noticing.
  */
 fun priceChangePercent(wish: Wish): Double {
-    val first = wish.history.firstOrNull() ?: wish.price
+    val first = wish.history.firstOrNull()?.price ?: wish.price
     return if (first > 0) (wish.price - first) / first * 100 else 0.0
 }
 

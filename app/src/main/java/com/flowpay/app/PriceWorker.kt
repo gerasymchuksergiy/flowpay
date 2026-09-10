@@ -25,26 +25,31 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         val fresh = old.map { previous ->
             runCatching { product(previous.url) }.getOrNull()?.let { current ->
                 pricesRead++
-                if (current.price < previous.price) {
-                    notify(
+                // A price that wobbles by a few hryvnia must not ring the phone twice a
+                // day, so an alert has to beat the last price already announced.
+                val alert = priceAlertFor(previous, current.price)
+                when (alert.kind) {
+                    AlertKind.TARGET_REACHED -> notify(
                         previous.name,
-                        "Ціна впала: ${previous.price.toInt()} ₴ → ${current.price.toInt()} ₴",
+                        "Досягнуто ціль ${money(previous.targetPrice)} — зараз ${money(current.price)}",
                         CHANNEL_PRICES,
                         "Зміни цін"
                     )
-                }
-                if (previous.targetPrice > 0 &&
-                    previous.price > previous.targetPrice &&
-                    current.price <= previous.targetPrice
-                ) {
-                    notify(
+                    AlertKind.NEW_LOW -> notify(
                         previous.name,
-                        "Досягнуто ціль ${previous.targetPrice.toInt()} ₴",
+                        "Найнижча ціна за весь час: ${money(current.price)}",
                         CHANNEL_PRICES,
                         "Зміни цін"
                     )
+                    AlertKind.DROP -> notify(
+                        previous.name,
+                        "Ціна впала: ${money(previous.price)} → ${money(current.price)}",
+                        CHANNEL_PRICES,
+                        "Зміни цін"
+                    )
+                    AlertKind.NONE -> Unit
                 }
-                refreshedWish(previous, current)
+                refreshedWish(previous, current).copy(notifiedPrice = alert.notifyPrice)
             } ?: previous
         }
         store.saveWishes(fresh)
@@ -61,6 +66,17 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             // stage twice a day would train you to ignore the channel.
             if (status.stage.isNotBlank() && status.stage != order.status) {
                 notify(order.name, statusLine(status), CHANNEL_PARCELS, "Статус посилок")
+            }
+            // The one number here that costs money to ignore.
+            val left = freeStorageDaysLeft(status.paidStorageFrom, java.time.LocalDate.now())
+            if (left != null && left in 0..2 && status.stage == AT_BRANCH) {
+                notify(
+                    order.name,
+                    if (left == 0) "Безкоштовне зберігання закінчилось"
+                    else "Безкоштовне зберігання ще ${daysLabel(left)}",
+                    CHANNEL_PARCELS,
+                    "Статус посилок"
+                )
             }
             applyStatus(order, status, checkedAt)
         }

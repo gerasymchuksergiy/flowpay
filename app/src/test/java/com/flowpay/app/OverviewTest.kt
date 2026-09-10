@@ -21,7 +21,12 @@ class OverviewTest {
         target: Double = 0.0,
         saved: Double = 0.0,
         history: List<Double> = listOf(price)
-    ) = Wish(id, "Товар $id", "https://shop/$id", "", price, target, "Інше", history, saved)
+    ) = Wish(
+        id, "Товар $id", "https://shop/$id", "", price, target, "Інше",
+        history.mapIndexed { index, value -> PricePoint(value, 20_000L + index) },
+        checkedDay = 20_100L,
+        saved = saved
+    )
 
     // ---------------------------------------------------------------- reminders
 

@@ -73,19 +73,26 @@ fun cleanProductTitle(raw: String): String {
  * what most shop templates leave behind in embedded structured data.
  */
 fun extractPrice(html: String): Double {
-    val fromMeta = metaContent(html, "product:price:amount")
+    // Structured data first: it is the only source shops are actually pushed to fill
+    // in, and it is unambiguous. Meta tags next, then a bare JSON field as a guess.
+    val fromJsonLd = extractJsonLdPrice(html)
+    if (fromJsonLd > 0) return fromJsonLd
+
+    val fromMeta = listOf("product:price:amount", "og:price:amount")
+        .firstNotNullOfOrNull { metaContent(html, it).takeIf { value -> value.isNotBlank() } }
+        .orEmpty()
     val raw = fromMeta.ifBlank {
         Regex(""""price"\s*:\s*["']?([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
             .find(html)?.groupValues?.get(1).orEmpty()
     }
-    return raw.replace(',', '.').toDoubleOrNull() ?: 0.0
+    return raw.replace(" ", "").replace(',', '.').toDoubleOrNull() ?: 0.0
 }
 
 /**
  * Builds a wish from a product page. Throws when there is no price, because a
  * price tracker with no price to track is worse than a clear failure.
  */
-fun parseProduct(html: String, url: String, id: String): Wish {
+fun parseProduct(html: String, url: String, id: String, today: Long = 0L): Wish {
     val price = extractPrice(html)
     require(price > 0) { "Не вдалося знайти ціну на сторінці" }
     val name = cleanProductTitle(metaContent(html, "og:title")).ifBlank { "Новий товар" }
@@ -95,7 +102,7 @@ fun parseProduct(html: String, url: String, id: String): Wish {
         url = url,
         image = decodeEntities(metaContent(html, "og:image")),
         price = price,
-        history = listOf(price)
+        history = listOf(PricePoint(price, today))
     )
 }
 
@@ -110,17 +117,91 @@ fun parseUsdRate(json: String): FxRate {
 }
 
 /**
- * Ukrainian needs three forms where English needs two, so "1 вимірювань" was
- * simply wrong on screen.
+ * Reads a price out of JSON-LD structured data.
+ *
+ * Open Graph price tags are the exception rather than the rule: `product:price:amount`
+ * and the legacy `og:price:amount` are rarely filled in. JSON-LD with `@type: Product`
+ * is what Google asks shops for, so it is present on pages where the meta tags are
+ * not, and it carries the currency and availability alongside the number.
+ *
+ * Returns zero when nothing usable is found, so the caller can fall through to the
+ * meta tags.
  */
-fun measurementsLabel(count: Int): String {
-    val lastTwo = count % 100
-    val last = count % 10
-    val word = when {
-        lastTwo in 11..14 -> "вимірювань"
-        last == 1 -> "вимірювання"
-        last in 2..4 -> "вимірювання"
-        else -> "вимірювань"
+fun extractJsonLdPrice(html: String): Double {
+    val blocks = Regex(
+        """<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    ).findAll(html).map { it.groupValues[1] }
+
+    for (block in blocks) {
+        val price = runCatching { priceFromJsonLd(block.trim()) }.getOrNull() ?: continue
+        if (price > 0) return price
     }
-    return "$count $word"
+    return 0.0
+}
+
+/** Walks a JSON-LD document looking for a Product offer, including inside @graph. */
+private fun priceFromJsonLd(raw: String): Double {
+    val roots: List<Any> = when {
+        raw.startsWith("[") -> {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { array.opt(it) }
+        }
+        raw.startsWith("{") -> listOf(org.json.JSONObject(raw))
+        else -> emptyList()
+    }
+    for (root in roots) {
+        val price = priceInNode(root, depth = 0)
+        if (price > 0) return price
+    }
+    return 0.0
+}
+
+private fun priceInNode(node: Any?, depth: Int): Double {
+    if (depth > 6) return 0.0
+    when (node) {
+        is JSONArray -> {
+            for (i in 0 until node.length()) {
+                val found = priceInNode(node.opt(i), depth + 1)
+                if (found > 0) return found
+            }
+        }
+        is org.json.JSONObject -> {
+            // offers may be an object, an array, or nested inside a graph.
+            node.opt("offers")?.let { offers ->
+                val direct = offerPrice(offers, depth + 1)
+                if (direct > 0) return direct
+            }
+            node.opt("@graph")?.let { graph ->
+                val found = priceInNode(graph, depth + 1)
+                if (found > 0) return found
+            }
+            val own = node.optString("price").takeIf { it.isNotBlank() }
+            if (own != null) {
+                val parsed = own.replace(" ", "").replace(',', '.').toDoubleOrNull()
+                if (parsed != null && parsed > 0) return parsed
+            }
+        }
+    }
+    return 0.0
+}
+
+private fun offerPrice(offers: Any?, depth: Int): Double {
+    when (offers) {
+        is JSONArray -> {
+            for (i in 0 until offers.length()) {
+                val found = offerPrice(offers.opt(i), depth + 1)
+                if (found > 0) return found
+            }
+        }
+        is org.json.JSONObject -> {
+            val raw = listOf("price", "lowPrice", "highPrice")
+                .firstNotNullOfOrNull { offers.optString(it).takeIf { value -> value.isNotBlank() } }
+            val parsed = raw?.replace(" ", "")?.replace(',', '.')?.toDoubleOrNull()
+            if (parsed != null && parsed > 0) return parsed
+            // priceSpecification wraps the number on some templates.
+            offers.opt("priceSpecification")?.let { return offerPrice(it, depth + 1) }
+        }
+    }
+    return 0.0
 }

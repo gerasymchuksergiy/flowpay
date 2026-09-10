@@ -69,13 +69,17 @@ data class Wish(
     val price: Double,
     val targetPrice: Double = 0.0,
     val category: String = "Інше",
-    val history: List<Double>,
+    val history: List<PricePoint>,
+    /** Epoch day the price was last checked, so time spans can be stated honestly. */
+    val checkedDay: Long = 0L,
     /** Money already put aside for this item. */
     val saved: Double = 0.0,
     /** What the plan is to add each month. */
     val monthlyPlan: Double = 0.0,
     /** Buy-by date as an epoch day. Zero means the plan runs from a monthly sum. */
-    val deadline: Long = 0L
+    val deadline: Long = 0L,
+    /** The last price a notification announced, so the next one has to beat it. */
+    val notifiedPrice: Double = 0.0
 )
 
 data class Pay(
@@ -96,7 +100,15 @@ data class Order(
     /** The carrier's own wording plus where it saw the parcel last. */
     val statusDetail: String = "",
     /** When the carrier was last asked, as epoch millis. Zero means never. */
-    val checkedAt: Long = 0L
+    val checkedAt: Long = 0L,
+    /** The carrier reported a refusal, a return, or a number it does not know. */
+    val problem: Boolean = false,
+    /** Epoch day free storage ends. Zero means the carrier has not said. */
+    val paidStorageFrom: Long = 0L,
+    /** Epoch day the carrier expects to deliver. Zero means unknown. */
+    val scheduledDelivery: Long = 0L,
+    /** Cash on delivery still owed. */
+    val amountToPay: Double = 0.0
 )
 
 class MainActivity : ComponentActivity() {
@@ -122,7 +134,7 @@ class Store(context: Context) {
     private val prefs = context.getSharedPreferences("flowpay", Context.MODE_PRIVATE)
 
     fun wishes(): List<Wish> = jsonList("w") { o ->
-        val history = o.optJSONArray("h") ?: JSONArray()
+        val recorded = o.optJSONArray("h") ?: JSONArray()
         Wish(
             id = o.optString("id", System.currentTimeMillis().toString()),
             name = cleanProductTitle(o.optString("n", "Товар")).ifBlank { "Товар" },
@@ -131,7 +143,15 @@ class Store(context: Context) {
             price = o.optDouble("p", 0.0),
             targetPrice = o.optDouble("t", 0.0),
             category = o.optString("c", "Інше"),
-            history = (0 until history.length()).map { history.optDouble(it) }.filter { it > 0 },
+            // Histories written before dates existed are bare numbers. They are read
+            // as points with an unknown day rather than being thrown away.
+            history = (0 until recorded.length()).mapNotNull { index ->
+                recorded.optJSONObject(index)?.let { point ->
+                    PricePoint(point.optDouble("p", 0.0), point.optLong("d", 0L))
+                } ?: recorded.optDouble(index, 0.0).takeIf { it > 0 }?.let { PricePoint(it, 0L) }
+            }.filter { it.price > 0 },
+            checkedDay = o.optLong("cd", 0L),
+            notifiedPrice = o.optDouble("np", 0.0),
             saved = o.optDouble("s", 0.0),
             monthlyPlan = o.optDouble("m", 0.0),
             deadline = o.optLong("dl", 0L)
@@ -140,8 +160,18 @@ class Store(context: Context) {
 
     fun saveWishes(items: List<Wish>) = save("w", items.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("i", it.image)
-            .put("p", it.price).put("t", it.targetPrice).put("c", it.category).put("h", JSONArray(it.history))
+            .put("p", it.price).put("t", it.targetPrice).put("c", it.category)
+            .put(
+                "h",
+                JSONArray().apply {
+                    it.history.forEach { point ->
+                        put(JSONObject().put("p", point.price).put("d", point.day))
+                    }
+                }
+            )
+            .put("cd", it.checkedDay)
             .put("s", it.saved).put("m", it.monthlyPlan).put("dl", it.deadline)
+            .put("np", it.notifiedPrice)
     })
 
     fun pays(): List<Pay> = jsonList("pay") {
@@ -163,13 +193,17 @@ class Store(context: Context) {
             it.optString("id"), it.optString("n"), it.optString("u"),
             it.optString("s", ORDERED), it.optString("t"),
             it.optString("i"), it.optDouble("p", 0.0),
-            it.optString("sd"), it.optLong("ca", 0L)
+            it.optString("sd"), it.optLong("ca", 0L),
+            it.optBoolean("pr", false), it.optLong("ps", 0L),
+            it.optLong("sdl", 0L), it.optDouble("atp", 0.0)
         )
     }
     fun saveOrders(items: List<Order>) = save("orders", items.map {
         JSONObject().put("id", it.id).put("n", it.name).put("u", it.url)
             .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
             .put("sd", it.statusDetail).put("ca", it.checkedAt)
+            .put("pr", it.problem).put("ps", it.paidStorageFrom)
+            .put("sdl", it.scheduledDelivery).put("atp", it.amountToPay)
     })
 
     /** Epoch day the payment reminder last ran, so a day is never repeated. */
@@ -240,11 +274,13 @@ fun isSupportedWebUrl(value: String): Boolean = runCatching {
     url.protocol in setOf("http", "https") && url.host.isNotBlank()
 }.getOrDefault(false)
 
-fun refreshedWish(previous: Wish, current: Wish): Wish = previous.copy(
-    image = current.image.ifBlank { previous.image },
-    price = current.price,
-    history = (previous.history + current.price).filter { it > 0 }.takeLast(90)
-)
+fun refreshedWish(previous: Wish, current: Wish, today: Long = LocalDate.now().toEpochDay()): Wish =
+    previous.copy(
+        image = current.image.ifBlank { previous.image },
+        price = current.price,
+        history = appendPrice(previous.history, current.price, today),
+        checkedDay = today
+    )
 
 suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     val normalizedLink = link.trim()
@@ -255,7 +291,7 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     connection.readTimeout = 15_000
     connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
     val html = connection.inputStream.bufferedReader().use { it.readText() }
-    parseProduct(html, normalizedLink, System.currentTimeMillis().toString())
+    parseProduct(html, normalizedLink, System.currentTimeMillis().toString(), LocalDate.now().toEpochDay())
 }
 
 data class FxRate(val buy: Double = 0.0, val sell: Double = 0.0)
@@ -801,6 +837,7 @@ fun WishDetailScreen(
         savingsPlan(goal, parseAmount(savedText), parseAmount(monthlyText))
     }
     val change = priceChangePercent(wish)
+    val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
 
     // Persist only when something the user typed or picked actually changed.
     LaunchedEffect(savedText, monthlyText, deadlineDay) {
@@ -1026,18 +1063,18 @@ fun WishDetailScreen(
                     }
 
                     else -> {
+                        // The daily figure leads because it is the one people act on.
+                        // Field work on a savings app found the same amount framed
+                        // per day rather than per month quadrupled sign-ups.
+                        PlanTile("Це ${money(plan.daily)} на день", monthsLabel(plan.months), Modifier.fillMaxWidth())
+                        Spacer(Modifier.height(Space.md))
                         Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                            PlanTile("Час до цілі", monthsLabel(plan.months), Modifier.weight(1f))
+                            PlanTile("Щотижня", money(plan.weekly), Modifier.weight(1f))
                             PlanTile(
-                                "Орієнтовно",
+                                "Готово",
                                 formatDate(readyDate(plan.months, today)),
                                 Modifier.weight(1f)
                             )
-                        }
-                        Spacer(Modifier.height(Space.md))
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                            PlanTile("Це щотижня", money(plan.weekly), Modifier.weight(1f))
-                            PlanTile("Це щодня", money(plan.daily), Modifier.weight(1f))
                         }
                     }
                 }
@@ -1052,19 +1089,53 @@ fun WishDetailScreen(
                 ) {
                     Column(Modifier.padding(Space.lg)) {
                         PriceChart(wish.history, Modifier.fillMaxWidth().height(120.dp))
+                        Spacer(Modifier.height(Space.md))
                         Text(
-                            "${measurementsLabel(wish.history.size)} · історія до 90",
+                            verdictLabel(insight.verdict),
+                            color = when (insight.verdict) {
+                                BuyVerdict.GOOD -> Accent
+                                BuyVerdict.POOR -> Negative
+                                else -> TextSecondary
+                            },
+                            fontSize = Type.cardTitleSize,
+                            fontWeight = Type.medium
+                        )
+                        Text(
+                            when (insight.verdict) {
+                                BuyVerdict.UNKNOWN ->
+                                    "Потрібно щонайменше два тижні спостережень і дві зміни ціни"
+                                BuyVerdict.GOOD ->
+                                    if (insight.atLowest) "Це найнижча ціна за весь час спостережень"
+                                    else "Ціна в нижній частині свого діапазону"
+                                BuyVerdict.FAIR -> "Ціна в середині свого діапазону"
+                                BuyVerdict.POOR ->
+                                    "Раніше ціна опускалась на ${"%.0f".format(insight.offHighest)}% нижче за максимум"
+                            },
                             color = TextSecondary,
                             fontSize = Type.captionSize,
-                            modifier = Modifier.padding(top = Space.md)
+                            lineHeight = Type.captionLine,
+                            modifier = Modifier.padding(top = Space.xs)
                         )
-                        if (wish.history.size > 1) {
+                        if (insight.changes > 1) {
+                            val lowDay = lowestPointDay(wish.history)
                             Text(
-                                "Найнижча ${money(wish.history.min())} · найвища ${money(wish.history.max())}",
+                                "Найнижча ${money(insight.lowest)}" +
+                                    (lowDay?.let { " — ${formatDate(LocalDate.ofEpochDay(it))}" } ?: "") +
+                                    " · найвища ${money(insight.highest)}",
                                 color = TextSecondary,
-                                fontSize = Type.captionSize
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.sm)
                             )
                         }
+                        Text(
+                            listOfNotNull(
+                                changesLabel(insight.changes),
+                                insight.daysTracked.takeIf { it > 0 }?.let { daysLabel(it) }
+                            ).joinToString(" за "),
+                            color = TextDisabled,
+                            fontSize = Type.captionSize
+                        )
                     }
                 }
 
@@ -1226,34 +1297,73 @@ fun WishCard(wish: Wish, onOpen: () -> Unit) {
                 )
             } else {
                 PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = Space.md))
-                Text(
-                    "${measurementsLabel(wish.history.size)} · історія до 90",
-                    color = TextSecondary,
-                    fontSize = Type.captionSize
-                )
+                val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
+                // A quietly broken parser showing a week-old price as current is worse
+                // than no price at all, so staleness is stated rather than hidden.
+                stalenessDays(wish.checkedDay, LocalDate.now().toEpochDay())?.takeIf { it >= 2 }?.let {
+                    Text(
+                        "Ціна не оновлювалась ${daysLabel(it)}",
+                        color = Negative,
+                        fontSize = Type.captionSize
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        verdictLabel(insight.verdict),
+                        color = when (insight.verdict) {
+                            BuyVerdict.GOOD -> Accent
+                            BuyVerdict.POOR -> Negative
+                            else -> TextSecondary
+                        },
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.strong
+                    )
+                    if (insight.daysTracked > 0) {
+                        Text(
+                            " · ${daysLabel(insight.daysTracked)} спостережень",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize
+                        )
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
-    val points = values.filter { it > 0 }
+fun PriceChart(history: List<PricePoint>, modifier: Modifier = Modifier) {
+    val points = history.filter { it.price > 0 }
     Canvas(modifier) {
         if (points.size < 2) {
             drawLine(TextDisabled, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 2f, StrokeCap.Round)
             return@Canvas
         }
-        val min = points.min()
-        val max = points.max()
+        val min = points.minOf { it.price }
+        val max = points.maxOf { it.price }
         val range = (max - min).takeIf { it > 0 } ?: 1.0
+
+        // A price that held for a month should occupy a month of the width. Spacing
+        // by date says that; spacing by index would draw every change equally wide
+        // and flatten the shape of what actually happened. Histories carried over
+        // from before dates existed fall back to even spacing.
+        val days = points.map { it.day }
+        val firstDay = days.first()
+        val lastDay = days.last()
+        val span = (lastDay - firstDay).takeIf { it > 0 && days.all { day -> day > 0 } }
+
         val path = Path()
-        points.forEachIndexed { index, value ->
-            val x = size.width * index / (points.size - 1)
-            val y = size.height - ((value - min) / range * size.height).toFloat()
+        points.forEachIndexed { index, point ->
+            val x = if (span != null) {
+                size.width * (point.day - firstDay).toFloat() / span.toFloat()
+            } else {
+                size.width * index / (points.size - 1)
+            }
+            val y = size.height - ((point.price - min) / range * size.height).toFloat()
             if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        drawPath(path, if (points.last() <= points.first()) Accent else Negative, style = Stroke(5f, cap = StrokeCap.Round))
+        val fell = points.last().price <= points.first().price
+        drawPath(path, if (fell) Accent else Negative, style = Stroke(5f, cap = StrokeCap.Round))
     }
 }
 
@@ -1725,6 +1835,47 @@ fun OrdersScreen(
                                 modifier = Modifier.padding(top = Space.xs)
                             )
                         }
+                        if (order.problem) {
+                            Text(
+                                "Потрібна увага: перевірте номер або статус у перевізника",
+                                color = Negative,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.xs)
+                            )
+                        }
+                        if (order.paidStorageFrom > 0) {
+                            val left = freeStorageDaysLeft(
+                                LocalDate.ofEpochDay(order.paidStorageFrom),
+                                LocalDate.now()
+                            ) ?: 0
+                            Text(
+                                if (left > 0) {
+                                    "Безкоштовне зберігання ще ${daysLabel(left)}, платне з " +
+                                        formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))
+                                } else {
+                                    "Безкоштовне зберігання закінчилось"
+                                },
+                                color = if (left in 1..2 || left == 0) Negative else Accent,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.xs)
+                            )
+                        }
+                        if (order.scheduledDelivery > 0 && order.status != RECEIVED) {
+                            Text(
+                                "Очікується ${formatDate(LocalDate.ofEpochDay(order.scheduledDelivery))}",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
+                        }
+                        if (order.amountToPay > 0) {
+                            Text(
+                                "До сплати при отриманні ${money(order.amountToPay)}",
+                                color = TextPrimary,
+                                fontSize = Type.captionSize
+                            )
+                        }
                         if (order.checkedAt > 0) {
                             Text(
                                 "перевірено ${timeLabel(order.checkedAt)}",
@@ -1917,6 +2068,33 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
                                     modifier = Modifier.padding(top = Space.xs)
                                 )
                             }
+                        }
+                    }
+                }
+
+                if (summary.plansConflict) {
+                    Spacer(Modifier.height(Space.md))
+                    Card(
+                        Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Text(
+                                "Плани не сходяться",
+                                color = Negative,
+                                fontSize = Type.cardTitleSize,
+                                fontWeight = Type.medium
+                            )
+                            Text(
+                                "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
+                                    "а вільно ${money(summary.freeCash)}. " +
+                                    "Не вистачає ${money(summary.plansOverBudget)}.",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.xs)
+                            )
                         }
                     }
                 }

@@ -1,6 +1,7 @@
 package com.flowpay.app
 
 import org.json.JSONObject
+import java.time.LocalDate
 
 /**
  * Reading a parcel's status from its carrier.
@@ -34,7 +35,18 @@ data class ParcelStatus(
     val warehouse: String,
     val receivedAt: String,
     /** The number is unknown to the carrier, or the parcel was refused or returned. */
-    val problem: Boolean
+    val problem: Boolean,
+    /** Branch number, which is what you actually tell a driver or look for on a door. */
+    val warehouseNumber: String,
+    /** When the carrier expects to deliver, if it says. */
+    val scheduledDelivery: LocalDate?,
+    /**
+     * The day storage stops being free. Nova Poshta reports this directly, so it is
+     * read rather than computed from a tariff that could change.
+     */
+    val paidStorageFrom: LocalDate?,
+    /** Cash on delivery still owed, if any. */
+    val amountToPay: Double
 )
 
 /**
@@ -87,7 +99,11 @@ fun parseNovaPoshtaStatus(json: String): ParcelStatus? {
         city = item.optString("CityRecipient").trim(),
         warehouse = item.optString("WarehouseRecipient").trim(),
         receivedAt = item.optString("RecipientDateTime").trim(),
-        problem = isProblemCode(code)
+        problem = isProblemCode(code),
+        warehouseNumber = item.optString("WarehouseRecipientNumber").trim(),
+        scheduledDelivery = parseCarrierDate(item.optString("ScheduledDeliveryDate")),
+        paidStorageFrom = parseCarrierDate(item.optString("DatePayedKeeping")),
+        amountToPay = item.optString("AmountToPay").replace(',', '.').toDoubleOrNull() ?: 0.0
     )
 }
 
@@ -97,7 +113,8 @@ fun parseNovaPoshtaStatus(json: String): ParcelStatus? {
 fun statusLine(status: ParcelStatus): String {
     val place = listOfNotNull(
         status.city.takeIf { it.isNotBlank() },
-        status.warehouse.takeIf { it.isNotBlank() }
+        status.warehouseNumber.takeIf { it.isNotBlank() }?.let { "відділення №$it" }
+            ?: status.warehouse.takeIf { it.isNotBlank() }
     ).joinToString(", ")
     return if (place.isBlank()) status.text else "${status.text} · $place"
 }
@@ -112,5 +129,40 @@ fun statusLine(status: ParcelStatus): String {
 fun applyStatus(order: Order, status: ParcelStatus, atMillis: Long): Order = order.copy(
     status = status.stage.ifBlank { order.status },
     statusDetail = statusLine(status),
-    checkedAt = atMillis
+    checkedAt = atMillis,
+    problem = status.problem,
+    paidStorageFrom = status.paidStorageFrom?.toEpochDay() ?: 0L,
+    scheduledDelivery = status.scheduledDelivery?.toEpochDay() ?: 0L,
+    amountToPay = status.amountToPay
 )
+
+/**
+ * Reads a date out of a carrier field.
+ *
+ * Nova Poshta is inconsistent about its own format: the same response carries
+ * "01-08-2026 19:18:12" in one field and "04.08.2026 08:10:48" in another, so both
+ * separators have to be accepted. Anything unparseable becomes null rather than a
+ * wrong date.
+ */
+fun parseCarrierDate(raw: String): LocalDate? {
+    val head = raw.trim().take(10)
+    val parts = head.split('.', '-')
+    if (parts.size != 3) return null
+    val day = parts[0].toIntOrNull() ?: return null
+    val month = parts[1].toIntOrNull() ?: return null
+    val year = parts[2].toIntOrNull() ?: return null
+    if (year < 2000 || month !in 1..12 || day !in 1..31) return null
+    return runCatching { LocalDate.of(year, month, day) }.getOrNull()
+}
+
+/**
+ * Days of free storage left, or null when the carrier has not said.
+ *
+ * Zero means free storage has already run out. This is the only number in the app
+ * that costs money to ignore, which is why it is worth surfacing at all.
+ */
+fun freeStorageDaysLeft(paidStorageFrom: LocalDate?, today: LocalDate): Int? {
+    if (paidStorageFrom == null) return null
+    val days = java.time.temporal.ChronoUnit.DAYS.between(today, paidStorageFrom).toInt()
+    return days.coerceAtLeast(0)
+}

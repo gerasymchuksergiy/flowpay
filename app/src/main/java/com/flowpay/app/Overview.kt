@@ -29,7 +29,12 @@ data class Overview(
      * Months to fund everything still unfunded at the current free cash. Zero when
      * there is nothing left to save, and null when it cannot be known.
      */
-    val monthsToFundAll: Int?
+    val monthsToFundAll: Int?,
+    /** Everything the savings plans together ask for each month. */
+    val plannedMonthly: Double,
+    /** How much those plans exceed what is actually free. Zero when they fit. */
+    val plansOverBudget: Double,
+    val plansConflict: Boolean
 )
 
 fun overview(
@@ -44,6 +49,7 @@ fun overview(
     val expenses = monthlyTotal(pays, usdSellRate)
     val month = budget(income, expenses)
     val remaining = (goals - saved).coerceAtLeast(0.0)
+    val planned = wishes.sumOf { it.monthlyPlan.coerceAtLeast(0.0) }
     return Overview(
         wishCount = wishes.size,
         wishTotal = goals,
@@ -62,6 +68,11 @@ fun overview(
             month.free > 0.0 -> savingsPlan(goals, saved, month.free).months
             // No income entered, or the month does not fit: there is no rate to divide by.
             else -> null
-        }
+        },
+        plannedMonthly = planned,
+        plansOverBudget = (planned - month.free).coerceAtLeast(0.0),
+        // Each wish plans in isolation, so their sum can quietly exceed the month.
+        // Nothing else in the app is in a position to notice that.
+        plansConflict = !month.unknown && planned > 0.0 && planned > month.free
     )
 }

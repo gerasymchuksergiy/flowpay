@@ -88,7 +88,7 @@ class ParsingTest {
         assertEquals("Чоловічі кросівки ASICS Gel 1130", wish.name)
         assertEquals("https://shop.example/photo.jpg", wish.image)
         assertEquals(2203.24, wish.price, 0.001)
-        assertEquals(listOf(2203.24), wish.history)
+        assertEquals(listOf(2203.24), wish.history.map { it.price })
     }
 
     @Test
@@ -128,19 +128,5 @@ class ParsingTest {
 
         assertEquals(0.0, rate.buy, 0.001)
         assertEquals(0.0, rate.sell, 0.001)
-    }
-
-    @Test
-    fun `measurement counts use the three ukrainian plural forms`() {
-        assertEquals("1 вимірювання", measurementsLabel(1))
-        assertEquals("2 вимірювання", measurementsLabel(2))
-        assertEquals("4 вимірювання", measurementsLabel(4))
-        assertEquals("5 вимірювань", measurementsLabel(5))
-        assertEquals("11 вимірювань", measurementsLabel(11))
-        assertEquals("14 вимірювань", measurementsLabel(14))
-        assertEquals("21 вимірювання", measurementsLabel(21))
-        assertEquals("22 вимірювання", measurementsLabel(22))
-        assertEquals("25 вимірювань", measurementsLabel(25))
-        assertEquals("0 вимірювань", measurementsLabel(0))
     }
 }
