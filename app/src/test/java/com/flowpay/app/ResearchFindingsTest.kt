@@ -284,6 +284,34 @@ class ResearchFindingsTest {
     }
 
     @Test
+    fun `the apk matching the release version wins over one listed earlier`() {
+        // A real release ended up with a stale build listed first, which would have
+        // installed an older version and then offered the same update for ever.
+        val names = listOf("FlowPay-debug-local.apk", "FlowPay-v2.3.0.apk")
+
+        assertEquals("FlowPay-v2.3.0.apk", pickApkAsset(names, "v2.3.0"))
+    }
+
+    @Test
+    fun `a single apk is taken whatever it is called`() {
+        assertEquals("app-release.apk", pickApkAsset(listOf("app-release.apk"), "v2.3.0"))
+        assertEquals("build.apk", pickApkAsset(listOf("notes.txt", "build.apk"), "v9.9.9"))
+    }
+
+    @Test
+    fun `a release with no apk yields nothing to install`() {
+        assertNull(pickApkAsset(listOf("notes.txt", "sources.zip"), "v2.3.0"))
+        assertNull(pickApkAsset(emptyList(), "v2.3.0"))
+    }
+
+    @Test
+    fun `without a version in the tag the first apk is used`() {
+        val names = listOf("first.apk", "second.apk")
+
+        assertEquals("first.apk", pickApkAsset(names, "latest"))
+    }
+
+    @Test
     fun `the lowest price carries the day it was seen`() {
         val history = listOf(
             PricePoint(1200.0, day - 30),

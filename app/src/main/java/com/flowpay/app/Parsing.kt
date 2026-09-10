@@ -226,3 +226,22 @@ fun releaseVersionCode(body: String, tag: String): Int? {
     val patch = parts[3].toIntOrNull() ?: return null
     return major * 10_000 + minor * 100 + patch
 }
+
+/**
+ * Chooses which file to download from a release.
+ *
+ * A release can end up holding more than one APK, and taking whichever happens to
+ * be listed first is a coin toss: picking a stale build makes the app install an
+ * older version, then see the release as newer again and offer the same update for
+ * ever. So an asset whose name carries the release's own version wins, and the
+ * first APK is only a fallback.
+ */
+fun pickApkAsset(names: List<String>, tag: String): String? {
+    val apks = names.filter { it.endsWith(".apk", ignoreCase = true) }
+    if (apks.isEmpty()) return null
+    val version = Regex("""\d+\.\d+\.\d+""").find(tag)?.value
+    if (version != null) {
+        apks.firstOrNull { it.contains(version) }?.let { return it }
+    }
+    return apks.first()
+}

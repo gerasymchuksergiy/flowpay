@@ -318,8 +318,9 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     val tag = release.optString("tag_name")
     val code = releaseVersionCode(release.optString("body"), tag) ?: return@withContext null
     val assets = release.optJSONArray("assets") ?: return@withContext null
-    val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
-        .firstOrNull { it.optString("name").endsWith(".apk", true) } ?: return@withContext null
+    val all = (0 until assets.length()).map { assets.getJSONObject(it) }
+    val chosen = pickApkAsset(all.map { it.optString("name") }, tag) ?: return@withContext null
+    val apk = all.first { it.optString("name") == chosen }
     val downloadUrl = apk.optString("browser_download_url")
     val downloadUri = downloadUrl.toUri()
     if (downloadUri.scheme != "https" || downloadUri.host != "github.com") return@withContext null
