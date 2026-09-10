@@ -282,6 +282,7 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
 val Accent = Color(0xffd7ff63)
 val AppBackground = Color(0xff090a08)
 val CardBackground = Color(0xff1a1b18)
+val TextPrimary = Color(0xfff1f3ec)
 private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " ₴"
 
 @Composable
@@ -292,8 +293,16 @@ fun FlowPayApp(context: Context) {
     var pays by remember { mutableStateOf(store.pays()) }
     var orders by remember { mutableStateOf(store.orders()) }
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = AppBackground, surface = CardBackground)) {
-        Scaffold(containerColor = Color.Transparent, bottomBar = {
+    MaterialTheme(
+        colorScheme = darkColorScheme(
+            primary = Accent,
+            background = AppBackground,
+            surface = CardBackground,
+            onBackground = TextPrimary,
+            onSurface = TextPrimary
+        )
+    ) {
+        Scaffold(containerColor = Color.Transparent, contentColor = TextPrimary, bottomBar = {
             NavigationBar(containerColor = Color(0xff141512), tonalElevation = 0.dp) {
                 val tabs = listOf(
                     Icons.Default.FavoriteBorder to "Бажання",
