@@ -20,10 +20,13 @@ import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 /**
- * Tells you the day before a standing payment is due.
+ * Tells you a standing payment is coming, as far ahead as that payment asks for.
  *
- * A day of notice is the useful amount: enough to move money or top up a card,
- * not so early that it gets forgotten again.
+ * It used to look only at tomorrow. A day is right for a bill you have to find
+ * money for, but wrong for a subscription: by the time the charge is a day away
+ * there is nothing left to decide, and the only way not to pay for another year is
+ * to cancel before the renewal. So the notice period lives on the expense, and
+ * everything whose window has opened goes into one message a day.
  */
 class ReminderWorker(context: Context, parameters: WorkerParameters) :
     CoroutineWorker(context, parameters) {
@@ -36,15 +39,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // so the last reminded day is recorded and the same day is never repeated.
         if (store.lastReminderDay() == today.toEpochDay()) return Result.success()
 
-        val tomorrow = today.plusDays(1)
-        val due = paymentsDueOn(store.pays(), tomorrow)
-        if (due.isNotEmpty()) {
-            val listed = due.joinToString(", ") { "${it.name} ${amountLabel(it.amount, it.currency)}" }
-            notify(
-                if (due.size == 1) "Завтра оплата" else "Завтра ${due.size} платежі",
-                listed
-            )
-        }
+        val due = remindersDue(store.pays(), today)
+        if (due.isNotEmpty()) notify(reminderTitle(due), reminderText(due))
         store.saveLastReminderDay(today.toEpochDay())
         return Result.success()
     }

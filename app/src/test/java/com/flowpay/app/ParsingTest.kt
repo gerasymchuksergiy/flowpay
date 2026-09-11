@@ -154,5 +154,68 @@ class ParsingTest {
 
         assertEquals(0.0, rate.buy, 0.001)
         assertEquals(0.0, rate.sell, 0.001)
+        assertEquals("", rate.source)
+    }
+
+    @Test
+    fun `a monobank rate carries monobank as its source`() {
+        val feed = """[{"currencyCodeA":840,"currencyCodeB":980,"rateBuy":44.4,"rateSell":44.8}]"""
+
+        assertEquals(SOURCE_MONOBANK, parseUsdRate(feed).source)
+    }
+
+    // ------------------------------------------------------ national bank
+
+    private val nbuFeed = """
+        [{"r030":840,"txt":"Долар США","rate":41.2537,"cc":"USD","exchangedate":"12.09.2026"}]
+    """.trimIndent()
+
+    @Test
+    fun `the national bank feed yields the official rate and the day it is for`() {
+        val rate = parseNbuRate(nbuFeed)
+
+        assertEquals(41.2537, rate.sell, 0.0001)
+        assertEquals(SOURCE_NBU, rate.source)
+        assertEquals("12.09.2026", rate.date)
+    }
+
+    @Test
+    fun `the official rate has no spread, so buying and selling read the same`() {
+        // Not an oversight: the published rate is one figure, and splitting it into
+        // a fake buy and sell would invent a spread nobody trades at.
+        val rate = parseNbuRate(nbuFeed)
+
+        assertEquals(rate.buy, rate.sell, 0.0001)
+    }
+
+    @Test
+    fun `an empty or unrelated national bank answer yields no rate rather than zero pretending to be one`() {
+        assertEquals(0.0, parseNbuRate("[]").sell, 0.001)
+        assertEquals("", parseNbuRate("[]").source)
+
+        val euro = """[{"rate":47.9,"cc":"EUR","exchangedate":"12.09.2026"}]"""
+        assertEquals(0.0, parseNbuRate(euro).sell, 0.001)
+    }
+
+    @Test
+    fun `a source is stated for every rate that reaches the screen`() {
+        assertEquals("Ринковий курс Monobank", rateSourceLabel(FxRate(44.4, 44.8, SOURCE_MONOBANK)))
+        assertEquals(
+            "Офіційний курс НБУ на 12.09.2026",
+            rateSourceLabel(FxRate(41.25, 41.25, SOURCE_NBU, "12.09.2026"))
+        )
+        assertEquals("Офіційний курс НБУ", rateSourceLabel(FxRate(41.25, 41.25, SOURCE_NBU)))
+        // Nothing to label when there is no figure yet.
+        assertEquals("", rateSourceLabel(FxRate()))
+    }
+
+    @Test
+    fun `an official rate is shown as one figure and a bank rate as two`() {
+        assertEquals(
+            "Купівля 44,40 · продаж 44,80",
+            rateHeadline(FxRate(44.4, 44.8, SOURCE_MONOBANK))
+        )
+        assertEquals("41,25 ₴ за долар", rateHeadline(FxRate(41.2537, 41.2537, SOURCE_NBU)))
+        assertEquals("Курс ще не завантажено", rateHeadline(FxRate()))
     }
 }
