@@ -204,4 +204,91 @@ class OverviewTest {
         assertTrue(summary.budgetUnknown)
         assertEquals(0, summary.monthsToFundAll)
     }
+
+    // ------------------------------------------- what the watched prices did
+
+    @Test
+    fun `a list that fell is reported as money and as a share`() {
+        val moved = priceMovement(
+            listOf(
+                wish("a", price = 800.0, history = listOf(1000.0, 800.0)),
+                wish("b", price = 1900.0, history = listOf(2000.0, 1900.0))
+            )
+        )
+
+        assertEquals(2, moved.tracked)
+        assertEquals(2, moved.cheaper)
+        assertEquals(0, moved.dearer)
+        assertEquals(3000.0, moved.firstTotal, 0.001)
+        assertEquals(2700.0, moved.nowTotal, 0.001)
+        assertEquals(-300.0, moved.change, 0.001)
+        assertEquals(-10.0, moved.changePercent, 0.001)
+    }
+
+    @Test
+    fun `falls and rises are counted apart and netted together`() {
+        val moved = priceMovement(
+            listOf(
+                wish("a", price = 800.0, history = listOf(1000.0, 800.0)),
+                wish("b", price = 2500.0, history = listOf(2000.0, 2500.0)),
+                wish("c", price = 500.0, history = listOf(500.0, 500.0))
+            )
+        )
+
+        assertEquals(3, moved.tracked)
+        assertEquals(1, moved.cheaper)
+        assertEquals(1, moved.dearer)
+        assertEquals(1, moved.steady)
+        assertEquals(300.0, moved.change, 0.001)
+    }
+
+    @Test
+    fun `a wish measured once cannot have moved and is not counted`() {
+        val moved = priceMovement(
+            listOf(
+                wish("a", price = 800.0, history = listOf(800.0)),
+                wish("b", price = 900.0, history = emptyList())
+            )
+        )
+
+        assertEquals(0, moved.tracked)
+        assertEquals(0.0, moved.change, 0.001)
+        assertEquals(0.0, moved.changePercent, 0.001)
+        assertNull(moved.biggestDropName)
+        assertNull(moved.biggestRiseName)
+    }
+
+    @Test
+    fun `the steepest move in each direction is named`() {
+        val moved = priceMovement(
+            listOf(
+                wish("a", price = 900.0, history = listOf(1000.0, 900.0)),
+                wish("b", price = 500.0, history = listOf(1000.0, 500.0)),
+                wish("c", price = 1300.0, history = listOf(1000.0, 1300.0))
+            )
+        )
+
+        assertEquals("Товар b", moved.biggestDropName)
+        assertEquals(-50.0, moved.biggestDropPercent, 0.001)
+        assertEquals("Товар c", moved.biggestRiseName)
+        assertEquals(30.0, moved.biggestRisePercent, 0.001)
+    }
+
+    @Test
+    fun `an empty list says nothing rather than dividing by zero`() {
+        val moved = priceMovement(emptyList())
+
+        assertEquals(0, moved.tracked)
+        assertEquals(0.0, moved.changePercent, 0.001)
+    }
+
+    @Test
+    fun `positions are counted the way Ukrainian counts them`() {
+        assertEquals("1 позиція", positionsLabel(1))
+        assertEquals("3 позиції", positionsLabel(3))
+        assertEquals("7 позицій", positionsLabel(7))
+        assertEquals("12 позицій", positionsLabel(12))
+        assertEquals("21 позиція", positionsLabel(21))
+    }
+
 }

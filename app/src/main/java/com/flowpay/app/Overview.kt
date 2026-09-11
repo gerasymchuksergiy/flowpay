@@ -35,7 +35,9 @@ data class Overview(
     val plannedMonthly: Double,
     /** How much those plans exceed what is actually free. Zero when they fit. */
     val plansOverBudget: Double,
-    val plansConflict: Boolean
+    val plansConflict: Boolean,
+    /** What the watched prices have done since tracking began. */
+    val movement: PriceMovement
 )
 
 fun overview(
@@ -52,6 +54,7 @@ fun overview(
     val remaining = (goals - saved).coerceAtLeast(0.0)
     val planned = wishes.sumOf { it.monthlyPlan.coerceAtLeast(0.0) }
     return Overview(
+        movement = priceMovement(wishes),
         wishCount = wishes.size,
         wishTotal = goals,
         savedTotal = saved,

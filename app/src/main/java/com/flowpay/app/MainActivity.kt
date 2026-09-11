@@ -2249,6 +2249,109 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
                     }
                 }
 
+                val moved = summary.movement
+                if (moved.tracked > 0) {
+                    Spacer(Modifier.height(Space.md))
+                    Card(
+                        Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Text(
+                                when {
+                                    moved.change < 0 -> "Список подешевшав"
+                                    moved.change > 0 -> "Список подорожчав"
+                                    else -> "Ціни стоять на місці"
+                                },
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
+                            Spacer(Modifier.height(Space.xs))
+                            Text(
+                                if (moved.change == 0.0) {
+                                    money(0.0)
+                                } else {
+                                    "${money(kotlin.math.abs(moved.change))} · " +
+                                        "%+.1f%%".format(moved.changePercent)
+                                },
+                                fontSize = Type.sectionSize,
+                                lineHeight = Type.sectionLine,
+                                fontWeight = Type.strong,
+                                color = when {
+                                    moved.change < 0 -> Accent
+                                    moved.change > 0 -> Negative
+                                    else -> TextPrimary
+                                }
+                            )
+                            Text(
+                                "від ${money(moved.firstTotal)} за весь час спостереження · " +
+                                    positionsLabel(moved.tracked),
+                                color = TextDisabled,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                            Spacer(Modifier.height(Space.sm))
+                            LeaderRow("Подешевшало", moved.cheaper.toString())
+                            LeaderRow(
+                                "Подорожчало",
+                                moved.dearer.toString(),
+                                alarm = moved.dearer > 0
+                            )
+                            LeaderRow("Без змін", moved.steady.toString())
+
+                            // Named separately rather than as leader rows: a product
+                            // name is long enough to squeeze the figure off the line.
+                            moved.biggestDropName?.let { name ->
+                                Spacer(Modifier.height(Space.sm))
+                                Text(
+                                    "Найбільше подешевшало",
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        name,
+                                        fontSize = Type.captionSize,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f).padding(end = Space.sm)
+                                    )
+                                    Text(
+                                        "%+.1f%%".format(moved.biggestDropPercent),
+                                        color = Accent,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.strong
+                                    )
+                                }
+                            }
+                            moved.biggestRiseName?.let { name ->
+                                Spacer(Modifier.height(Space.sm))
+                                Text(
+                                    "Найбільше подорожчало",
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize
+                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        name,
+                                        fontSize = Type.captionSize,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f).padding(end = Space.sm)
+                                    )
+                                    Text(
+                                        "%+.1f%%".format(moved.biggestRisePercent),
+                                        color = Negative,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.strong
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(Space.md))
                 // Three figures and their targets in the height one card used to take,
                 // with the rings restating them. This density is what the reference
