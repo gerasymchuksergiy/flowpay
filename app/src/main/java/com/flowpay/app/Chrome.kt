@@ -103,7 +103,11 @@ private fun parcelNote(orders: List<Order>, today: LocalDate): StatusNote? {
 
 private fun paymentNote(pays: List<Pay>, today: LocalDate, usdSellRate: Double): StatusNote? {
     val next = nextPayment(pays, today, usdSellRate) ?: return null
-    if (next.daysAway > 1) return null
+    // How much notice a charge deserves is the user's to set, and it was being
+    // decided twice: the daily reminder honoured warnDays while this kept its own
+    // "today or tomorrow". An expense set to a week's warning reached one seven
+    // days out and the other the night before.
+    if (next.items.none { next.daysAway <= it.warnDays.coerceAtLeast(0) }) return null
     val due = next.total
     return StatusNote(
         kind = StatusKind.PAYMENT,

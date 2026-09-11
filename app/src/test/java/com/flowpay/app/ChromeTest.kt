@@ -133,6 +133,28 @@ class ChromeTest {
     }
 
     @Test
+    fun `a longer notice period brings the pill forward with it`() {
+        // Seven days' warning is seven days in both places, not seven in the
+        // notification and one here.
+        val pays = listOf(Pay("Хостинг", 900.0, day = 15, warnDays = 7))
+
+        val note = statusNote(emptyList(), pays, emptyList(), today, 41.0)
+
+        assertEquals(StatusKind.PAYMENT, note?.kind)
+        assertEquals("Платіж через 5 днів", note?.title)
+        assertFalse(note!!.urgent)
+    }
+
+    @Test
+    fun `no notice asked for means the pill waits for the day itself`() {
+        val onTheDay = listOf(Pay("Інтернет", 300.0, day = 11, warnDays = 0))
+        assertNull(statusNote(emptyList(), onTheDay, emptyList(), today, 41.0))
+
+        val arrived = listOf(Pay("Інтернет", 300.0, day = 10, warnDays = 0))
+        assertEquals("Платіж сьогодні", statusNote(emptyList(), arrived, emptyList(), today, 41.0)?.title)
+    }
+
+    @Test
     fun `dollars due with no rate are named rather than dropped`() {
         val pays = listOf(Pay("Оренда квартири", 300.0, day = 10, currency = USD))
         val note = statusNote(emptyList(), pays, emptyList(), today, 0.0)
