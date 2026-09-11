@@ -1,6 +1,7 @@
 package com.flowpay.app
 
 import java.text.NumberFormat
+import java.time.LocalDate
 import java.util.Locale
 
 /**
@@ -89,10 +90,72 @@ fun budget(income: Double, expenses: MonthlyTotal): Budget {
 fun effectivePaymentDay(day: Int, monthLength: Int): Int = day.coerceIn(1, monthLength)
 
 /** Payments falling due on exactly this date. */
-fun paymentsDueOn(items: List<Pay>, date: java.time.LocalDate): List<Pay> {
+fun paymentsDueOn(items: List<Pay>, date: LocalDate): List<Pay> {
     val monthLength = date.lengthOfMonth()
     return items.filter { effectivePaymentDay(it.day, monthLength) == date.dayOfMonth }
 }
+
+/**
+ * The next date money actually leaves, and what leaves with it.
+ *
+ * A monthly total is a figure you read; this is a figure you act on, which is
+ * why it belongs at the top of the screen instead.
+ */
+data class NextPayment(
+    val date: LocalDate,
+    /** Nought when something is due today. */
+    val daysAway: Int,
+    val items: List<Pay>,
+    /** Everything due that day, so a missing rate stays visible instead of reading as zero. */
+    val total: MonthlyTotal
+)
+
+fun nextPayment(items: List<Pay>, today: LocalDate, usdSellRate: Double): NextPayment? {
+    if (items.isEmpty()) return null
+    // A month and a day is enough to find the next occurrence of any day number,
+    // including the 31st landing on the 30th of a short month.
+    for (offset in 0..31) {
+        val date = today.plusDays(offset.toLong())
+        val due = paymentsDueOn(items, date)
+        if (due.isNotEmpty()) {
+            return NextPayment(date, offset, due, monthlyTotal(due, usdSellRate))
+        }
+    }
+    return null
+}
+
+/** "сьогодні", "завтра", "через 3 дні". */
+fun dueLabel(daysAway: Int): String = when (daysAway) {
+    0 -> "сьогодні"
+    1 -> "завтра"
+    else -> "через ${daysLabel(daysAway)}"
+}
+
+/**
+ * Expenses that fall on the same date, soonest first.
+ *
+ * Positions rather than the expenses themselves, because two identical entries
+ * are equal as values and deleting "one of them" has to mean a definite one.
+ */
+data class PaymentGroup(val date: LocalDate, val positions: List<Int>)
+
+fun paymentGroups(items: List<Pay>, today: LocalDate): List<PaymentGroup> =
+    items.indices
+        .groupBy { nextDateFor(items[it], today) }
+        .toSortedMap()
+        .map { (date, positions) -> PaymentGroup(date, positions) }
+
+/** The next time this expense comes round, this month or next. */
+private fun nextDateFor(pay: Pay, today: LocalDate): LocalDate {
+    val thisMonth = effectivePaymentDay(pay.day, today.lengthOfMonth())
+    if (thisMonth >= today.dayOfMonth) return today.withDayOfMonth(thisMonth)
+    val next = today.plusMonths(1)
+    return next.withDayOfMonth(effectivePaymentDay(pay.day, next.lengthOfMonth()))
+}
+
+/** Which days of the current month carry a payment, for the month strip. */
+fun paymentDays(items: List<Pay>, monthLength: Int): Set<Int> =
+    items.map { effectivePaymentDay(it.day, monthLength) }.toSet()
 
 private val UK = Locale("uk", "UA")
 

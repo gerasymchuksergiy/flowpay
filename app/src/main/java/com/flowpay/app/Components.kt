@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -405,18 +406,7 @@ fun LeaderRow(label: String, value: String, modifier: Modifier = Modifier, alarm
     ) {
         Text(label, color = TextSecondary, fontSize = Type.captionSize)
         Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
-            Canvas(Modifier.fillMaxWidth().height(1.dp)) {
-                var x = 0f
-                while (x < size.width) {
-                    drawRoundRect(
-                        color = HairLine,
-                        topLeft = Offset(x, 0f),
-                        size = Size(2f, 1.5f),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f)
-                    )
-                    x += 6f
-                }
-            }
+            DottedLeader(Modifier.fillMaxWidth())
         }
         Text(
             value,
@@ -427,6 +417,73 @@ fun LeaderRow(label: String, value: String, modifier: Modifier = Modifier, alarm
     }
 }
 
+
+/**
+ * The dotted run between a label and its figure.
+ *
+ * Carries the eye across the gap without drawing a line that competes with the
+ * text, the way a table of contents does.
+ */
+@Composable
+fun DottedLeader(modifier: Modifier = Modifier) {
+    Canvas(modifier.height(1.dp)) {
+        var x = 0f
+        while (x < size.width) {
+            drawRoundRect(
+                color = HairLine,
+                topLeft = Offset(x, 0f),
+                size = Size(2f, 1.5f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f)
+            )
+            x += 6f
+        }
+    }
+}
+
+/**
+ * The shape of the month in a single line.
+ *
+ * A tick for every day: short and grey for an ordinary one, tall and lime where
+ * money leaves, full height and light where today is. It answers "when does it
+ * all happen" before a single row of the list has been read.
+ */
+@Composable
+fun MonthStrip(
+    monthLength: Int,
+    today: Int,
+    marked: Set<Int>,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier.fillMaxWidth().height(26.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        (1..monthLength).forEach { day ->
+            Box(
+                Modifier
+                    .weight(1f)
+                    .padding(horizontal = 1.dp)
+                    .height(
+                        when {
+                            day == today -> 26.dp
+                            day in marked -> 16.dp
+                            else -> 6.dp
+                        }
+                    )
+                    .background(
+                        when {
+                            // Today is light rather than lime, so the colour keeps
+                            // meaning one thing only: money.
+                            day == today -> TextPrimary
+                            day in marked -> Accent
+                            else -> HairLine
+                        },
+                        RoundedCornerShape(2.dp)
+                    )
+            )
+        }
+    }
+}
 
 /**
  * What a screen with nothing on it shows.

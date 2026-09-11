@@ -70,6 +70,10 @@ private val MONTHS_GENITIVE = listOf(
 fun formatDate(date: LocalDate): String =
     "${date.dayOfMonth} ${MONTHS_GENITIVE[date.monthValue - 1]} ${date.year}"
 
+/** "10 грудня" — the same date as a heading, where the year is noise. */
+fun dayMonth(date: LocalDate): String =
+    "${date.dayOfMonth} ${MONTHS_GENITIVE[date.monthValue - 1]}"
+
 fun readyDate(months: Int, today: LocalDate): LocalDate = today.plusMonths(months.toLong())
 
 /** Ukrainian needs three forms, so "3 місяць" and "5 місяці" both have to be impossible. */

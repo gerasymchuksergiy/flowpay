@@ -23,6 +23,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -1490,64 +1491,101 @@ fun PaymentsScreen(
     var editingIncome by remember { mutableStateOf(false) }
     val month = budget(income, monthly)
     var editing by remember { mutableStateOf<Int?>(null) }
+    // Read once, so the timeline and the strip cannot disagree about which day it is.
+    val today = remember { LocalDate.now() }
     LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
         item {
             ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
             Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
+                // The loudest figure should be one you can act on. A monthly total is
+                // read and forgotten; the next payment is prepared for, so it takes
+                // the panel and the total moves down into the summary rows.
+                val next = nextPayment(items, today, rate.sell)
                 HeroPanel(
-                    label = "Разом на місяць",
-                    value = money(monthly.total),
-                    caption = when {
-                        monthly.rateMissing ->
-                            "Плюс ${dollars(monthly.usd)} — курс ще не завантажено"
-                        monthly.hasUsd ->
-                            "З них ${dollars(monthly.usd)} ≈ ${money(monthly.usdInUah)} по ${"%.2f".format(rate.sell)}"
-                        else -> null
+                    label = if (next != null) {
+                        "Найближчий платіж · ${dueLabel(next.daysAway)}"
+                    } else {
+                        "Разом на місяць"
                     },
-                    muted = monthly.total <= 0.0
+                    value = money(next?.total?.total ?: monthly.total),
+                    caption = when {
+                        next == null -> null
+                        next.total.rateMissing ->
+                            "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
+                        else ->
+                            "${dayMonth(next.date)} · ${next.items.joinToString(", ") { it.name }}"
+                    },
+                    muted = next == null
                 )
+                if (items.isNotEmpty()) {
+                    Spacer(Modifier.height(Space.md))
+                    MonthStrip(
+                        monthLength = today.lengthOfMonth(),
+                        today = today.dayOfMonth,
+                        marked = paymentDays(items, today.lengthOfMonth())
+                    )
+                    Spacer(Modifier.height(Space.xs))
+                    Text(
+                        "Дні списань цього місяця",
+                        color = TextSecondary,
+                        fontSize = Type.captionSize
+                    )
+                }
                 Spacer(Modifier.height(Space.md))
                 Card(
-                    onClick = { editingIncome = true },
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                     shape = Radius.md
                 ) {
-                    Row(
-                        Modifier.padding(Space.lg),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                if (month.unknown) "Вкажіть дохід" else "Вільно на місяць",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize
-                            )
-                            Spacer(Modifier.height(Space.xs))
-                            Text(
-                                when {
-                                    month.unknown -> "щоб бачити, скільки лишається"
-                                    else -> money(month.free)
-                                },
-                                fontSize = if (month.unknown) Type.bodySize else Type.sectionSize,
-                                lineHeight = Type.sectionLine,
-                                fontWeight = if (month.unknown) Type.regular else Type.strong,
-                                color = when {
-                                    month.unknown -> TextDisabled
-                                    month.overspent -> Negative
-                                    else -> Accent
-                                }
-                            )
-                            if (!month.unknown) {
+                    Column(Modifier.padding(Space.lg)) {
+                        Row(
+                            Modifier.fillMaxWidth().clickable { editingIncome = true },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
                                 Text(
-                                    if (month.overspent) "Витрати перевищують дохід ${money(month.income)}"
-                                    else "З доходу ${money(month.income)}",
+                                    if (month.unknown) "Вкажіть дохід" else "Вільно на місяць",
                                     color = TextSecondary,
                                     fontSize = Type.captionSize
                                 )
+                                Spacer(Modifier.height(Space.xs))
+                                Text(
+                                    when {
+                                        month.unknown -> "щоб бачити, скільки лишається"
+                                        else -> money(month.free)
+                                    },
+                                    fontSize = if (month.unknown) Type.bodySize else Type.sectionSize,
+                                    lineHeight = Type.sectionLine,
+                                    fontWeight = if (month.unknown) Type.regular else Type.strong,
+                                    color = when {
+                                        month.unknown -> TextDisabled
+                                        month.overspent -> Negative
+                                        else -> Accent
+                                    }
+                                )
+                                if (!month.unknown) {
+                                    Text(
+                                        if (month.overspent) "Витрати перевищують дохід ${money(month.income)}"
+                                        else "З доходу ${money(month.income)}",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                }
+                            }
+                            Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
+                        }
+                        if (items.isNotEmpty()) {
+                            Spacer(Modifier.height(Space.sm))
+                            LeaderRow("Разом на місяць", money(monthly.total))
+                            if (monthly.rateMissing) {
+                                LeaderRow("Плюс ${dollars(monthly.usd)}", "курс ще не завантажено")
+                            } else if (monthly.hasUsd) {
+                                LeaderRow(
+                                    "З них ${dollars(monthly.usd)}",
+                                    "≈ ${approxMoney(monthly.usdInUah)}"
+                                )
                             }
                         }
-                        Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
                     }
                 }
             }
@@ -1563,49 +1601,61 @@ fun PaymentsScreen(
                 )
             }
         }
-        itemsIndexed(items) { index, pay ->
-            Card(
-                Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
-                shape = Radius.md
-            ) {
-                ListItem(
-                    modifier = Modifier.clickable { editing = index },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = {
-                        IconChip(
-                            when {
-                                pay.name.contains("Оренда", true) -> Icons.Default.Home
-                                pay.name.contains("Комун", true) -> Icons.Default.Bolt
-                                pay.name.contains("Інтернет", true) -> Icons.Default.Wifi
-                                pay.name.contains("Мобіл", true) -> Icons.Default.Smartphone
-                                else -> Icons.Default.Autorenew
-                            }
+        // A timeline rather than a list: the date is said once for everything
+        // falling on it, instead of "1 числа щомісяця" repeated under every row.
+        paymentGroups(items, today).forEach { group ->
+            item(key = group.date.toString()) {
+                Card(
+                    Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                    shape = Radius.md
+                ) {
+                    Column(Modifier.padding(Space.lg)) {
+                        Text(
+                            dayMonth(group.date),
+                            color = Accent,
+                            fontSize = Type.captionSize,
+                            fontWeight = Type.medium
                         )
-                    },
-                    headlineContent = {
-                        Text(pay.name, fontSize = Type.cardTitleSize, fontWeight = Type.medium)
-                    },
-                    supportingContent = {
-                        Text("${pay.day} числа щомісяця", fontSize = Type.captionSize)
-                    },
-                    trailingContent = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(horizontalAlignment = Alignment.End) {
-                                Text(amountLabel(pay.amount, pay.currency), fontWeight = Type.strong)
-                                if (pay.currency == USD && rate.sell > 0) {
-                                    Text(
-                                        "≈ ${approxMoney(pay.amount * rate.sell)}",
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize
-                                    )
+                        group.positions.forEach { position ->
+                            val pay = items[position]
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { editing = position }
+                                    .padding(vertical = Space.sm),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconChip(payIcon(pay.name))
+                                Spacer(Modifier.width(Space.md))
+                                Text(
+                                    pay.name,
+                                    fontSize = Type.cardTitleSize,
+                                    fontWeight = Type.medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
+                                    DottedLeader(Modifier.fillMaxWidth())
                                 }
-                            }
-                            IconButton({ save(items.filterIndexed { i, _ -> i != index }) }) {
-                                Icon(Icons.Default.Close, "Видалити")
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        amountLabel(pay.amount, pay.currency),
+                                        fontWeight = Type.strong
+                                    )
+                                    if (pay.currency == USD && rate.sell > 0) {
+                                        Text(
+                                            "≈ ${approxMoney(pay.amount * rate.sell)}",
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
-                )
+                }
             }
         }
     }
@@ -1622,12 +1672,28 @@ fun PaymentsScreen(
     }
     editing?.let { index ->
         items.getOrNull(index)?.let { pay ->
-            EditPaymentDialog(pay, { editing = null }) { changed ->
+            EditPaymentDialog(
+                pay,
+                close = { editing = null },
+                delete = {
+                    save(items.filterIndexed { i, _ -> i != index })
+                    editing = null
+                }
+            ) { changed ->
                 save(items.mapIndexed { i, item -> if (i == index) changed else item })
                 editing = null
             }
         }
     }
+}
+
+/** A recurring expense is recognised by its name, since that is all it carries. */
+fun payIcon(name: String) = when {
+    name.contains("Оренда", true) -> Icons.Default.Home
+    name.contains("Комун", true) -> Icons.Default.Bolt
+    name.contains("Інтернет", true) -> Icons.Default.Wifi
+    name.contains("Мобіл", true) -> Icons.Default.Smartphone
+    else -> Icons.Default.Autorenew
 }
 
 @Composable
@@ -2218,7 +2284,12 @@ fun SettingsRow(icon: ImageVector, title: String, detail: String) {
  * more, which left a misspelled subscription misspelled for good.
  */
 @Composable
-fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
+fun EditPaymentDialog(
+    pay: Pay,
+    close: () -> Unit,
+    delete: () -> Unit,
+    save: (Pay) -> Unit
+) {
     var name by remember { mutableStateOf(pay.name) }
     var amount by remember { mutableStateOf(amountText(pay.amount)) }
     var day by remember { mutableStateOf(pay.day.toString()) }
@@ -2238,6 +2309,12 @@ fun EditPaymentDialog(pay: Pay, close: () -> Unit, save: (Pay) -> Unit) {
                 CurrencyChips(currency) { currency = it }
                 NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
+                // Deleting used to sit on the row itself, a thumb's width from the
+                // tap that opens this dialog, and it asked nothing before erasing.
+                Spacer(Modifier.height(Space.md))
+                TextButton(delete, Modifier.fillMaxWidth()) {
+                    Text("Видалити витрату", color = Negative)
+                }
             }
         },
         confirmButton = {
