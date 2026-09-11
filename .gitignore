@@ -1,5 +1,7 @@
 .gradle/
 .idea/
+# Kotlin compiler session files, written into the project root by every build.
+.kotlin/
 local.properties
 **/build/
 *.iml
