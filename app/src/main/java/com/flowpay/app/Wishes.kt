@@ -1,5 +1,7 @@
 package com.flowpay.app
 
+import java.time.LocalDate
+
 /**
  * Ordering a wishlist, and the two derived numbers the ordering depends on.
  *
@@ -119,3 +121,78 @@ fun sortWishes(items: List<Wish>, sort: WishSort): List<Wish> = when (sort) {
 /** Reads a stored sort name back, falling back to the default if it is unknown. */
 fun wishSortFrom(name: String): WishSort =
     WishSort.entries.firstOrNull { it.name == name } ?: WishSort.ADDED
+
+/** What a message shared into the app turned out to hold. */
+sealed interface SharedLink {
+    data class New(val url: String) : SharedLink
+
+    /** The same address is already being watched, and a second copy would split its history. */
+    data class Known(val wish: Wish) : SharedLink
+
+    data object Missing : SharedLink
+}
+
+fun sharedLink(text: String?, existing: List<Wish>): SharedLink {
+    val url = extractUrl(text) ?: return SharedLink.Missing
+    val already = existing.firstOrNull { linkKey(it.url) == linkKey(url) }
+    return if (already != null) SharedLink.Known(already) else SharedLink.New(url)
+}
+
+/**
+ * The part of an address that identifies the product.
+ *
+ * Sharing the same item from the app and from the browser produces two strings
+ * that differ only in scheme, case or a trailing slash, and a fragment is never
+ * anything but a scroll position.
+ */
+private fun linkKey(url: String): String = url.trim().lowercase()
+    .substringBefore('#')
+    .removePrefix("https://")
+    .removePrefix("http://")
+    .trimEnd('/')
+
+/**
+ * The wish to keep when a shared page cannot be read.
+ *
+ * A shop that blocks the fetch, or answers with a consent wall, must not cost
+ * the link: a row with no price can be refreshed later, a lost address cannot.
+ */
+fun placeholderWish(url: String, id: String): Wish =
+    Wish(id = id, name = placeholderName(url), url = url, image = "", price = 0.0, history = emptyList())
+
+data class RefreshResult(val wishes: List<Wish>, val updated: Int)
+
+/**
+ * Folds freshly read pages back into the list.
+ *
+ * [fetched] lines up with [items] by position, with null where the page could
+ * not be read, so a shop being down leaves that wish exactly as it was rather
+ * than dropping it or zeroing its price.
+ */
+fun applyRefresh(
+    items: List<Wish>,
+    fetched: List<Wish?>,
+    today: Long = LocalDate.now().toEpochDay()
+): RefreshResult {
+    var updated = 0
+    val next = items.mapIndexed { index, previous ->
+        val current = fetched.getOrNull(index) ?: return@mapIndexed previous
+        updated++
+        refreshedWish(previous, current, today)
+    }
+    return RefreshResult(next, updated)
+}
+
+/**
+ * What to tell the user after a price run.
+ *
+ * The count is introduced by a colon rather than run into the sentence, because
+ * "оновлено" governs the accusative while [positionsLabel] is nominative, and
+ * "оновлено 1 позиція" is the sort of wrong that a phone reads out loud.
+ */
+fun refreshMessage(updated: Int, total: Int): String = when {
+    total == 0 -> "Немає чого оновлювати"
+    updated == 0 -> "Жодної ціни не вдалося прочитати"
+    updated == total -> "Ціни оновлено: ${positionsLabel(total)}"
+    else -> "Ціни оновлено: $updated з $total"
+}

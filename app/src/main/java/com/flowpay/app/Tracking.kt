@@ -166,3 +166,20 @@ fun freeStorageDaysLeft(paidStorageFrom: LocalDate?, today: LocalDate): Int? {
     val days = java.time.temporal.ChronoUnit.DAYS.between(today, paidStorageFrom).toInt()
     return days.coerceAtLeast(0)
 }
+
+/** Ukrainian plural for how many parcels are involved. */
+fun parcelsLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "посилок"
+        last == 1 -> "посилка"
+        last in 2..4 -> "посилки"
+        else -> "посилок"
+    }
+    return "$count $word"
+}
+
+/** How many parcels are sitting at a branch waiting to be collected. */
+fun branchLine(count: Int): String =
+    if (count == 0) "На відділенні порожньо" else "${parcelsLabel(count)} на відділенні"

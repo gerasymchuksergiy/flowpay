@@ -357,3 +357,24 @@ fun rateHeadline(rate: FxRate): String = when {
     rate.source == SOURCE_NBU -> "${rateFigure(rate.sell)} ₴ за долар"
     else -> "Купівля ${rateFigure(rate.buy)} · продаж ${rateFigure(rate.sell)}"
 }
+
+/**
+ * A set of payments as one figure, without ever pretending the dollars converted.
+ *
+ * Somewhere with no room for a caption — a widget, a notification — the missing
+ * rate has to be visible inside the figure itself, or a rent quoted in dollars
+ * simply vanishes from the total.
+ */
+fun totalLabel(total: MonthlyTotal): String = when {
+    total.rateMissing && total.uah > 0.0 -> "${money(total.uah)} + ${dollars(total.usd)}"
+    total.rateMissing -> dollars(total.usd)
+    total.hasUsd -> approxMoney(total.total)
+    else -> money(total.total)
+}
+
+/** What the month has left, in one line, including when the answer is "nothing". */
+fun freeCashLine(month: Budget): String = when {
+    month.unknown -> "Дохід не вказано"
+    month.overspent -> "Бракує ${money(-month.free)}"
+    else -> "Вільно ${money(month.free)}"
+}

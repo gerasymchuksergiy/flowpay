@@ -129,6 +129,43 @@ data class FxRate(
     val date: String = ""
 )
 
+// Everything up to the first whitespace or quote. Shop links carry commas and
+// brackets inside their query strings, so they cannot be excluded here; the
+// trailing ones get trimmed afterwards instead.
+private val URL_IN_TEXT = Regex("""https?://[^\s<>"']+""", RegexOption.IGNORE_CASE)
+
+// Punctuation that ends the sentence rather than the address. A closing bracket
+// only ever belongs to the link when an opening one does too, and no shop the
+// app deals with writes one, so it is safe to drop.
+private const val SENTENCE_TAIL = ".,;:!?)]}»’”"
+
+/**
+ * Pulls the link out of a shared message.
+ *
+ * Almost nothing arrives as a bare address: browsers share "Назва товару
+ * https://…", messengers wrap the link in a sentence, and shop apps put their
+ * own slogan after it. Returns null when there is no usable http link, so a
+ * share of plain text can be answered rather than silently dropped.
+ */
+fun extractUrl(text: String?): String? {
+    val match = URL_IN_TEXT.find(text.orEmpty()) ?: return null
+    val trimmed = match.value.trimEnd { it in SENTENCE_TAIL }
+    return trimmed.takeIf { isSupportedWebUrl(it) }
+}
+
+/**
+ * The name to show for a link whose page could not be read.
+ *
+ * The shop is the one thing the address itself can say, and it is enough to
+ * recognise the row by until a later refresh fills in the real title.
+ */
+fun placeholderName(url: String): String {
+    val host = runCatching { java.net.URL(url.trim()).host }
+        .getOrNull().orEmpty()
+        .removePrefix("www.")
+    return if (host.isBlank()) "Нове бажання" else "Товар з $host"
+}
+
 /** Picks the USD to UAH pair out of the Monobank currency feed. */
 fun parseUsdRate(json: String): FxRate {
     val array = JSONArray(json)

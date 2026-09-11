@@ -68,8 +68,17 @@ object Space {
 
 /** Three radii. A card and a chip should not each invent their own. */
 object Radius {
+    /**
+     * The card radius as a bare distance.
+     *
+     * Glance rounds a widget with a Dp rather than a shape, and a widget that
+     * rounds to a different radius than the cards inside the app reads as a
+     * different app sitting on the home screen.
+     */
+    val card = 18.dp
+
     val sm = RoundedCornerShape(12.dp)
-    val md = RoundedCornerShape(18.dp)
+    val md = RoundedCornerShape(card)
     val lg = RoundedCornerShape(26.dp)
     val pill = RoundedCornerShape(50)
 }

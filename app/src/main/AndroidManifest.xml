@@ -10,6 +10,33 @@
   android:allowBackup="false"
   android:fullBackupContent="false"
   android:dataExtractionRules="@xml/data_extraction_rules">
-  <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+  <!-- singleTask so a share, or a shortcut, reaches the copy of the app that is
+       already open instead of stacking a second one behind it. -->
+  <activity
+   android:name=".MainActivity"
+   android:exported="true"
+   android:launchMode="singleTask">
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+   <!-- Browsers and shop apps hand a link over as text/plain; a few send it as
+        text/html instead, which is the same string with a tag around it. -->
+   <intent-filter>
+    <action android:name="android.intent.action.SEND"/>
+    <category android:name="android.intent.category.DEFAULT"/>
+    <data android:mimeType="text/plain"/>
+    <data android:mimeType="text/html"/>
+   </intent-filter>
+   <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
+  </activity>
+  <receiver
+   android:name=".FlowPayWidgetReceiver"
+   android:exported="false"
+   android:label="FlowPay">
+   <intent-filter>
+    <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+   </intent-filter>
+   <meta-data
+    android:name="android.appwidget.provider"
+    android:resource="@xml/flowpay_widget_info"/>
+  </receiver>
  </application>
 </manifest>

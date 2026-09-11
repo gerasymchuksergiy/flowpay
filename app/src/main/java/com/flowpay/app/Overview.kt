@@ -1,5 +1,7 @@
 package com.flowpay.app
 
+import java.time.LocalDate
+
 /**
  * The one place that answers "how am I doing" across all four screens at once.
  *
@@ -79,5 +81,47 @@ fun overview(
         // Each wish plans in isolation, so their sum can quietly exceed the month.
         // Nothing else in the app is in a position to notice that.
         plansConflict = !month.unknown && planned > 0.0 && planned > month.free
+    )
+}
+
+/**
+ * The three figures the home screen widget shows, already worded.
+ *
+ * The widget runs in the launcher's process with no theme, no resources of its
+ * own and no room to make decisions, so every judgement — what counts as the
+ * next payment, whether the month fits, how to decline "посилка" — is made here
+ * and tested here. What crosses over is finished text.
+ */
+data class WidgetSummary(
+    /** "Оренда" or "3 платежі", and a plain sentence when nothing is scheduled. */
+    val paymentName: String,
+    /** "12 вересня". Empty when there is no payment to date. */
+    val paymentDate: String,
+    /** "завтра" */
+    val paymentCountdown: String,
+    /** "11 200 ₴" */
+    val paymentAmount: String,
+    val hasPayment: Boolean,
+    val freeCash: String,
+    val parcels: String
+)
+
+fun widgetSummary(
+    pays: List<Pay>,
+    orders: List<Order>,
+    income: Double,
+    usdSellRate: Double,
+    today: LocalDate
+): WidgetSummary {
+    val next = nextPayment(pays, today, usdSellRate)
+    val month = budget(income, monthlyTotal(pays, usdSellRate))
+    return WidgetSummary(
+        paymentName = next?.let { dueSummary(it.items) } ?: "Платежів не заплановано",
+        paymentDate = next?.let { dayMonth(it.date) }.orEmpty(),
+        paymentCountdown = next?.let { dueLabel(it.daysAway) }.orEmpty(),
+        paymentAmount = next?.let { totalLabel(it.total) }.orEmpty(),
+        hasPayment = next != null,
+        freeCash = freeCashLine(month),
+        parcels = branchLine(orders.count { it.status == AT_BRANCH })
     )
 }

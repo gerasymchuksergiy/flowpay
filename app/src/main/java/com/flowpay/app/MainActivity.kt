@@ -18,6 +18,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.lifecycleScope
+import androidx.glance.appwidget.updateAll
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.AnimatedVisibilityScope
@@ -140,8 +142,16 @@ data class Order(
 )
 
 class MainActivity : ComponentActivity() {
+    /**
+     * What the app was opened to do, once. Held as state rather than read from
+     * [getIntent] inside the composition, because a share that arrives while the
+     * app is already open comes through [onNewIntent] and nothing would recompose.
+     */
+    private var command by mutableStateOf<AppCommand?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        command = commandOf(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -154,8 +164,26 @@ class MainActivity : ComponentActivity() {
         }
         PriceWorker.schedule(this)
         ReminderWorker.schedule(this)
-        setContent { FlowPayApp(this) }
+        setContent { FlowPayApp(this, command) { command = null } }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        command = commandOf(intent)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Leaving the app is the moment the home screen is about to be looked at,
+        // and by then anything edited in this session has already been saved.
+        lifecycleScope.launch { FlowPayWidget().updateAll(this@MainActivity) }
+    }
+
+    // Read as a CharSequence: a text/html share arrives as a styled Spanned, and
+    // getStringExtra answers null for one rather than the text inside it.
+    private fun commandOf(intent: Intent?): AppCommand? =
+        appCommand(intent?.action, intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
 }
 
 class Store(context: Context) {
@@ -491,7 +519,7 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
 
 
 @Composable
-fun FlowPayApp(context: Context) {
+fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: () -> Unit = {}) {
     val store = remember { Store(context) }
     var tab by remember { mutableIntStateOf(0) }
     var wishes by remember { mutableStateOf(store.wishes()) }
@@ -504,6 +532,69 @@ fun FlowPayApp(context: Context) {
     LaunchedEffect(tab) {
         adding = false
         openedWish = null
+    }
+
+    val notices = remember { SnackbarHostState() }
+    val noticeScope = rememberCoroutineScope()
+    // One line at a time: a share is a sequence of two or three of these, and
+    // queued snackbars would still be reporting the fetch after it finished.
+    fun say(text: String) = noticeScope.launch {
+        notices.currentSnackbarData?.dismiss()
+        notices.showSnackbar(text)
+    }
+
+    // Declared after the effect above so that when a command arrives on another
+    // tab, the tab switch clears that tab's dialogs first and this runs second.
+    LaunchedEffect(command, tab) {
+        if (command == null) return@LaunchedEffect
+        // Every command belongs to the wishlist. Switching costs a pass through
+        // this effect, which is why it returns and waits for the new tab.
+        if (tab != 0) {
+            tab = 0
+            return@LaunchedEffect
+        }
+        when (command) {
+            is AppCommand.AddWish -> adding = true
+            is AppCommand.RefreshPrices -> {
+                if (wishes.isEmpty()) {
+                    say(refreshMessage(0, 0))
+                } else {
+                    say("Перевіряю ціни…")
+                    val fetched = wishes.map { runCatching { product(it.url) }.getOrNull() }
+                    val result = applyRefresh(wishes, fetched)
+                    wishes = result.wishes
+                    store.saveWishes(result.wishes)
+                    say(refreshMessage(result.updated, result.wishes.size))
+                }
+            }
+            is AppCommand.AddShared -> when (val link = sharedLink(command.text, wishes)) {
+                SharedLink.Missing -> say("У повідомленні немає посилання")
+                is SharedLink.Known -> say("«${link.wish.name}» вже у списку")
+                is SharedLink.New -> {
+                    // The link is saved before the page is read, so a shop that
+                    // blocks the fetch costs a name and a price, never the item.
+                    val id = System.currentTimeMillis().toString()
+                    val saved = wishes + placeholderWish(link.url, id)
+                    wishes = saved
+                    store.saveWishes(saved)
+                    say("Додано до бажань, шукаю ціну…")
+                    val fetched = runCatching { product(link.url) }.getOrNull()
+                    if (fetched == null) {
+                        say("Сторінка не читається — посилання збережено")
+                    } else {
+                        // The shop's title replaces the placeholder, but the row
+                        // keeps its id so nothing else has to be told it changed.
+                        val filled = wishes.map {
+                            if (it.id == id) refreshedWish(it, fetched).copy(name = fetched.name) else it
+                        }
+                        wishes = filled
+                        store.saveWishes(filled)
+                        say("Додано: ${fetched.name}")
+                    }
+                }
+            }
+        }
+        onCommandHandled()
     }
 
     // System back closes the item page before it leaves the app.
@@ -550,6 +641,7 @@ fun FlowPayApp(context: Context) {
             modifier = Modifier.nestedScroll(barScroll),
             containerColor = AppBackground,
             contentColor = TextPrimary,
+            snackbarHost = { SnackbarHost(notices) },
             floatingActionButton = {
                 addLabel?.let { label ->
                     // Collapses to a plus once you scroll. Its full width was

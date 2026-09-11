@@ -66,6 +66,9 @@ dependencies {
  implementation("androidx.compose.material:material-icons-extended")
  implementation("io.coil-kt:coil-compose:2.7.0")
  implementation("androidx.work:work-runtime-ktx:2.11.2")
+ // The home screen widget. Glance is versioned on its own rather than through the
+ // Compose BOM, so the version is pinned here.
+ implementation("androidx.glance:glance-appwidget:1.1.1")
  testImplementation("junit:junit:4.13.2")
  // org.json ships in the Android SDK as stubs that throw in unit tests, so the
  // real implementation is needed to exercise the Monobank feed parsing.
