@@ -201,18 +201,38 @@ fun matchOffer(offers: List<Offer>, variant: String, lastPrice: Double): OfferMa
  * price tracker with no price to track is worse than a clear failure.
  */
 fun parseProduct(html: String, url: String, id: String, today: Long = 0L): Wish {
-    val price = extractPrice(html)
-    require(price > 0) { "Не вдалося знайти ціну на сторінці" }
-    val name = cleanProductTitle(metaContent(html, "og:title")).ifBlank { "Новий товар" }
-    return Wish(
+    val offers = extractOffers(html)
+    require(offers.isNotEmpty()) { "Не вдалося знайти ціну на сторінці" }
+    return wishFromOffer(html, url, id, offers.first(), today)
+}
+
+/**
+ * Builds a wish around one particular offer from a page.
+ *
+ * Separate from [parseProduct] because on a page with editions the price is not a
+ * fact to be read but a choice to be made, and the choice has to be recorded with
+ * the wish or every later check would have to guess again.
+ */
+fun wishFromOffer(html: String, url: String, id: String, offer: Offer, today: Long = 0L): Wish =
+    Wish(
         id = id,
-        name = name,
+        name = cleanProductTitle(metaContent(html, "og:title")).ifBlank { "Новий товар" },
         url = url,
         image = decodeEntities(metaContent(html, "og:image")),
-        price = price,
-        history = listOf(PricePoint(price, today))
+        price = offer.price,
+        history = listOf(PricePoint(offer.price, today)),
+        variant = offer.label
     )
-}
+
+/**
+ * How to name an offer in a list of them.
+ *
+ * The shop's own word for it where there is one. Where there is not — and there
+ * usually is not, because the name sits in the page's layout rather than in its
+ * data — the price has to identify the row by itself.
+ */
+fun offerLabel(offer: Offer, index: Int): String =
+    offer.label.ifBlank { "Варіант ${index + 1}" }
 
 /** Monobank: what a bank actually buys and sells dollars at today. */
 const val SOURCE_MONOBANK = "mono"

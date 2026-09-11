@@ -111,6 +111,31 @@ class ParsingTest {
     }
 
     @Test
+    fun `a wish built from a chosen offer remembers which one it was`() {
+        val html = """
+            <meta property="og:title" content="EA SPORTS FC 27"/>
+            <meta property="og:image" content="https://shop/cover.jpg"/>
+        """.trimIndent()
+
+        val wish = wishFromOffer(html, "https://shop/app", "id-1", Offer(2999.0, "Ultimate"), today = 42L)
+
+        assertEquals("Ultimate", wish.variant)
+        assertEquals(2999.0, wish.price, 0.001)
+        assertEquals("EA SPORTS FC 27", wish.name)
+        assertEquals(1, wish.history.size)
+        assertEquals(42L, wish.history.first().day)
+    }
+
+    @Test
+    fun `an offer with no name of its own is identified by its position`() {
+        // Editions are usually named in the page's layout, not in its data, so most
+        // of the time the price is what the row has to be recognised by.
+        assertEquals("Ultimate", offerLabel(Offer(2999.0, "Ultimate"), 1))
+        assertEquals("Варіант 1", offerLabel(Offer(2199.0), 0))
+        assertEquals("Варіант 2", offerLabel(Offer(2999.0), 1))
+    }
+
+    @Test
     fun `spaces shops use inside numbers do not break them`() {
         assertEquals(12_499.5, priceNumber("12\u00a0499,50")!!, 0.001)
         assertEquals(2199.0, priceNumber("2 199")!!, 0.001)

@@ -1068,25 +1068,89 @@ fun AddWishSheet(close: () -> Unit, add: (Wish) -> Unit) {
     var category by remember { mutableStateOf("Інше") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // The page is held between the two steps, so choosing an edition does not
+    // fetch it a second time and cannot land on a different version of it.
+    var page by remember { mutableStateOf<String?>(null) }
+    var offers by remember { mutableStateOf(emptyList<Offer>()) }
     val scope = rememberCoroutineScope()
+
+    fun finish(offer: Offer) {
+        val html = page ?: return
+        add(
+            wishFromOffer(
+                html,
+                link.trim(),
+                System.currentTimeMillis().toString(),
+                offer,
+                LocalDate.now().toEpochDay()
+            ).copy(
+                targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                category = category
+            )
+        )
+    }
+
     FormSheet(
-        title = "Новий товар",
+        title = if (offers.size > 1) "Яка ціна ваша?" else "Новий товар",
         confirmLabel = if (loading) "Зчитую…" else "Додати",
-        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        confirmEnabled = isSupportedWebUrl(link) && !loading && offers.size <= 1,
         onConfirm = {
             scope.launch {
-                loading = true; error = null
-                runCatching { product(link).copy(targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category) }
-                    .onSuccess(add).onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                loading = true
+                error = null
+                runCatching { pageHtml(link) }
+                    .onSuccess { html ->
+                        val found = extractOffers(html)
+                        when {
+                            found.isEmpty() -> error = "Не вдалося знайти ціну на сторінці"
+                            // One price is not a question worth asking.
+                            found.size == 1 -> { page = html; finish(found.first()) }
+                            else -> { page = html; offers = found }
+                        }
+                    }
+                    .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
                 loading = false
             }
         },
         onDismiss = close
     ) {
-        OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
-        NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
-        OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
-        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+        if (offers.size > 1) {
+            Text(
+                "На сторінці кілька цін. Оберіть ту, за якою стежити — " +
+                    "далі FlowPay щоразу шукатиме саме її.",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+            Spacer(Modifier.height(Space.md))
+            offers.forEachIndexed { index, offer ->
+                Card(
+                    onClick = { finish(offer) },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = Space.sm),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    shape = Radius.sm
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(Space.lg),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            offerLabel(offer, index),
+                            Modifier.weight(1f).padding(end = Space.md),
+                            fontSize = Type.bodySize,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(money(offer.price), fontWeight = Type.strong)
+                    }
+                }
+            }
+        } else {
+            OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
+            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
+            OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+        }
     }
 }
 
