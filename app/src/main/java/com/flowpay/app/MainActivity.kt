@@ -1313,7 +1313,7 @@ fun SharedTransitionScope.WishCard(
                 )
             }
         }
-        Column(Modifier.padding(Space.lg)) {
+        Column(Modifier.padding(Space.md)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AssistChip({}, { Text(wish.category, fontSize = Type.captionSize) })
                 Spacer(Modifier.weight(1f))
@@ -1347,7 +1347,7 @@ fun SharedTransitionScope.WishCard(
                     modifier = Modifier.padding(top = Space.sm)
                 )
             } else {
-                PriceBars(wish.history, Modifier.fillMaxWidth().height(60.dp).padding(top = Space.md))
+                PriceBars(wish.history, Modifier.fillMaxWidth().height(40.dp).padding(top = Space.sm))
                 val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
                 // A quietly broken parser showing a week-old price as current is worse
                 // than no price at all, so staleness is stated rather than hidden.

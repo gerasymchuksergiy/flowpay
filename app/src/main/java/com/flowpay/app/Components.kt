@@ -74,7 +74,7 @@ fun HeroPanel(
         Row(
             // Generous at the sides, tighter top and bottom: the panel was carrying
             // more empty height than the figure inside it earned.
-            Modifier.padding(horizontal = Space.xl, vertical = Space.lg),
+            Modifier.padding(horizontal = Space.xl, vertical = Space.md),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {
@@ -684,7 +684,10 @@ fun PhotoHeader(
     imageUrl: String,
     description: String,
     modifier: Modifier = Modifier,
-    height: Dp = 190.dp,
+    // A wish card carried 190dp of photograph plus its text, which came to more
+    // than half the screen for one item. The picture still identifies the thing
+    // at 132 without owning the list.
+    height: Dp = 132.dp,
     overlayNumber: String? = null,
     overlayNumberColor: Color = Accent,
     chip: String? = null,

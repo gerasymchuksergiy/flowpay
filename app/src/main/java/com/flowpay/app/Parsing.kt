@@ -45,8 +45,11 @@ fun metaContent(html: String, key: String): String {
     return patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.get(1) }.orEmpty()
 }
 
+// Non-breaking spaces are what shops actually put between the digits, and one
+// of them anywhere in this pattern used to leave the whole price in the title.
 private val TITLE_PRICE_SUFFIX = Regex(
-    """[\s,;:|\-–—]+ціна\s*[0-9][0-9\s.,]*(?:грн\.?|₴|uah)?\s*$""",
+    """[\s\u00a0\u202f,;:|\-–—]+ціна[\s\u00a0\u202f]*[0-9][0-9\s\u00a0\u202f.,]*""" +
+        """(?:грн\.?|₴|uah)?[\s\u00a0\u202f]*$""",
     RegexOption.IGNORE_CASE
 )
 

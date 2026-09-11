@@ -14,6 +14,32 @@ import org.junit.Test
  */
 class ParsingTest {
 
+    @Test
+    fun `a price glued on with non-breaking spaces still comes off the title`() {
+        // Straight from a card on the phone: the shop separates with U+00A0, which
+        // the earlier pattern did not accept, so the whole price stayed in the name.
+        val raw = "Чоловічі кросівки ASICS Gel 1130 Dark Grey " +
+            "демісезонні, ціна 2203.24"
+
+        assertEquals(
+            "Чоловічі кросівки ASICS Gel 1130 Dark Grey демісезонні",
+            cleanProductTitle(raw)
+        )
+    }
+
+    @Test
+    fun `an ordinary space before the price works as before`() {
+        assertEquals(
+            "Кросівки",
+            cleanProductTitle("Кросівки, ціна 2203.24")
+        )
+        assertEquals(
+            "Кросівки",
+            cleanProductTitle("Кросівки — Ціна 2 203,24 грн")
+        )
+    }
+
+
     private val page = """
         <html><head>
         <meta property="og:title" content="Чоловічі кросівки ASICS Gel 1130, ціна 2203.24"/>
