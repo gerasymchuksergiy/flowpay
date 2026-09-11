@@ -23,7 +23,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -444,8 +452,22 @@ fun FlowPayApp(context: Context) {
         else -> null
     }
 
+    // The bar is chrome, and chrome should yield to content. Scrolling down
+    // slides it off; the first upward movement brings it straight back.
+    val barHeight = with(LocalDensity.current) { 80.dp.toPx() }
+    var barHidden by remember { mutableFloatStateOf(0f) }
+    val barScroll = remember(barHeight) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                barHidden = (barHidden - available.y).coerceIn(0f, barHeight)
+                return Offset.Zero
+            }
+        }
+    }
+
     FlowPayTheme {
         Scaffold(
+            modifier = Modifier.nestedScroll(barScroll),
             containerColor = AppBackground,
             contentColor = TextPrimary,
             floatingActionButton = {
@@ -461,7 +483,11 @@ fun FlowPayApp(context: Context) {
                 }
             },
             bottomBar = {
-                NavigationBar(containerColor = SurfaceLow, tonalElevation = 0.dp) {
+                NavigationBar(
+                    modifier = Modifier.offset { IntOffset(0, barHidden.roundToInt()) },
+                    containerColor = SurfaceLow,
+                    tonalElevation = 0.dp
+                ) {
                     val tabs = listOf(
                         Icons.Default.FavoriteBorder to "Бажання",
                         Icons.Default.SwapVert to "Курс",
@@ -1605,14 +1631,17 @@ fun PaymentsScreen(
         // falling on it, instead of "1 числа щомісяця" repeated under every row.
         paymentGroups(items, today).forEach { group ->
             item(key = group.date.toString()) {
+                val isToday = group.date == today
                 Card(
                     Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (isToday) AccentSoft else SurfaceBase
+                    ),
                     shape = Radius.md
                 ) {
                     Column(Modifier.padding(Space.lg)) {
                         Text(
-                            dayMonth(group.date),
+                            if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
                             color = Accent,
                             fontSize = Type.captionSize,
                             fontWeight = Type.medium
@@ -1881,17 +1910,35 @@ fun OrdersScreen(
                                 LocalDate.ofEpochDay(order.paidStorageFrom),
                                 LocalDate.now()
                             ) ?: 0
+                            val pressing = left <= 2
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = Space.sm),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "Безкоштовне зберігання",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                                Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
+                                    DottedLeader(Modifier.fillMaxWidth())
+                                }
+                                Text(
+                                    if (left > 0) daysLabel(left) else "закінчилось",
+                                    color = if (pressing) Negative else Accent,
+                                    fontSize = Type.captionSize,
+                                    fontWeight = Type.strong
+                                )
+                            }
                             Text(
                                 if (left > 0) {
-                                    "Безкоштовне зберігання ще ${daysLabel(left)}, платне з " +
-                                        formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))
+                                    "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}"
                                 } else {
-                                    "Безкоштовне зберігання закінчилось"
+                                    "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}, вже йде"
                                 },
-                                color = if (left in 1..2 || left == 0) Negative else Accent,
+                                color = TextDisabled,
                                 fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.xs)
+                                lineHeight = Type.captionLine
                             )
                         }
                         if (order.scheduledDelivery > 0 && order.status != RECEIVED) {
@@ -1926,17 +1973,12 @@ fun OrdersScreen(
                         }
                     }
                 }
-                LazyRow(
-                    Modifier.padding(horizontal = Space.lg),
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm)
-                ) {
-                    items(PARCEL_STAGES) { status ->
-                        FilterChip(
-                            order.status == status,
-                            { save(items.map { if (it.id == order.id) it.copy(status = status) else it }) },
-                            { Text(status, fontSize = Type.captionSize) }
-                        )
-                    }
+                StageRail(
+                    stages = PARCEL_STAGES,
+                    current = order.status,
+                    modifier = Modifier.padding(horizontal = Space.lg)
+                ) { status ->
+                    save(items.map { if (it.id == order.id) it.copy(status = status) else it })
                 }
                 // Left aligned for the same reason as the wish card: the floating
                 // action button sits over the bottom right corner.
@@ -2290,6 +2332,8 @@ fun EditPaymentDialog(
     delete: () -> Unit,
     save: (Pay) -> Unit
 ) {
+    // Two different answers: a tick for saving, a heavier one for erasing.
+    val touch = LocalHapticFeedback.current
     var name by remember { mutableStateOf(pay.name) }
     var amount by remember { mutableStateOf(amountText(pay.amount)) }
     var day by remember { mutableStateOf(pay.day.toString()) }
@@ -2312,7 +2356,13 @@ fun EditPaymentDialog(
                 // Deleting used to sit on the row itself, a thumb's width from the
                 // tap that opens this dialog, and it asked nothing before erasing.
                 Spacer(Modifier.height(Space.md))
-                TextButton(delete, Modifier.fillMaxWidth()) {
+                TextButton(
+                    {
+                        touch.performHapticFeedback(HapticFeedbackType.LongPress)
+                        delete()
+                    },
+                    Modifier.fillMaxWidth()
+                ) {
                     Text("Видалити витрату", color = Negative)
                 }
             }
@@ -2321,6 +2371,7 @@ fun EditPaymentDialog(
             Button(
                 {
                     parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                        touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         save(
                             pay.copy(
                                 name = name.trim().ifBlank { pay.name },

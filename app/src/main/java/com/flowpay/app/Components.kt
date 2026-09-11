@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -20,6 +21,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -417,6 +421,95 @@ fun LeaderRow(label: String, value: String, modifier: Modifier = Modifier, alarm
     }
 }
 
+
+/**
+ * How far along a thing is, drawn as the route rather than as a set of buttons.
+ *
+ * Stops already passed are grey, the one it is at now is lime and larger, the
+ * rest are dark. Every stop stays tappable: the carrier's status is sometimes
+ * wrong or silent, and correcting it by hand was always possible here.
+ */
+@Composable
+fun StageRail(
+    stages: List<String>,
+    current: String,
+    modifier: Modifier = Modifier,
+    onPick: (String) -> Unit
+) {
+    val reached = stages.indexOf(current).coerceAtLeast(0)
+    // Moving a parcel along by hand should feel like moving something.
+    val touch = LocalHapticFeedback.current
+    Row(modifier.fillMaxWidth()) {
+        stages.forEachIndexed { position, stage ->
+            val passed = position < reached
+            val here = position == reached
+            Column(
+                Modifier
+                    .weight(1f)
+                    .clickable {
+                        touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onPick(stage)
+                    }
+                    .padding(vertical = Space.sm),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().height(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Half a connector on each side, so the stops read as one route
+                    // and the ends of the row stay open.
+                    RailSegment(Modifier.weight(1f), drawn = position > 0, passed = passed || here)
+                    Box(
+                        Modifier
+                            .size(if (here) 14.dp else 9.dp)
+                            .background(
+                                when {
+                                    here -> Accent
+                                    passed -> TextDisabled
+                                    else -> HairLine
+                                },
+                                CircleShape
+                            )
+                    )
+                    RailSegment(
+                        Modifier.weight(1f),
+                        drawn = position < stages.lastIndex,
+                        passed = passed
+                    )
+                }
+                Spacer(Modifier.height(Space.sm))
+                Text(
+                    stage,
+                    color = when {
+                        here -> Accent
+                        passed -> TextSecondary
+                        else -> TextDisabled
+                    },
+                    fontSize = Type.overlineSize,
+                    lineHeight = Type.captionLine,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RailSegment(modifier: Modifier, drawn: Boolean, passed: Boolean) {
+    Box(
+        modifier
+            .height(1.dp)
+            .background(
+                when {
+                    !drawn -> Color.Transparent
+                    passed -> TextDisabled
+                    else -> HairLine
+                }
+            )
+    )
+}
 
 /**
  * The dotted run between a label and its figure.
