@@ -64,6 +64,22 @@ object Space {
      * without this the last row scrolls underneath it and cannot be reached.
      */
     val fabClearance = 96.dp
+
+    /**
+     * The navigation bar's own height, above whatever the system reserves below it.
+     *
+     * The bar is translucent and content runs underneath it, so nothing measures
+     * this for us any more: a list has to add it to its own bottom padding or its
+     * last row ends up behind the tabs.
+     */
+    val navBar = 80.dp
+
+    /**
+     * Height of the compact bar the large title shrinks into, and of the
+     * segmented control. Both are single-row touch targets, and a target smaller
+     * than this is one people miss.
+     */
+    val touchRow = 48.dp
 }
 
 /** Three radii. A card and a chip should not each invent their own. */

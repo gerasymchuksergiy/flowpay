@@ -36,11 +36,10 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -48,6 +47,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
@@ -521,7 +522,7 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
 @Composable
 fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: () -> Unit = {}) {
     val store = remember { Store(context) }
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by remember { mutableIntStateOf(TAB_WISHES) }
     var wishes by remember { mutableStateOf(store.wishes()) }
     var pays by remember { mutableStateOf(store.pays()) }
     var orders by remember { mutableStateOf(store.orders()) }
@@ -549,8 +550,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         if (command == null) return@LaunchedEffect
         // Every command belongs to the wishlist. Switching costs a pass through
         // this effect, which is why it returns and waits for the new tab.
-        if (tab != 0) {
-            tab = 0
+        if (tab != TAB_WISHES) {
+            tab = TAB_WISHES
             return@LaunchedEffect
         }
         when (command) {
@@ -608,17 +609,24 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
         openedWish != null -> null
-        tab == 0 -> "Додати бажання"
-        tab == 2 -> "Додати витрату"
-        tab == 3 -> "Додати покупку"
+        tab == TAB_WISHES -> "Додати бажання"
+        tab == TAB_PAYMENTS -> "Додати витрату"
+        tab == TAB_ORDERS -> "Додати покупку"
         else -> null
     }
+
+    // Read once, so the pill cannot change its mind about what is due partway
+    // through a session that happens to cross midnight.
+    val today = remember { LocalDate.now() }
+    // Suppressed on an item page for the same reason as the action button: that
+    // page is one thing at a time, and the pill would be a second one.
+    val note = if (openedWish == null) statusNote(orders, pays, wishes, today, usdSell) else null
 
     // The bar is chrome, and chrome should yield to content. It moves all the
     // way or not at all: following the finger left it resting half off screen,
     // with its labels cut and its icons crowding the system buttons.
     val density = LocalDensity.current
-    val barTravel = with(density) { 80.dp.toPx() } +
+    val barTravel = with(density) { Space.navBar.toPx() } +
         WindowInsets.navigationBars.getBottom(density)
     val barDown = remember { mutableStateOf(false) }
     val barHidden by animateFloatAsState(
@@ -659,78 +667,102 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                 }
             },
             bottomBar = {
-                NavigationBar(
-                    modifier = Modifier.offset { IntOffset(0, barHidden.roundToInt()) },
-                    containerColor = SurfaceLow,
-                    tonalElevation = 0.dp
-                ) {
-                    val tabs = listOf(
-                        Icons.Default.FavoriteBorder to "Бажання",
-                        Icons.Default.SwapVert to "Курс",
-                        Icons.Default.ReceiptLong to "Платежі",
-                        Icons.Default.LocalShipping to "Покупки",
-                        Icons.Default.Insights to "Огляд"
-                    )
-                    tabs.forEachIndexed { index, item ->
-                        NavigationBarItem(
-                            selected = tab == index,
-                            onClick = { tab = index },
-                            icon = { Icon(item.first, item.second) },
-                            label = {
-                                Text(
-                                    item.second,
-                                    fontSize = Type.navLabelSize,
-                                    letterSpacing = Type.navLabelTracking,
-                                    fontWeight = Type.medium,
-                                    maxLines = 1
-                                )
-                            },
-                            // Labelling only the active tab makes the row change width
-                            // as you switch, which reads as a glitch.
-                            alwaysShowLabel = true,
-                            colors = NavigationBarItemDefaults.colors(
-                                indicatorColor = AccentSoft,
-                                selectedIconColor = Accent,
-                                selectedTextColor = Accent,
-                                unselectedIconColor = TextSecondary,
-                                unselectedTextColor = TextSecondary
-                            )
+                Column(Modifier.offset { IntOffset(0, barHidden.roundToInt()) }) {
+                    // An edge, because a translucent bar and the list showing
+                    // through it are otherwise one continuous grey.
+                    Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(HairLine))
+                    NavigationBar(
+                        // Translucent rather than a slab: the list keeps running
+                        // underneath, which is what says there is more of it.
+                        containerColor = SurfaceLow.copy(alpha = 0.82f),
+                        tonalElevation = 0.dp
+                    ) {
+                        val tabs = listOf(
+                            Icons.Default.FavoriteBorder to "Бажання",
+                            Icons.Default.SwapVert to "Курс",
+                            Icons.Default.ReceiptLong to "Платежі",
+                            Icons.Default.LocalShipping to "Покупки",
+                            Icons.Default.Insights to "Огляд"
                         )
+                        tabs.forEachIndexed { index, item ->
+                            NavigationBarItem(
+                                selected = tab == index,
+                                onClick = { tab = index },
+                                icon = { Icon(item.first, item.second) },
+                                label = {
+                                    Text(
+                                        item.second,
+                                        fontSize = Type.navLabelSize,
+                                        letterSpacing = Type.navLabelTracking,
+                                        fontWeight = Type.medium,
+                                        maxLines = 1
+                                    )
+                                },
+                                // Labelling only the active tab makes the row change
+                                // width as you switch, which reads as a glitch.
+                                alwaysShowLabel = true,
+                                colors = NavigationBarItemDefaults.colors(
+                                    indicatorColor = AccentSoft,
+                                    selectedIconColor = Accent,
+                                    selectedTextColor = Accent,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                )
+                            )
+                        }
                     }
                 }
             }
         ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding)) {
-                when (tab) {
-                    0 -> WishlistScreen(
-                        items = wishes,
-                        save = { wishes = it; store.saveWishes(it) },
-                        store = store,
-                        context = context,
-                        adding = adding,
-                        setAdding = { adding = it },
-                        opened = openedWish,
-                        setOpened = { openedWish = it },
-                        // A bought wish becomes a parcel, and the tab follows it so
-                        // the move is visible rather than something to go looking for.
-                        freeCash = monthBudget.free,
-                        onBought = { order ->
-                            val next = orders + order
-                            orders = next
-                            store.saveOrders(next)
-                            tab = 3
-                        }
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    // Everything but the bottom. The navigation bar is translucent
+                    // and the lists run underneath it, so its height is left to
+                    // navClearance() inside each list rather than cut out here.
+                    .padding(
+                        top = padding.calculateTopPadding(),
+                        start = padding.calculateStartPadding(LocalLayoutDirection.current),
+                        end = padding.calculateEndPadding(LocalLayoutDirection.current)
                     )
-                    1 -> CalculatorScreen(store)
-                    2 -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, store, adding) { adding = it }
-                    3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context, adding) { adding = it }
-                    else -> SettingsScreen(
-                        summary = overview(wishes, pays, orders, monthBudget.income, usdSell),
-                        store = store
-                    ) {
-                        wishes = store.wishes()
-                        pays = store.pays()
-                        orders = store.orders()
+            ) {
+                // Above the screen rather than over it: the pill and a screen's own
+                // compact title both want the top strip, and one covering the other
+                // would leave you unable to read either.
+                StatusPill(note) { target -> tab = target }
+                Box(Modifier.weight(1f)) {
+                    when (tab) {
+                        TAB_WISHES -> WishlistScreen(
+                            items = wishes,
+                            save = { wishes = it; store.saveWishes(it) },
+                            store = store,
+                            context = context,
+                            adding = adding,
+                            setAdding = { adding = it },
+                            opened = openedWish,
+                            setOpened = { openedWish = it },
+                            // A bought wish becomes a parcel, and the tab follows it
+                            // so the move is visible rather than something to go
+                            // looking for.
+                            freeCash = monthBudget.free,
+                            onBought = { order ->
+                                val next = orders + order
+                                orders = next
+                                store.saveOrders(next)
+                                tab = TAB_ORDERS
+                            }
+                        )
+                        TAB_RATE -> CalculatorScreen(store)
+                        TAB_PAYMENTS -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, store, adding) { adding = it }
+                        TAB_ORDERS -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context, adding) { adding = it }
+                        else -> SettingsScreen(
+                            summary = overview(wishes, pays, orders, monthBudget.income, usdSell),
+                            store = store
+                        ) {
+                            wishes = store.wishes()
+                            pays = store.pays()
+                            orders = store.orders()
+                        }
                     }
                 }
             }
@@ -738,6 +770,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     }
 }
 
+/**
+ * The large title at the top of a screen.
+ *
+ * It is always item zero of its list and nothing else shares that item, because
+ * [CollapsingTitle] measures this block to know when it has scrolled far enough to
+ * hand the screen's name over to the compact bar. Put anything else in item zero
+ * and the handover happens far too late.
+ */
 @Composable
 fun ScreenHeader(
     kicker: String,
@@ -839,123 +879,138 @@ fun WishlistScreen(
                     }
                 )
             } else {
-                // Two columns, the way a shop lists goods. One wish per full-width
-                // row meant a photograph, a chart and four lines of text for every
-                // item, and half a screen spent on one of them.
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(
-                        start = Space.screen,
-                        end = Space.screen,
-                        bottom = Space.fabClearance
-                    ),
-                    horizontalArrangement = Arrangement.spacedBy(Space.md),
-                    verticalArrangement = Arrangement.spacedBy(Space.md)
-                ) {
-                    item(span = { GridItemSpan(maxLineSpan) }) {
-                        ScreenHeader(
-                            kicker = "FLOWPAY",
-                            title = "Мої бажання",
-                            subtitle = "Ціна, ціль та історія в одному місці",
-                            // The grid already supplies the screen margin.
-                            inset = 0.dp,
-                            trailing = {
-                                IconButton(
-                                    onClick = {
-                                        scope.launch {
-                                            refreshing = true
-                                            var updated = 0
-                                            val fresh = items.map { old ->
-                                                runCatching { product(old.url) }.getOrNull()?.let { now ->
-                                                    updated++
-                                                    refreshedWish(old, now)
-                                                } ?: old
-                                            }
-                                            save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
-                                        }
-                                    },
-                                    enabled = !refreshing && items.isNotEmpty()
-                                ) {
-                                    if (refreshing) {
-                                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
-                                    } else {
-                                        Icon(Icons.Default.Refresh, "Оновити ціни", tint = TextSecondary)
-                                    }
+                // The same control in the large header and in the compact bar, so
+                // refreshing prices stays reachable once you are down the grid.
+                val refreshAction: @Composable () -> Unit = {
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                refreshing = true
+                                var updated = 0
+                                val fresh = items.map { old ->
+                                    runCatching { product(old.url) }.getOrNull()?.let { now ->
+                                        updated++
+                                        refreshedWish(old, now)
+                                    } ?: old
                                 }
+                                save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
                             }
-                        )
-                        message?.let {
-                            Text(
-                                it,
-                                Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
-                                color = TextSecondary,
-                                fontSize = Type.captionSize
-                            )
+                        },
+                        enabled = !refreshing && items.isNotEmpty()
+                    ) {
+                        if (refreshing) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                        } else {
+                            Icon(Icons.Default.Refresh, "Оновити ціни", tint = TextSecondary)
                         }
                     }
-                    if (items.size > 1) {
+                }
+                val gridState = rememberLazyGridState()
+                Box {
+                    // Two columns, the way a shop lists goods. One wish per full-width
+                    // row meant a photograph, a chart and four lines of text for every
+                    // item, and half a screen spent on one of them.
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        state = gridState,
+                        contentPadding = PaddingValues(
+                            start = Space.screen,
+                            end = Space.screen,
+                            // The navigation bar is translucent and the grid runs
+                            // under it, so its height is left here rather than cut
+                            // out of the scaffold.
+                            bottom = navClearance() + Space.fabClearance
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(Space.md),
+                        verticalArrangement = Arrangement.spacedBy(Space.md)
+                    ) {
+                        // Item zero is the header alone: that is the block the compact
+                        // bar measures to know when to take over.
                         item(span = { GridItemSpan(maxLineSpan) }) {
-                            // Five chips in a row ran off the right edge with nothing
-                            // to say they scrolled, so the last options were simply
-                            // invisible. One line names the current order instead.
-                            var sortOpen by remember { mutableStateOf(false) }
-                            Box {
-                                Row(
-                                    Modifier.clickable { sortOpen = true },
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "Сортування",
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize
-                                    )
-                                    Spacer(Modifier.width(Space.sm))
-                                    Text(
-                                        sort.label,
-                                        color = Accent,
-                                        fontSize = Type.captionSize,
-                                        fontWeight = Type.medium
-                                    )
-                                    Icon(
-                                        Icons.Default.ArrowDropDown,
-                                        "Змінити порядок",
-                                        tint = Accent
-                                    )
-                                }
-                                DropdownMenu(sortOpen, { sortOpen = false }) {
-                                    WishSort.entries.forEach { option ->
-                                        DropdownMenuItem(
-                                            text = { Text(option.label) },
-                                            onClick = {
-                                                sort = option
-                                                store.saveWishSort(option)
-                                                sortOpen = false
-                                            }
+                            ScreenHeader(
+                                kicker = "FLOWPAY",
+                                title = "Мої бажання",
+                                subtitle = "Ціна, ціль та історія в одному місці",
+                                // The grid already supplies the screen margin.
+                                inset = 0.dp,
+                                trailing = refreshAction
+                            )
+                        }
+                        message?.let { text ->
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text,
+                                    Modifier.padding(bottom = Space.lg),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                        }
+                        if (items.size > 1) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                // Five chips in a row ran off the right edge with nothing
+                                // to say they scrolled, so the last options were simply
+                                // invisible. One line names the current order instead.
+                                var sortOpen by remember { mutableStateOf(false) }
+                                Box {
+                                    Row(
+                                        Modifier.clickable { sortOpen = true },
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "Сортування",
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize
+                                        )
+                                        Spacer(Modifier.width(Space.sm))
+                                        Text(
+                                            sort.label,
+                                            color = Accent,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.medium
+                                        )
+                                        Icon(
+                                            Icons.Default.ArrowDropDown,
+                                            "Змінити порядок",
+                                            tint = Accent
                                         )
                                     }
+                                    DropdownMenu(sortOpen, { sortOpen = false }) {
+                                        WishSort.entries.forEach { option ->
+                                            DropdownMenuItem(
+                                                text = { Text(option.label) },
+                                                onClick = {
+                                                    sort = option
+                                                    store.saveWishSort(option)
+                                                    sortOpen = false
+                                                }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-                    if (items.isEmpty()) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            EmptyInvite(
-                                "Ще нічого не хочеться",
-                                "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
-                                    "далі стежить за ціною сам і скаже, коли вигідно купувати."
-                            )
+                        if (items.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                EmptyInvite(
+                                    "Ще нічого не хочеться",
+                                    "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
+                                        "далі стежить за ціною сам і скаже, коли вигідно купувати."
+                                )
+                            }
+                        }
+                        items(sortWishes(items, sort), key = { it.id }) { wish ->
+                            WishCard(wish, this@AnimatedContent) { setOpened(wish.id) }
                         }
                     }
-                    items(sortWishes(items, sort), key = { it.id }) { wish ->
-                        WishCard(wish, this@AnimatedContent) { setOpened(wish.id) }
-                    }
+                    CollapsingTitle("Мої бажання", gridState, trailing = refreshAction)
                 }
             }
         }
     }
-    if (adding) AddWishDialog({ setAdding(false) }, { wish -> save(items + wish); setAdding(false) })
+    if (adding) AddWishSheet({ setAdding(false) }, { wish -> save(items + wish); setAdding(false) })
     editing?.let { selected ->
-        EditWishDialog(selected, { editing = null }) { changed ->
+        EditWishSheet(selected, { editing = null }) { changed ->
             save(items.map { if (it.id == changed.id) changed else it })
             editing = null
         }
@@ -963,54 +1018,58 @@ fun WishlistScreen(
 }
 
 @Composable
-fun AddWishDialog(close: () -> Unit, add: (Wish) -> Unit) {
+fun AddWishSheet(close: () -> Unit, add: (Wish) -> Unit) {
     var link by remember { mutableStateOf("") }
     var target by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Інше") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    AlertDialog(onDismissRequest = close, confirmButton = {
-        Button(onClick = {
+    FormSheet(
+        title = "Новий товар",
+        confirmLabel = if (loading) "Зчитую…" else "Додати",
+        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        onConfirm = {
             scope.launch {
                 loading = true; error = null
                 runCatching { product(link).copy(targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category) }
                     .onSuccess(add).onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
                 loading = false
             }
-        }, enabled = isSupportedWebUrl(link) && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
-    }, dismissButton = { TextButton(close) { Text("Скасувати") } }, title = { Text("Новий товар") }, text = {
-        Column {
-            OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
-            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
-            OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
-        }
-    })
+        },
+        onDismiss = close
+    ) {
+        OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
+        NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
+        OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+    }
 }
 
 @Composable
-fun EditWishDialog(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
+fun EditWishSheet(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
     var name by remember { mutableStateOf(wish.name) }
     var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
     var category by remember { mutableStateOf(wish.category) }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Редагувати товар") },
-        text = {
-            Column {
-                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
-                NumberField("Цільова ціна, ₴", target) { target = it }
-                OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
-            }
+    FormSheet(
+        title = "Редагувати товар",
+        confirmLabel = "Зберегти",
+        confirmEnabled = true,
+        onConfirm = {
+            save(
+                wish.copy(
+                    name = name.ifBlank { wish.name },
+                    targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                    category = category.ifBlank { "Інше" }
+                )
+            )
         },
-        confirmButton = {
-            Button({ save(wish.copy(name = name.ifBlank { wish.name }, targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category.ifBlank { "Інше" })) }) {
-                Text("Зберегти")
-            }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
+        onDismiss = close
+    ) {
+        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
+        NumberField("Цільова ціна, ₴", target) { target = it }
+        OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+    }
 }
 
 /** A heading that sits closer to its own content than to whatever came before. */
@@ -1100,7 +1159,7 @@ fun SharedTransitionScope.WishDetailScreen(
         }
     }
 
-    LazyColumn(contentPadding = PaddingValues(bottom = Space.huge)) {
+    LazyColumn(contentPadding = PaddingValues(bottom = navClearance() + Space.huge)) {
         item {
             Row(
                 Modifier.fillMaxWidth().padding(start = Space.sm, end = Space.sm, top = Space.sm),
@@ -1624,151 +1683,159 @@ fun CalculatorScreen(store: Store) {
         else -> a + b
     }
 
-    LazyColumn(contentPadding = PaddingValues(bottom = Space.huge)) {
-        item {
-            ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки")
-            Column(Modifier.padding(horizontal = Space.screen)) {
-                Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceRaised)) {
-                    Column(Modifier.padding(Space.lg)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("USD / UAH", color = TextSecondary, fontSize = Type.captionSize)
-                                Text(rateHeadline(rate), fontWeight = FontWeight.Bold)
-                                // Never the figure without its source: the official
-                                // rate and a bank's rate differ by most of a hryvnia,
-                                // and an unlabelled number invites reading one as the
-                                // other.
-                                rateSourceLabel(rate).takeIf { it.isNotBlank() }?.let {
-                                    Text(it, color = TextSecondary, fontSize = Type.captionSize)
-                                }
-                                if (fetchedAt > 0) {
-                                    Text(
-                                        "станом на ${timeLabel(fetchedAt)}" +
-                                            if (rateError) " · оновити не вдалося" else "",
-                                        color = if (rateError) Negative else TextSecondary,
-                                        fontSize = Type.captionSize
-                                    )
-                                } else if (rateError) {
-                                    Text(
-                                        "Ні Monobank, ні НБУ не відповіли, спробуйте пізніше",
-                                        color = Negative,
-                                        fontSize = Type.captionSize
-                                    )
-                                }
-                            }
-                            IconButton({ refresh() }) {
-                                if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
-                                else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
-                            }
-                        }
-                        NumberField(if (hryvniaToDollar) "Сума у гривнях" else "Сума у доларах", amount) { amount = it }
-                        // Secondary action, so an outline rather than a second filled
-                        // shape. The lime is spent on the one figure below.
-                        OutlinedButton(
-                            { hryvniaToDollar = !hryvniaToDollar },
-                            Modifier.fillMaxWidth().padding(top = Space.md),
-                            shape = Radius.sm,
-                            border = BorderStroke(1.dp, HairLine),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
-                        ) {
-                            Icon(Icons.Default.SwapVert, null)
-                            Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
-                        }
-                        Spacer(Modifier.height(Space.lg))
-                        HeroPanel(
-                            label = if (hryvniaToDollar) "У доларах" else "У гривнях",
-                            value = if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
-                            muted = converted == 0.0,
-                            // A short number left the right half of the panel empty.
-                            // The rate it was converted at belongs there: it is the
-                            // one thing you would otherwise scroll up to check.
-                            trailing = if (exchangeRate > 0) {
-                                {
-                                    Column(horizontalAlignment = Alignment.End) {
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(bottom = navClearance() + Space.huge)
+        ) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item { ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки") }
+            item {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceRaised)) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("USD / UAH", color = TextSecondary, fontSize = Type.captionSize)
+                                    Text(rateHeadline(rate), fontWeight = FontWeight.Bold)
+                                    // Never the figure without its source: the official
+                                    // rate and a bank's rate differ by most of a hryvnia,
+                                    // and an unlabelled number invites reading one as the
+                                    // other.
+                                    rateSourceLabel(rate).takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color = TextSecondary, fontSize = Type.captionSize)
+                                    }
+                                    if (fetchedAt > 0) {
                                         Text(
-                                            "за курсом",
-                                            color = AccentInk.copy(alpha = 0.65f),
+                                            "станом на ${timeLabel(fetchedAt)}" +
+                                                if (rateError) " · оновити не вдалося" else "",
+                                            color = if (rateError) Negative else TextSecondary,
                                             fontSize = Type.captionSize
                                         )
+                                    } else if (rateError) {
                                         Text(
-                                            rateFigure(exchangeRate),
-                                            color = AccentInk,
-                                            fontSize = Type.sectionSize,
-                                            lineHeight = Type.sectionLine,
-                                            fontWeight = Type.strong
+                                            "Ні Monobank, ні НБУ не відповіли, спробуйте пізніше",
+                                            color = Negative,
+                                            fontSize = Type.captionSize
                                         )
                                     }
                                 }
-                            } else {
-                                null
+                                IconButton({ refresh() }) {
+                                    if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                                    else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
+                                }
                             }
-                        )
-                    }
-                }
-
-                Text(
-                    "Курс за місяць",
-                    Modifier.padding(top = Space.xxl, bottom = Space.md),
-                    fontSize = Type.sectionSize,
-                    lineHeight = Type.sectionLine,
-                    fontWeight = Type.medium
-                )
-                Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceBase)) {
-                    Column(Modifier.padding(Space.lg)) {
-                        if (history.isNotEmpty()) {
-                            PriceBars(history, Modifier.fillMaxWidth().height(120.dp))
-                            Spacer(Modifier.height(Space.sm))
+                            NumberField(if (hryvniaToDollar) "Сума у гривнях" else "Сума у доларах", amount) { amount = it }
+                            // Secondary action, so an outline rather than a second filled
+                            // shape. The lime is spent on the one figure below.
+                            OutlinedButton(
+                                { hryvniaToDollar = !hryvniaToDollar },
+                                Modifier.fillMaxWidth().padding(top = Space.md),
+                                shape = Radius.sm,
+                                border = BorderStroke(1.dp, HairLine),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                            ) {
+                                Icon(Icons.Default.SwapVert, null)
+                                Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
+                            }
+                            Spacer(Modifier.height(Space.lg))
+                            HeroPanel(
+                                label = if (hryvniaToDollar) "У доларах" else "У гривнях",
+                                value = if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
+                                muted = converted == 0.0,
+                                // A short number left the right half of the panel empty.
+                                // The rate it was converted at belongs there: it is the
+                                // one thing you would otherwise scroll up to check.
+                                trailing = if (exchangeRate > 0) {
+                                    {
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                "за курсом",
+                                                color = AccentInk.copy(alpha = 0.65f),
+                                                fontSize = Type.captionSize
+                                            )
+                                            Text(
+                                                rateFigure(exchangeRate),
+                                                color = AccentInk,
+                                                fontSize = Type.sectionSize,
+                                                lineHeight = Type.sectionLine,
+                                                fontWeight = Type.strong
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    null
+                                }
+                            )
                         }
-                        // Nothing recorded the rate before this version, so the chart
-                        // says how many days it has actually seen rather than letting
-                        // four bars pass for a month.
-                        Text(
-                            rateHistoryNote(history, LocalDate.now().toEpochDay()),
-                            color = TextSecondary,
-                            fontSize = Type.captionSize,
-                            lineHeight = Type.captionLine
-                        )
-                        rateRangeNote(history)?.let {
-                            Spacer(Modifier.height(Space.sm))
-                            LeaderRow("Від і до", it)
+                    }
+
+                    Text(
+                        "Курс за місяць",
+                        Modifier.padding(top = Space.xxl, bottom = Space.md),
+                        fontSize = Type.sectionSize,
+                        lineHeight = Type.sectionLine,
+                        fontWeight = Type.medium
+                    )
+                    Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceBase)) {
+                        Column(Modifier.padding(Space.lg)) {
+                            if (history.isNotEmpty()) {
+                                PriceBars(history, Modifier.fillMaxWidth().height(120.dp))
+                                Spacer(Modifier.height(Space.sm))
+                            }
+                            // Nothing recorded the rate before this version, so the chart
+                            // says how many days it has actually seen rather than letting
+                            // four bars pass for a month.
+                            Text(
+                                rateHistoryNote(history, LocalDate.now().toEpochDay()),
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                            rateRangeNote(history)?.let {
+                                Spacer(Modifier.height(Space.sm))
+                                LeaderRow("Від і до", it)
+                            }
                         }
                     }
-                }
 
-                // A section heading sits closer to its own content than to what came
-                // before it, so the gap above is larger than the gap below.
-                Text(
-                    "Калькулятор сум",
-                    Modifier.padding(top = Space.xxl, bottom = Space.md),
-                    fontSize = Type.sectionSize,
-                    lineHeight = Type.sectionLine,
-                    fontWeight = Type.medium
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                    Box(Modifier.weight(1f)) { NumberField("Перша сума", first) { first = it } }
-                    Box(Modifier.weight(1f)) { NumberField("Друга сума", second) { second = it } }
-                }
-                Row(
-                    Modifier.fillMaxWidth().padding(vertical = Space.md),
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm)
-                ) {
-                    listOf("+", "−", "×", "÷").forEach { symbol ->
-                        FilterChip(
-                            operation == symbol,
-                            { operation = symbol },
-                            { Text(symbol, fontSize = Type.sectionSize) },
-                            modifier = Modifier.weight(1f)
-                        )
+                    // A section heading sits closer to its own content than to what came
+                    // before it, so the gap above is larger than the gap below.
+                    Text(
+                        "Калькулятор сум",
+                        Modifier.padding(top = Space.xxl, bottom = Space.md),
+                        fontSize = Type.sectionSize,
+                        lineHeight = Type.sectionLine,
+                        fontWeight = Type.medium
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                        Box(Modifier.weight(1f)) { NumberField("Перша сума", first) { first = it } }
+                        Box(Modifier.weight(1f)) { NumberField("Друга сума", second) { second = it } }
                     }
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = Space.md),
+                        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                    ) {
+                        listOf("+", "−", "×", "÷").forEach { symbol ->
+                            FilterChip(
+                                operation == symbol,
+                                { operation = symbol },
+                                { Text(symbol, fontSize = Type.sectionSize) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    SummaryCard(
+                        "Результат",
+                        NumberFormat.getNumberInstance(Locale("uk", "UA")).format(total),
+                        total == 0.0,
+                        hero = false
+                    )
                 }
-                SummaryCard(
-                    "Результат",
-                    NumberFormat.getNumberInstance(Locale("uk", "UA")).format(total),
-                    total == 0.0,
-                    hero = false
-                )
             }
         }
+        CollapsingTitle("Курс і суми", listState)
     }
 }
 
@@ -1791,191 +1858,199 @@ fun PaymentsScreen(
     var editing by remember { mutableStateOf<Int?>(null) }
     // Read once, so the timeline and the strip cannot disagree about which day it is.
     val today = remember { LocalDate.now() }
-    LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
-        item {
-            ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
-            Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
-                // The loudest figure should be one you can act on. A monthly total is
-                // read and forgotten; the next payment is prepared for, so it takes
-                // the panel and the total moves down into the summary rows.
-                val next = nextPayment(items, today, rate.sell)
-                HeroPanel(
-                    label = if (next != null) {
-                        "Найближчий платіж · ${dueLabel(next.daysAway)}"
-                    } else {
-                        "Разом на місяць"
-                    },
-                    value = money(next?.total?.total ?: monthly.total),
-                    caption = when {
-                        next == null -> null
-                        next.total.rateMissing ->
-                            "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
-                        else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
-                    },
-                    muted = next == null
-                )
-                if (items.isNotEmpty()) {
-                    Spacer(Modifier.height(Space.md))
-                    DaysStrip(days = 30, marked = paymentOffsets(items, today))
-                    Spacer(Modifier.height(Space.xs))
-                    Text(
-                        "Списання у найближчі 30 днів",
-                        color = TextSecondary,
-                        fontSize = Type.captionSize
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(bottom = navClearance() + Space.fabClearance)
+        ) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item { ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки") }
+            item {
+                Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
+                    // The loudest figure should be one you can act on. A monthly total is
+                    // read and forgotten; the next payment is prepared for, so it takes
+                    // the panel and the total moves down into the summary rows.
+                    val next = nextPayment(items, today, rate.sell)
+                    HeroPanel(
+                        label = if (next != null) {
+                            "Найближчий платіж · ${dueLabel(next.daysAway)}"
+                        } else {
+                            "Разом на місяць"
+                        },
+                        value = money(next?.total?.total ?: monthly.total),
+                        caption = when {
+                            next == null -> null
+                            next.total.rateMissing ->
+                                "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
+                            else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
+                        },
+                        muted = next == null
                     )
-                }
-                Spacer(Modifier.height(Space.md))
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                    shape = Radius.md
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        Row(
-                            Modifier.fillMaxWidth().clickable { editingIncome = true },
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    if (month.unknown) "Вкажіть дохід" else "Вільно на місяць",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize
-                                )
-                                Spacer(Modifier.height(Space.xs))
-                                Text(
-                                    when {
-                                        month.unknown -> "щоб бачити, скільки лишається"
-                                        else -> money(month.free)
-                                    },
-                                    fontSize = if (month.unknown) Type.bodySize else Type.sectionSize,
-                                    lineHeight = Type.sectionLine,
-                                    fontWeight = if (month.unknown) Type.regular else Type.strong,
-                                    color = when {
-                                        month.unknown -> TextDisabled
-                                        month.overspent -> Negative
-                                        else -> Accent
-                                    }
-                                )
-                                if (!month.unknown) {
+                    if (items.isNotEmpty()) {
+                        Spacer(Modifier.height(Space.md))
+                        DaysStrip(days = 30, marked = paymentOffsets(items, today))
+                        Spacer(Modifier.height(Space.xs))
+                        Text(
+                            "Списання у найближчі 30 днів",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize
+                        )
+                    }
+                    Spacer(Modifier.height(Space.md))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Row(
+                                Modifier.fillMaxWidth().clickable { editingIncome = true },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f)) {
                                     Text(
-                                        if (month.overspent) "Витрати перевищують дохід ${money(month.income)}"
-                                        else "З доходу ${money(month.income)}",
+                                        if (month.unknown) "Вкажіть дохід" else "Вільно на місяць",
                                         color = TextSecondary,
                                         fontSize = Type.captionSize
                                     )
-                                }
-                            }
-                            Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
-                        }
-                        if (items.isNotEmpty()) {
-                            Spacer(Modifier.height(Space.sm))
-                            LeaderRow("Разом на місяць", money(monthly.total))
-                            // A year of the same costs, because that is the scale at
-                            // which a subscription is worth arguing with.
-                            LeaderRow("Разом на рік", money(yearly.total))
-                            if (monthly.rateMissing) {
-                                // Both totals are short by this much, so it is said as
-                                // a gap rather than folded in as a smaller number.
-                                LeaderRow(
-                                    "Плюс ${dollars(yearly.usd)} на рік",
-                                    "курс ще не завантажено"
-                                )
-                            } else if (monthly.hasUsd) {
-                                LeaderRow(
-                                    "З них ${dollars(yearly.usd)} на рік",
-                                    "≈ ${approxMoney(yearly.usdInUah)}"
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if (items.isEmpty()) {
-            item {
-                PlaceholderRows(
-                    listOf(
-                        "оренда, комуналка" to "сума і день оплати",
-                        "інтернет, підписки" to "сума і день оплати"
-                    ),
-                    Modifier.padding(horizontal = Space.screen)
-                )
-            }
-        }
-        // A timeline rather than a list: the date is said once for everything
-        // falling on it, instead of "1 числа щомісяця" repeated under every row.
-        paymentGroups(items, today).forEach { group ->
-            item(key = group.date.toString()) {
-                val isToday = group.date == today
-                Card(
-                    Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (isToday) AccentSoft else SurfaceBase
-                    ),
-                    shape = Radius.md
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        Text(
-                            if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
-                            color = Accent,
-                            fontSize = Type.captionSize,
-                            fontWeight = Type.medium
-                        )
-                        group.positions.forEach { position ->
-                            val pay = items[position]
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable { editing = position }
-                                    .padding(vertical = Space.sm),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                IconChip(payIcon(pay.name))
-                                Spacer(Modifier.width(Space.md))
-                                // No dotted leader here. Two weighted children split
-                                // the row in half, which cut "Оренда квартири" down to
-                                // "Оренда к…" — and a name earns that space before a
-                                // decoration does.
-                                Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                    Spacer(Modifier.height(Space.xs))
                                     Text(
-                                        pay.name,
-                                        fontSize = Type.cardTitleSize,
-                                        fontWeight = Type.medium,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        when {
+                                            month.unknown -> "щоб бачити, скільки лишається"
+                                            else -> money(month.free)
+                                        },
+                                        fontSize = if (month.unknown) Type.bodySize else Type.sectionSize,
+                                        lineHeight = Type.sectionLine,
+                                        fontWeight = if (month.unknown) Type.regular else Type.strong,
+                                        color = when {
+                                            month.unknown -> TextDisabled
+                                            month.overspent -> Negative
+                                            else -> Accent
+                                        }
                                     )
-                                    // The annual figure is the one that changes minds
-                                    // about a subscription, so it rides with the name
-                                    // rather than waiting on another screen.
-                                    Text(
-                                        annualLabel(pay),
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                                Column(horizontalAlignment = Alignment.End) {
-                                    Text(
-                                        amountLabel(pay.amount, pay.currency),
-                                        fontWeight = Type.strong
-                                    )
-                                    if (pay.currency == USD && rate.sell > 0) {
+                                    if (!month.unknown) {
                                         Text(
-                                            "≈ ${approxMoney(pay.amount * rate.sell)}",
+                                            if (month.overspent) "Витрати перевищують дохід ${money(month.income)}"
+                                            else "З доходу ${money(month.income)}",
                                             color = TextSecondary,
                                             fontSize = Type.captionSize
                                         )
                                     }
                                 }
+                                Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
+                            }
+                            if (items.isNotEmpty()) {
+                                Spacer(Modifier.height(Space.sm))
+                                LeaderRow("Разом на місяць", money(monthly.total))
+                                // A year of the same costs, because that is the scale at
+                                // which a subscription is worth arguing with.
+                                LeaderRow("Разом на рік", money(yearly.total))
+                                if (monthly.rateMissing) {
+                                    // Both totals are short by this much, so it is said as
+                                    // a gap rather than folded in as a smaller number.
+                                    LeaderRow(
+                                        "Плюс ${dollars(yearly.usd)} на рік",
+                                        "курс ще не завантажено"
+                                    )
+                                } else if (monthly.hasUsd) {
+                                    LeaderRow(
+                                        "З них ${dollars(yearly.usd)} на рік",
+                                        "≈ ${approxMoney(yearly.usdInUah)}"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (items.isEmpty()) {
+                item {
+                    PlaceholderRows(
+                        listOf(
+                            "оренда, комуналка" to "сума і день оплати",
+                            "інтернет, підписки" to "сума і день оплати"
+                        ),
+                        Modifier.padding(horizontal = Space.screen)
+                    )
+                }
+            }
+            // A timeline rather than a list: the date is said once for everything
+            // falling on it, instead of "1 числа щомісяця" repeated under every row.
+            paymentGroups(items, today).forEach { group ->
+                item(key = group.date.toString()) {
+                    val isToday = group.date == today
+                    Card(
+                        Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isToday) AccentSoft else SurfaceBase
+                        ),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Text(
+                                if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
+                                color = Accent,
+                                fontSize = Type.captionSize,
+                                fontWeight = Type.medium
+                            )
+                            group.positions.forEach { position ->
+                                val pay = items[position]
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { editing = position }
+                                        .padding(vertical = Space.sm),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconChip(payIcon(pay.name))
+                                    Spacer(Modifier.width(Space.md))
+                                    // No dotted leader here. Two weighted children split
+                                    // the row in half, which cut "Оренда квартири" down to
+                                    // "Оренда к…" — and a name earns that space before a
+                                    // decoration does.
+                                    Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                        Text(
+                                            pay.name,
+                                            fontSize = Type.cardTitleSize,
+                                            fontWeight = Type.medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        // The annual figure is the one that changes minds
+                                        // about a subscription, so it rides with the name
+                                        // rather than waiting on another screen.
+                                        Text(
+                                            annualLabel(pay),
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            amountLabel(pay.amount, pay.currency),
+                                            fontWeight = Type.strong
+                                        )
+                                        if (pay.currency == USD && rate.sell > 0) {
+                                            Text(
+                                                "≈ ${approxMoney(pay.amount * rate.sell)}",
+                                                color = TextSecondary,
+                                                fontSize = Type.captionSize
+                                            )
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
         }
+        CollapsingTitle("Постійні витрати", listState)
     }
-    if (adding) AddPaymentDialog({ setAdding(false) }) {
+    if (adding) AddPaymentSheet({ setAdding(false) }) {
         save(items + it)
         setAdding(false)
     }
@@ -1988,7 +2063,7 @@ fun PaymentsScreen(
     }
     editing?.let { index ->
         items.getOrNull(index)?.let { pay ->
-            EditPaymentDialog(
+            EditPaymentSheet(
                 pay,
                 close = { editing = null },
                 delete = {
@@ -2013,7 +2088,7 @@ fun payIcon(name: String) = when {
 }
 
 @Composable
-fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
+fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     // The chips fill the name in, they are not the name. Two subscriptions are
     // rarely the same subscription, so the field is always present and always
     // editable: tapping a chip simply types the word for you.
@@ -2023,49 +2098,42 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
     var day by remember { mutableStateOf("1") }
     var currency by remember { mutableStateOf(UAH) }
     var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Нова постійна витрата") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                    items(presets) { preset ->
-                        FilterChip(name == preset, { name = preset }, { Text(preset) })
-                    }
-                }
-                OutlinedTextField(
-                    name,
-                    { name = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Назва") },
-                    singleLine = true
+    FormSheet(
+        title = "Нова постійна витрата",
+        confirmLabel = "Додати",
+        confirmEnabled = parseAmount(amount) > 0 && name.isNotBlank(),
+        onConfirm = {
+            parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                add(
+                    Pay(
+                        name.trim().ifBlank { "Інше" },
+                        value,
+                        day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+                        currency,
+                        warnDays
+                    )
                 )
-                CurrencyChips(currency) { currency = it }
-                NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
-                NumberField("День оплати", day) { day = it }
-                WarnDaysChips(warnDays) { warnDays = it }
             }
         },
-        confirmButton = {
-            Button(
-                {
-                    parseAmount(amount).takeIf { it > 0 }?.let { value ->
-                        add(
-                            Pay(
-                                name.trim().ifBlank { "Інше" },
-                                value,
-                                day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
-                                currency,
-                                warnDays
-                            )
-                        )
-                    }
-                },
-                enabled = parseAmount(amount) > 0 && name.isNotBlank()
-            ) { Text("Додати") }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
+        onDismiss = close
+    ) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+            items(presets) { preset ->
+                FilterChip(name == preset, { name = preset }, { Text(preset) })
+            }
+        }
+        OutlinedTextField(
+            name,
+            { name = it },
+            Modifier.fillMaxWidth(),
+            label = { Text("Назва") },
+            singleLine = true
+        )
+        CurrencySegments(currency) { currency = it }
+        NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
+        NumberField("День оплати", day) { day = it }
+        WarnDaysChips(warnDays) { warnDays = it }
+    }
 }
 
 @Composable
@@ -2105,207 +2173,220 @@ fun OrdersScreen(
         }
     }
 
-    LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
-        item {
-            ScreenHeader(
-                "ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам",
-                trailing = {
-                    IconButton(onClick = { checkAll() }, enabled = !checking && trackable > 0) {
-                        if (checking) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
-                        } else {
-                            Icon(Icons.Default.Sync, "Перевірити статуси", tint = TextSecondary)
-                        }
-                    }
-                }
-            )
-            message?.let {
-                Text(
-                    it,
-                    Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
-                    color = TextSecondary,
-                    fontSize = Type.captionSize
-                )
-            }
-        }
-        if (items.isEmpty()) {
-            item {
-                Column(Modifier.padding(horizontal = Space.screen)) {
-                    EmptyInvite(
-                        "Посилок немає",
-                        "Додайте покупку з трек-номером Нової Пошти. Статус і залишок " +
-                            "безкоштовного зберігання підтягнуться самі."
-                    )
-                }
-            }
-        }
-        items(items, key = { it.id }) { order ->
-            Card(
-                Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
-                shape = Radius.md
-            ) {
-                Row(Modifier.padding(Space.lg)) {
-                    AsyncImage(
-                        order.image, order.name,
-                        Modifier.size(72.dp).background(SurfaceRaised, Radius.sm),
-                        contentScale = ContentScale.Crop
-                    )
-                    Spacer(Modifier.width(Space.md))
-                    Column(Modifier.weight(1f)) {
-                        Text(
-                            order.status.uppercase(),
-                            color = Accent,
-                            fontSize = Type.overlineSize,
-                            fontWeight = Type.strong,
-                            letterSpacing = Type.overlineTracking
-                        )
-                        Spacer(Modifier.height(Space.xs))
-                        Text(
-                            order.name,
-                            fontSize = Type.cardTitleSize,
-                            lineHeight = Type.cardTitleLine,
-                            fontWeight = Type.medium,
-                            maxLines = 2
-                        )
-                        if (order.price > 0) {
-                            Text(money(order.price), fontWeight = Type.strong, fontSize = Type.bodySize)
-                        }
-                        if (order.tracking.isNotBlank()) {
-                            Text(
-                                "Трек: ${order.tracking}",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize
-                            )
-                        }
-                        if (order.statusDetail.isNotBlank()) {
-                            Text(
-                                order.statusDetail,
-                                color = TextPrimary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.xs)
-                            )
-                        }
-                        if (order.problem) {
-                            Text(
-                                "Потрібна увага: перевірте номер або статус у перевізника",
-                                color = Negative,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.xs)
-                            )
-                        }
-                        if (order.paidStorageFrom > 0) {
-                            val left = freeStorageDaysLeft(
-                                LocalDate.ofEpochDay(order.paidStorageFrom),
-                                LocalDate.now()
-                            ) ?: 0
-                            val pressing = left <= 2
-                            Row(
-                                Modifier.fillMaxWidth().padding(top = Space.sm),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    "Безкоштовне зберігання",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize
-                                )
-                                Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
-                                    DottedLeader(Modifier.fillMaxWidth())
-                                }
-                                Text(
-                                    if (left > 0) daysLabel(left) else "закінчилось",
-                                    color = if (pressing) Negative else Accent,
-                                    fontSize = Type.captionSize,
-                                    fontWeight = Type.strong
-                                )
-                            }
-                            Text(
-                                if (left > 0) {
-                                    "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}"
-                                } else {
-                                    "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}, вже йде"
-                                },
-                                color = TextDisabled,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine
-                            )
-                        }
-                        if (order.scheduledDelivery > 0 && order.status != RECEIVED) {
-                            Text(
-                                "Очікується ${formatDate(LocalDate.ofEpochDay(order.scheduledDelivery))}",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize
-                            )
-                        }
-                        if (order.amountToPay > 0) {
-                            Text(
-                                "До сплати при отриманні ${money(order.amountToPay)}",
-                                color = TextPrimary,
-                                fontSize = Type.captionSize
-                            )
-                        }
-                        if (order.checkedAt > 0) {
-                            Text(
-                                "перевірено ${timeLabel(order.checkedAt)}",
-                                color = TextDisabled,
-                                fontSize = Type.captionSize
-                            )
-                        } else if (order.tracking.isNotBlank() &&
-                            detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA
-                        ) {
-                            Text(
-                                "Автоперевірка працює для номерів Нової Пошти",
-                                color = TextDisabled,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine
-                            )
-                        }
-                    }
-                }
-                StageRail(
-                    stages = PARCEL_STAGES,
-                    current = order.status,
-                    modifier = Modifier.padding(horizontal = Space.lg)
-                ) { status ->
-                    save(items.map { if (it.id == order.id) it.copy(status = status) else it })
-                }
-                // Left aligned for the same reason as the wish card: the floating
-                // action button sits over the bottom right corner.
-                Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) {
-                        Text("До магазину ↗")
-                    }
-                    IconButton({ tracking = order }) { Icon(Icons.Default.Edit, "Трек-номер") }
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
-                                message = if (status == null) {
-                                    "Не вдалося отримати статус"
-                                } else {
-                                    save(
-                                        items.map {
-                                            if (it.id == order.id) {
-                                                applyStatus(it, status, System.currentTimeMillis())
-                                            } else {
-                                                it
-                                            }
-                                        }
-                                    )
-                                    status.text
-                                }
-                            }
-                        },
-                        enabled = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
-                    ) { Icon(Icons.Default.Sync, "Перевірити статус") }
-                    IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
-                    Spacer(Modifier.weight(1f))
-                }
+    // The same control in the large header and in the compact bar, so checking
+    // statuses does not become unreachable once you are down the list.
+    val checkAction: @Composable () -> Unit = {
+        IconButton(onClick = { checkAll() }, enabled = !checking && trackable > 0) {
+            if (checking) {
+                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+            } else {
+                Icon(Icons.Default.Sync, "Перевірити статуси", tint = TextSecondary)
             }
         }
     }
-    if (adding) AddOrderDialog({ setAdding(false) }) {
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(bottom = navClearance() + Space.fabClearance)
+        ) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item {
+                ScreenHeader(
+                    "ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам",
+                    trailing = checkAction
+                )
+            }
+            message?.let { text ->
+                item {
+                    Text(
+                        text,
+                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize
+                    )
+                }
+            }
+            if (items.isEmpty()) {
+                item {
+                    Column(Modifier.padding(horizontal = Space.screen)) {
+                        EmptyInvite(
+                            "Посилок немає",
+                            "Додайте покупку з трек-номером Нової Пошти. Статус і залишок " +
+                                "безкоштовного зберігання підтягнуться самі."
+                        )
+                    }
+                }
+            }
+            items(items, key = { it.id }) { order ->
+                Card(
+                    Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+                    shape = Radius.md
+                ) {
+                    Row(Modifier.padding(Space.lg)) {
+                        AsyncImage(
+                            order.image, order.name,
+                            Modifier.size(72.dp).background(SurfaceRaised, Radius.sm),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(Modifier.width(Space.md))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                order.status.uppercase(),
+                                color = Accent,
+                                fontSize = Type.overlineSize,
+                                fontWeight = Type.strong,
+                                letterSpacing = Type.overlineTracking
+                            )
+                            Spacer(Modifier.height(Space.xs))
+                            Text(
+                                order.name,
+                                fontSize = Type.cardTitleSize,
+                                lineHeight = Type.cardTitleLine,
+                                fontWeight = Type.medium,
+                                maxLines = 2
+                            )
+                            if (order.price > 0) {
+                                Text(money(order.price), fontWeight = Type.strong, fontSize = Type.bodySize)
+                            }
+                            if (order.tracking.isNotBlank()) {
+                                Text(
+                                    "Трек: ${order.tracking}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            if (order.statusDetail.isNotBlank()) {
+                                Text(
+                                    order.statusDetail,
+                                    color = TextPrimary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                            if (order.problem) {
+                                Text(
+                                    "Потрібна увага: перевірте номер або статус у перевізника",
+                                    color = Negative,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                            if (order.paidStorageFrom > 0) {
+                                val left = freeStorageDaysLeft(
+                                    LocalDate.ofEpochDay(order.paidStorageFrom),
+                                    LocalDate.now()
+                                ) ?: 0
+                                val pressing = left <= 2
+                                Row(
+                                    Modifier.fillMaxWidth().padding(top = Space.sm),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "Безкоштовне зберігання",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
+                                        DottedLeader(Modifier.fillMaxWidth())
+                                    }
+                                    Text(
+                                        if (left > 0) daysLabel(left) else "закінчилось",
+                                        color = if (pressing) Negative else Accent,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.strong
+                                    )
+                                }
+                                Text(
+                                    if (left > 0) {
+                                        "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}"
+                                    } else {
+                                        "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}, вже йде"
+                                    },
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                            if (order.scheduledDelivery > 0 && order.status != RECEIVED) {
+                                Text(
+                                    "Очікується ${formatDate(LocalDate.ofEpochDay(order.scheduledDelivery))}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            if (order.amountToPay > 0) {
+                                Text(
+                                    "До сплати при отриманні ${money(order.amountToPay)}",
+                                    color = TextPrimary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            if (order.checkedAt > 0) {
+                                Text(
+                                    "перевірено ${timeLabel(order.checkedAt)}",
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize
+                                )
+                            } else if (order.tracking.isNotBlank() &&
+                                detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA
+                            ) {
+                                Text(
+                                    "Автоперевірка працює для номерів Нової Пошти",
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                        }
+                    }
+                    StageRail(
+                        stages = PARCEL_STAGES,
+                        current = order.status,
+                        modifier = Modifier.padding(horizontal = Space.lg)
+                    ) { status ->
+                        save(items.map { if (it.id == order.id) it.copy(status = status) else it })
+                    }
+                    // Left aligned for the same reason as the wish card: the floating
+                    // action button sits over the bottom right corner.
+                    Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) {
+                            Text("До магазину ↗")
+                        }
+                        IconButton({ tracking = order }) { Icon(Icons.Default.Edit, "Трек-номер") }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                                    message = if (status == null) {
+                                        "Не вдалося отримати статус"
+                                    } else {
+                                        save(
+                                            items.map {
+                                                if (it.id == order.id) {
+                                                    applyStatus(it, status, System.currentTimeMillis())
+                                                } else {
+                                                    it
+                                                }
+                                            }
+                                        )
+                                        status.text
+                                    }
+                                }
+                            },
+                            enabled = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
+                        ) { Icon(Icons.Default.Sync, "Перевірити статус") }
+                        IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+        }
+        CollapsingTitle("Мої покупки", listState, trailing = checkAction)
+    }
+    if (adding) AddOrderSheet({ setAdding(false) }) {
         save(items + it)
         setAdding(false)
     }
@@ -2318,52 +2399,48 @@ fun OrdersScreen(
 }
 
 @Composable
-fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
+fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
     var link by remember { mutableStateOf("") }
     var trackingNumber by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Додати покупку") },
-        text = {
-            Column {
-                Text("Вставте посилання на сторінку придбаного товару.")
-                OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Посилання") })
-                OutlinedTextField(
-                    trackingNumber,
-                    { trackingNumber = it },
-                    Modifier.fillMaxWidth().padding(top = Space.md),
-                    label = { Text("Трек-номер, якщо вже є") },
-                    singleLine = true
-                )
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+    FormSheet(
+        title = "Додати покупку",
+        confirmLabel = if (loading) "Зчитую…" else "Додати",
+        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        onConfirm = {
+            scope.launch {
+                loading = true
+                error = null
+                runCatching { product(link) }
+                    .onSuccess { item ->
+                        add(
+                            Order(
+                                item.id, item.name, item.url, "Замовлено",
+                                tracking = trackingNumber.trim(),
+                                image = item.image,
+                                price = item.price
+                            )
+                        )
+                    }
+                    .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
+                loading = false
             }
         },
-        confirmButton = {
-            Button({
-                scope.launch {
-                    loading = true
-                    error = null
-                    runCatching { product(link) }
-                        .onSuccess { item ->
-                            add(
-                                Order(
-                                    item.id, item.name, item.url, "Замовлено",
-                                    tracking = trackingNumber.trim(),
-                                    image = item.image,
-                                    price = item.price
-                                )
-                            )
-                        }
-                        .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
-                    loading = false
-                }
-            }, enabled = isSupportedWebUrl(link) && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
+        onDismiss = close
+    ) {
+        Text("Вставте посилання на сторінку придбаного товару.")
+        OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Посилання") })
+        OutlinedTextField(
+            trackingNumber,
+            { trackingNumber = it },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Трек-номер, якщо вже є") },
+            singleLine = true
+        )
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+    }
 }
 
 @Composable
@@ -2385,291 +2462,295 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
             store.importJson(text)
         }.onSuccess { onImported(); message = "Дані відновлено" }.onFailure { message = "Файл FlowPay пошкоджений" }
     }
-    LazyColumn {
-        item {
-            ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається")
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item { ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається") }
+            item {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    // The one loud block on this screen, with the ring reading the same
+                    // number a second way.
+                    HeroPanel(
+                        label = "Відкладено на бажання",
+                        value = money(summary.savedTotal),
+                        caption = buildList {
+                            if (summary.wishTotal > 0) {
+                                add("з ${money(summary.wishTotal)} на ${summary.wishCount} позицій")
+                            }
+                            if (summary.readyCount > 0) add("готових ${summary.readyCount}")
+                            summary.monthsToFundAll?.takeIf { it > 0 }?.let {
+                                add("все разом ${monthsLabel(it)}")
+                            }
+                        }.joinToString(" · ").ifBlank { null },
+                        muted = summary.savedTotal <= 0,
+                        trailing = if (summary.wishTotal > 0) {
+                            {
+                                ProgressRing(summary.savedProgress, diameter = 84.dp, stroke = 9.dp) {
+                                    Text(
+                                        "${(summary.savedProgress * 100).toInt()}%",
+                                        color = AccentInk,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.strong
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
+                    )
 
-            Column(Modifier.padding(horizontal = Space.screen)) {
-                // The one loud block on this screen, with the ring reading the same
-                // number a second way.
-                HeroPanel(
-                    label = "Відкладено на бажання",
-                    value = money(summary.savedTotal),
-                    caption = buildList {
-                        if (summary.wishTotal > 0) {
-                            add("з ${money(summary.wishTotal)} на ${summary.wishCount} позицій")
-                        }
-                        if (summary.readyCount > 0) add("готових ${summary.readyCount}")
-                        summary.monthsToFundAll?.takeIf { it > 0 }?.let {
-                            add("все разом ${monthsLabel(it)}")
-                        }
-                    }.joinToString(" · ").ifBlank { null },
-                    muted = summary.savedTotal <= 0,
-                    trailing = if (summary.wishTotal > 0) {
-                        {
-                            ProgressRing(summary.savedProgress, diameter = 84.dp, stroke = 9.dp) {
+                    if (summary.plansConflict) {
+                        Spacer(Modifier.height(Space.md))
+                        Card(
+                            Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                            shape = Radius.md
+                        ) {
+                            Column(Modifier.padding(Space.lg)) {
                                 Text(
-                                    "${(summary.savedProgress * 100).toInt()}%",
-                                    color = AccentInk,
+                                    "Плани не сходяться",
+                                    color = Negative,
+                                    fontSize = Type.cardTitleSize,
+                                    fontWeight = Type.medium
+                                )
+                                Text(
+                                    "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
+                                        "а вільно ${money(summary.freeCash)}. " +
+                                        "Не вистачає ${money(summary.plansOverBudget)}.",
+                                    color = TextSecondary,
                                     fontSize = Type.captionSize,
-                                    fontWeight = Type.strong
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
                                 )
                             }
                         }
-                    } else {
-                        null
                     }
-                )
 
-                if (summary.plansConflict) {
-                    Spacer(Modifier.height(Space.md))
-                    Card(
-                        Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
-                        shape = Radius.md
-                    ) {
-                        Column(Modifier.padding(Space.lg)) {
-                            Text(
-                                "Плани не сходяться",
-                                color = Negative,
-                                fontSize = Type.cardTitleSize,
-                                fontWeight = Type.medium
-                            )
-                            Text(
-                                "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
-                                    "а вільно ${money(summary.freeCash)}. " +
-                                    "Не вистачає ${money(summary.plansOverBudget)}.",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.xs)
-                            )
+                    val moved = summary.movement
+                    if (moved.tracked > 0) {
+                        Spacer(Modifier.height(Space.md))
+                        Card(
+                            Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Column(Modifier.padding(Space.lg)) {
+                                Text(
+                                    when {
+                                        moved.change < 0 -> "Список подешевшав"
+                                        moved.change > 0 -> "Список подорожчав"
+                                        else -> "Ціни стоять на місці"
+                                    },
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                                Spacer(Modifier.height(Space.xs))
+                                Text(
+                                    if (moved.change == 0.0) {
+                                        money(0.0)
+                                    } else {
+                                        "${money(kotlin.math.abs(moved.change))} · " +
+                                            "%+.1f%%".format(moved.changePercent)
+                                    },
+                                    fontSize = Type.sectionSize,
+                                    lineHeight = Type.sectionLine,
+                                    fontWeight = Type.strong,
+                                    color = when {
+                                        moved.change < 0 -> Accent
+                                        moved.change > 0 -> Negative
+                                        else -> TextPrimary
+                                    }
+                                )
+                                Text(
+                                    "від ${money(moved.firstTotal)} за весь час спостереження · " +
+                                        positionsLabel(moved.tracked),
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                                Spacer(Modifier.height(Space.sm))
+                                LeaderRow("Подешевшало", moved.cheaper.toString())
+                                LeaderRow(
+                                    "Подорожчало",
+                                    moved.dearer.toString(),
+                                    alarm = moved.dearer > 0
+                                )
+                                LeaderRow("Без змін", moved.steady.toString())
+
+                                // Named separately rather than as leader rows: a product
+                                // name is long enough to squeeze the figure off the line.
+                                moved.biggestDropName?.let { name ->
+                                    Spacer(Modifier.height(Space.sm))
+                                    Text(
+                                        "Найбільше подешевшало",
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            name,
+                                            fontSize = Type.captionSize,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f).padding(end = Space.sm)
+                                        )
+                                        Text(
+                                            "%+.1f%%".format(moved.biggestDropPercent),
+                                            color = Accent,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                }
+                                moved.biggestRiseName?.let { name ->
+                                    Spacer(Modifier.height(Space.sm))
+                                    Text(
+                                        "Найбільше подорожчало",
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            name,
+                                            fontSize = Type.captionSize,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f).padding(end = Space.sm)
+                                        )
+                                        Text(
+                                            "%+.1f%%".format(moved.biggestRisePercent),
+                                            color = Negative,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
-                }
 
-                val moved = summary.movement
-                if (moved.tracked > 0) {
                     Spacer(Modifier.height(Space.md))
+                    // Three figures and their targets in the height one card used to take,
+                    // with the rings restating them. This density is what the reference
+                    // gets right and a column of single-figure cards does not.
+                    StatStrip(
+                        columns = listOf(
+                            StatColumn(
+                                Icons.Default.ReceiptLong,
+                                "Витрати за місяць",
+                                money(summary.monthlyExpenses),
+                                summary.income.takeIf { it > 0 }?.let { money(it) }
+                            ),
+                            StatColumn(
+                                Icons.Default.Savings,
+                                if (summary.overspent) "Не сходиться" else "Вільно",
+                                if (summary.budgetUnknown) "—" else money(summary.freeCash)
+                            ),
+                            StatColumn(
+                                Icons.Default.Flag,
+                                "Плани на місяць",
+                                money(summary.plannedMonthly),
+                                summary.freeCash.takeIf { !summary.budgetUnknown && it > 0 }
+                                    ?.let { money(it) }
+                            )
+                        ),
+                        rings = listOf(
+                            summary.savedProgress,
+                            if (summary.income > 0) {
+                                (summary.monthlyExpenses / summary.income).toFloat().coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            },
+                            if (summary.freeCash > 0) {
+                                (summary.plannedMonthly / summary.freeCash).toFloat().coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            }
+                        )
+                    )
+
+                    Spacer(Modifier.height(Space.lg))
                     Card(
                         Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                        shape = Radius.md
+                        shape = Radius.lg
                     ) {
                         Column(Modifier.padding(Space.lg)) {
-                            Text(
-                                when {
-                                    moved.change < 0 -> "Список подешевшав"
-                                    moved.change > 0 -> "Список подорожчав"
-                                    else -> "Ціни стоять на місці"
-                                },
-                                color = TextSecondary,
-                                fontSize = Type.captionSize
-                            )
-                            Spacer(Modifier.height(Space.xs))
-                            Text(
-                                if (moved.change == 0.0) {
-                                    money(0.0)
-                                } else {
-                                    "${money(kotlin.math.abs(moved.change))} · " +
-                                        "%+.1f%%".format(moved.changePercent)
-                                },
-                                fontSize = Type.sectionSize,
-                                lineHeight = Type.sectionLine,
-                                fontWeight = Type.strong,
-                                color = when {
-                                    moved.change < 0 -> Accent
-                                    moved.change > 0 -> Negative
-                                    else -> TextPrimary
-                                }
-                            )
-                            Text(
-                                "від ${money(moved.firstTotal)} за весь час спостереження · " +
-                                    positionsLabel(moved.tracked),
-                                color = TextDisabled,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine
-                            )
-                            Spacer(Modifier.height(Space.sm))
-                            LeaderRow("Подешевшало", moved.cheaper.toString())
+                            LeaderRow("Бажань у списку", summary.wishCount.toString())
+                            LeaderRow("Повністю накопичено", summary.readyCount.toString())
+                            LeaderRow("Посилок у дорозі", summary.parcelsMoving.toString())
                             LeaderRow(
-                                "Подорожчало",
-                                moved.dearer.toString(),
-                                alarm = moved.dearer > 0
+                                "Чекають на відділенні",
+                                summary.parcelsAtBranch.toString(),
+                                alarm = summary.parcelsAtBranch > 0
                             )
-                            LeaderRow("Без змін", moved.steady.toString())
-
-                            // Named separately rather than as leader rows: a product
-                            // name is long enough to squeeze the figure off the line.
-                            moved.biggestDropName?.let { name ->
-                                Spacer(Modifier.height(Space.sm))
-                                Text(
-                                    "Найбільше подешевшало",
-                                    color = TextDisabled,
-                                    fontSize = Type.captionSize
-                                )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        name,
-                                        fontSize = Type.captionSize,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f).padding(end = Space.sm)
-                                    )
-                                    Text(
-                                        "%+.1f%%".format(moved.biggestDropPercent),
-                                        color = Accent,
-                                        fontSize = Type.captionSize,
-                                        fontWeight = Type.strong
-                                    )
-                                }
-                            }
-                            moved.biggestRiseName?.let { name ->
-                                Spacer(Modifier.height(Space.sm))
-                                Text(
-                                    "Найбільше подорожчало",
-                                    color = TextDisabled,
-                                    fontSize = Type.captionSize
-                                )
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        name,
-                                        fontSize = Type.captionSize,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                        modifier = Modifier.weight(1f).padding(end = Space.sm)
-                                    )
-                                    Text(
-                                        "%+.1f%%".format(moved.biggestRisePercent),
-                                        color = Negative,
-                                        fontSize = Type.captionSize,
-                                        fontWeight = Type.strong
-                                    )
-                                }
-                            }
+                            LeaderRow("Покупок закрито", summary.parcelsDone.toString())
                         }
                     }
                 }
 
-                Spacer(Modifier.height(Space.md))
-                // Three figures and their targets in the height one card used to take,
-                // with the rings restating them. This density is what the reference
-                // gets right and a column of single-figure cards does not.
-                StatStrip(
-                    columns = listOf(
-                        StatColumn(
-                            Icons.Default.ReceiptLong,
-                            "Витрати за місяць",
-                            money(summary.monthlyExpenses),
-                            summary.income.takeIf { it > 0 }?.let { money(it) }
-                        ),
-                        StatColumn(
-                            Icons.Default.Savings,
-                            if (summary.overspent) "Не сходиться" else "Вільно",
-                            if (summary.budgetUnknown) "—" else money(summary.freeCash)
-                        ),
-                        StatColumn(
-                            Icons.Default.Flag,
-                            "Плани на місяць",
-                            money(summary.plannedMonthly),
-                            summary.freeCash.takeIf { !summary.budgetUnknown && it > 0 }
-                                ?.let { money(it) }
-                        )
-                    ),
-                    rings = listOf(
-                        summary.savedProgress,
-                        if (summary.income > 0) {
-                            (summary.monthlyExpenses / summary.income).toFloat().coerceIn(0f, 1f)
-                        } else {
-                            0f
-                        },
-                        if (summary.freeCash > 0) {
-                            (summary.plannedMonthly / summary.freeCash).toFloat().coerceIn(0f, 1f)
-                        } else {
-                            0f
-                        }
-                    )
+                SectionTitle("Налаштування")
+                // Filled list items painted a large lighter block across the screen and
+                // left a hard seam under the header. They sit on the page instead.
+                SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин перевіряються ціни та статуси посилок")
+                SettingsRow(
+                    Icons.Default.NotificationsNone,
+                    "Сповіщення",
+                    "Про падіння ціни, досягнення цілі та рух посилки. Ціни й доставка мають окремі канали."
                 )
-
-                Spacer(Modifier.height(Space.lg))
-                Card(
-                    Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                    shape = Radius.lg
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        LeaderRow("Бажань у списку", summary.wishCount.toString())
-                        LeaderRow("Повністю накопичено", summary.readyCount.toString())
-                        LeaderRow("Посилок у дорозі", summary.parcelsMoving.toString())
-                        LeaderRow(
-                            "Чекають на відділенні",
-                            summary.parcelsAtBranch.toString(),
-                            alarm = summary.parcelsAtBranch > 0
-                        )
-                        LeaderRow("Покупок закрито", summary.parcelsDone.toString())
-                    }
-                }
-            }
-
-            SectionTitle("Налаштування")
-            // Filled list items painted a large lighter block across the screen and
-            // left a hard seam under the header. They sit on the page instead.
-            SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин перевіряються ціни та статуси посилок")
-            SettingsRow(
-                Icons.Default.NotificationsNone,
-                "Сповіщення",
-                "Про падіння ціни, досягнення цілі та рух посилки. Ціни й доставка мають окремі канали."
-            )
-            SettingsRow(
-                Icons.Default.Security,
-                "Приватність",
-                "Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK."
-            )
-            HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
-            ListItem(
-                modifier = Modifier.padding(top = Space.sm),
-                leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
-                headlineContent = { Text("Оновлення FlowPay", fontWeight = FontWeight.Bold) },
-                supportingContent = { Text("Встановлено: ${BuildConfig.VERSION_NAME}") },
-                trailingContent = {
-                    OutlinedButton(
-                        shape = Radius.sm,
-                        border = BorderStroke(1.dp, HairLine),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
-                        onClick = {
-                            scope.launch {
-                                checking = true
-                                message = null
-                                val latest = runCatching { latestUpdate() }.getOrNull()
-                                if (latest != null && latest.versionCode > BuildConfig.VERSION_CODE) {
-                                    available = latest
-                                } else {
-                                    message = if (latest == null) "Release ще не опублікований" else "У вас остання версія"
+                SettingsRow(
+                    Icons.Default.Security,
+                    "Приватність",
+                    "Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK."
+                )
+                HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
+                ListItem(
+                    modifier = Modifier.padding(top = Space.sm),
+                    leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
+                    headlineContent = { Text("Оновлення FlowPay", fontWeight = FontWeight.Bold) },
+                    supportingContent = { Text("Встановлено: ${BuildConfig.VERSION_NAME}") },
+                    trailingContent = {
+                        OutlinedButton(
+                            shape = Radius.sm,
+                            border = BorderStroke(1.dp, HairLine),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                            onClick = {
+                                scope.launch {
+                                    checking = true
+                                    message = null
+                                    val latest = runCatching { latestUpdate() }.getOrNull()
+                                    if (latest != null && latest.versionCode > BuildConfig.VERSION_CODE) {
+                                        available = latest
+                                    } else {
+                                        message = if (latest == null) "Release ще не опублікований" else "У вас остання версія"
+                                    }
+                                    checking = false
                                 }
-                                checking = false
-                            }
-                        },
-                        enabled = !checking
-                    ) {
-                        if (checking) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text("Перевірити")
+                            },
+                            enabled = !checking
+                        ) {
+                            if (checking) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            else Text("Перевірити")
+                        }
                     }
-                }
-            )
-            ListItem(
-                leadingContent = { Icon(Icons.Default.UploadFile, null) },
-                headlineContent = { Text("Створити резервну копію") },
-                supportingContent = { Text("Вішліст, платежі та замовлення у JSON") },
-                trailingContent = { IconButton({ export.launch("flowpay-backup.json") }) { Icon(Icons.Default.ChevronRight, null) } }
-            )
-            ListItem(
-                leadingContent = { Icon(Icons.Default.Download, null) },
-                headlineContent = { Text("Відновити з файлу") },
-                supportingContent = { Text("Замінить дані на телефоні даними з копії") },
-                trailingContent = { IconButton({ import.launch(arrayOf("application/json", "text/plain")) }) { Icon(Icons.Default.ChevronRight, null) } }
-            )
-            message?.let { Text(it, Modifier.padding(Space.screen), color = Accent) }
+                )
+                ListItem(
+                    leadingContent = { Icon(Icons.Default.UploadFile, null) },
+                    headlineContent = { Text("Створити резервну копію") },
+                    supportingContent = { Text("Вішліст, платежі та замовлення у JSON") },
+                    trailingContent = { IconButton({ export.launch("flowpay-backup.json") }) { Icon(Icons.Default.ChevronRight, null) } }
+                )
+                ListItem(
+                    leadingContent = { Icon(Icons.Default.Download, null) },
+                    headlineContent = { Text("Відновити з файлу") },
+                    supportingContent = { Text("Замінить дані на телефоні даними з копії") },
+                    trailingContent = { IconButton({ import.launch(arrayOf("application/json", "text/plain")) }) { Icon(Icons.Default.ChevronRight, null) } }
+                )
+                message?.let { Text(it, Modifier.padding(Space.screen), color = Accent) }
+            }
         }
+        CollapsingTitle("Огляд", listState)
     }
     available?.let { update ->
         AlertDialog(
@@ -2719,7 +2800,7 @@ fun SettingsRow(icon: ImageVector, title: String, detail: String) {
  * more, which left a misspelled subscription misspelled for good.
  */
 @Composable
-fun EditPaymentDialog(
+fun EditPaymentSheet(
     pay: Pay,
     close: () -> Unit,
     delete: () -> Unit,
@@ -2732,57 +2813,50 @@ fun EditPaymentDialog(
     var day by remember { mutableStateOf(pay.day.toString()) }
     var currency by remember { mutableStateOf(pay.currency) }
     var warnDays by remember { mutableIntStateOf(pay.warnDays) }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Змінити витрату") },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedTextField(
-                    name,
-                    { name = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Назва") },
-                    singleLine = true
+    FormSheet(
+        title = "Змінити витрату",
+        confirmLabel = "Зберегти",
+        confirmEnabled = parseAmount(amount) > 0 && name.isNotBlank(),
+        onConfirm = {
+            parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                save(
+                    pay.copy(
+                        name = name.trim().ifBlank { pay.name },
+                        amount = value,
+                        day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+                        currency = currency,
+                        warnDays = warnDays
+                    )
                 )
-                CurrencyChips(currency) { currency = it }
-                NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
-                NumberField("День оплати", day) { day = it }
-                WarnDaysChips(warnDays) { warnDays = it }
-                // Deleting used to sit on the row itself, a thumb's width from the
-                // tap that opens this dialog, and it asked nothing before erasing.
-                Spacer(Modifier.height(Space.md))
-                TextButton(
-                    {
-                        touch.performHapticFeedback(HapticFeedbackType.LongPress)
-                        delete()
-                    },
-                    Modifier.fillMaxWidth()
-                ) {
-                    Text("Видалити витрату", color = Negative)
-                }
             }
         },
-        confirmButton = {
-            Button(
-                {
-                    parseAmount(amount).takeIf { it > 0 }?.let { value ->
-                        touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        save(
-                            pay.copy(
-                                name = name.trim().ifBlank { pay.name },
-                                amount = value,
-                                day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
-                                currency = currency,
-                                warnDays = warnDays
-                            )
-                        )
-                    }
-                },
-                enabled = parseAmount(amount) > 0 && name.isNotBlank()
-            ) { Text("Зберегти") }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
+        onDismiss = close
+    ) {
+        OutlinedTextField(
+            name,
+            { name = it },
+            Modifier.fillMaxWidth(),
+            label = { Text("Назва") },
+            singleLine = true
+        )
+        CurrencySegments(currency) { currency = it }
+        NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
+        NumberField("День оплати", day) { day = it }
+        WarnDaysChips(warnDays) { warnDays = it }
+        // Deleting used to sit on the row itself, a thumb's width from the tap
+        // that opens this form, and it asked nothing before erasing.
+        Spacer(Modifier.height(Space.md))
+        TextButton(
+            {
+                touch.performHapticFeedback(HapticFeedbackType.LongPress)
+                delete()
+            },
+            Modifier.fillMaxWidth()
+        ) {
+            Text("Видалити витрату", color = Negative)
+        }
+    }
 }
 
 /**
@@ -2855,7 +2929,6 @@ fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
     )
 }
 
-/** Picks the currency an expense is actually billed in. */
 /**
  * How much notice this expense gets.
  *
@@ -2882,25 +2955,21 @@ fun WarnDaysChips(warnDays: Int, set: (Int) -> Unit) {
     }
 }
 
+/**
+ * Picks the currency an expense is actually billed in.
+ *
+ * One control rather than two chips: an expense is billed in one currency, and two
+ * independent-looking switches invited the question of what both of them on would
+ * mean. The lime indicator here is inside a form, so it never competes with the
+ * one lime panel on the screen behind it.
+ */
 @Composable
-fun CurrencyChips(currency: String, set: (String) -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(top = Space.md),
-        horizontalArrangement = Arrangement.spacedBy(Space.sm)
-    ) {
-        FilterChip(
-            currency != USD,
-            { set(UAH) },
-            { Text("Гривня ₴", fontSize = Type.captionSize) },
-            modifier = Modifier.weight(1f)
-        )
-        FilterChip(
-            currency == USD,
-            { set(USD) },
-            { Text("Долар $", fontSize = Type.captionSize) },
-            modifier = Modifier.weight(1f)
-        )
-    }
+fun CurrencySegments(currency: String, set: (String) -> Unit) {
+    SegmentedControl(
+        options = listOf("Гривня ₴", "Долар $"),
+        selected = if (currency == USD) 1 else 0,
+        modifier = Modifier.padding(top = Space.md)
+    ) { index -> set(if (index == 1) USD else UAH) }
 }
 
 /**

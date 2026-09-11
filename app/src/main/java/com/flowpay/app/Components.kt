@@ -1,29 +1,68 @@
 package com.flowpay.app
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material.icons.filled.LocalShipping
+import androidx.compose.material.icons.filled.ReceiptLong
+import androidx.compose.material3.BottomSheetDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -33,6 +72,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -723,6 +763,301 @@ fun PhotoHeader(
                 chipIcon,
                 chipColor
             )
+        }
+    }
+}
+
+/**
+ * The floating status pill: one narrow capsule near the top with the single thing
+ * the app would interrupt you about, or nothing at all.
+ *
+ * It is dark, not lime, and that is a decision rather than an oversight. The pill
+ * appears above every screen, so a lime pill would sit beside the [HeroPanel] on
+ * the expenses and overview screens and neither would be the subject any more. The
+ * hero keeps the lime; the pill spends the accent only on its icon, which is the
+ * same small mark the navigation indicator is allowed.
+ *
+ * [note] being null draws nothing: a bar that is always there with nothing in it
+ * teaches you to stop looking at it.
+ */
+@Composable
+fun StatusPill(note: StatusNote?, modifier: Modifier = Modifier, onOpen: (Int) -> Unit) {
+    AnimatedVisibility(
+        visible = note != null,
+        modifier = modifier,
+        enter = expandVertically() + fadeIn(),
+        exit = shrinkVertically() + fadeOut()
+    ) {
+        // Null only while the pill is closing, when there is nothing left to draw.
+        note?.let { shown ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Space.screen, vertical = Space.sm)
+                    .clip(Radius.pill)
+                    .clickable { onOpen(shown.tab) }
+                    // Translucent, so the page tint shows through and it reads as
+                    // something resting on the screen rather than part of it.
+                    .background(SurfaceHigh.copy(alpha = 0.92f), Radius.pill)
+                    .border(Dp.Hairline, HairLine, Radius.pill)
+                    .padding(horizontal = Space.lg, vertical = Space.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    // The tab's own icon, so the pill shows where tapping it lands.
+                    when (shown.kind) {
+                        StatusKind.PARCEL -> Icons.Default.LocalShipping
+                        StatusKind.PAYMENT -> Icons.Default.ReceiptLong
+                        StatusKind.TARGET -> Icons.Default.FavoriteBorder
+                    },
+                    null,
+                    Modifier.size(Space.lg),
+                    tint = if (shown.urgent) Negative else Accent
+                )
+                Spacer(Modifier.width(Space.md))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        shown.title,
+                        color = TextPrimary,
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        shown.detail,
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Icon(
+                    Icons.Default.ChevronRight,
+                    null,
+                    Modifier.size(Space.lg),
+                    tint = TextDisabled
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The compact bar the large title shrinks into.
+ *
+ * The large title still scrolls away with the content, the way it should; this
+ * takes over the moment it would slide out of sight, so being far down a list
+ * never leaves the screen unnamed. Translucent for the same reason as the
+ * navigation bar: the list underneath stays visible and the bar reads as glass
+ * over it rather than as a lid on it.
+ *
+ * The header must be item 0 of [listState] — that is what is measured.
+ */
+@Composable
+fun CollapsingTitle(
+    title: String,
+    listState: LazyListState,
+    modifier: Modifier = Modifier,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    val barHeight = with(LocalDensity.current) { Space.touchRow.roundToPx() }
+    val collapsed by remember(listState, barHeight) {
+        derivedStateOf {
+            val header = listState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }
+            titleCollapsed(header?.let { it.offset + it.size }, barHeight)
+        }
+    }
+    CollapsingTitleBar(title, collapsed, modifier, trailing)
+}
+
+/**
+ * The same bar over a grid.
+ *
+ * A grid lays out in two dimensions, so its visible items carry an `IntOffset` and
+ * an `IntSize` where a list carries two plain ints. Only that measurement differs:
+ * both overloads hand the same number to the same [titleCollapsed] threshold, so
+ * the wishlist and the lists cannot drift apart about when a title gives way.
+ */
+@Composable
+fun CollapsingTitle(
+    title: String,
+    gridState: LazyGridState,
+    modifier: Modifier = Modifier,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    val barHeight = with(LocalDensity.current) { Space.touchRow.roundToPx() }
+    val collapsed by remember(gridState, barHeight) {
+        derivedStateOf {
+            val header = gridState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == 0 }
+            titleCollapsed(header?.let { it.offset.y + it.size.height }, barHeight)
+        }
+    }
+    CollapsingTitleBar(title, collapsed, modifier, trailing)
+}
+
+@Composable
+private fun CollapsingTitleBar(
+    title: String,
+    collapsed: Boolean,
+    modifier: Modifier = Modifier,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    AnimatedVisibility(
+        visible = collapsed,
+        modifier = modifier,
+        enter = slideInVertically { -it } + fadeIn(),
+        exit = slideOutVertically { -it } + fadeOut()
+    ) {
+        Column(Modifier.fillMaxWidth().background(SurfaceLow.copy(alpha = 0.92f))) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(Space.touchRow)
+                    .padding(horizontal = Space.screen),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    title,
+                    Modifier.weight(1f),
+                    color = TextPrimary,
+                    fontSize = Type.cardTitleSize,
+                    lineHeight = Type.cardTitleLine,
+                    fontWeight = Type.medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                trailing?.invoke()
+            }
+            // Without an edge the bar and the list under it merge into one grey.
+            Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(HairLine))
+        }
+    }
+}
+
+/**
+ * Bottom padding for a list that scrolls underneath the translucent navigation bar.
+ *
+ * The bar no longer takes its height out of the scaffold's content area — that is
+ * what lets the list show through it — so each list has to leave the room itself
+ * or its last row sits unreachable behind the tabs.
+ */
+@Composable
+fun navClearance(): Dp =
+    Space.navBar + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+
+/**
+ * One control with two halves and a lime indicator that slides between them.
+ *
+ * Two separate chips made the choice look like two independent switches, either or
+ * both of which might be on. A single track with one marker says what is true: one
+ * of these, and changing it moves the marker rather than lighting a second lamp.
+ */
+@Composable
+fun SegmentedControl(
+    options: List<String>,
+    selected: Int,
+    modifier: Modifier = Modifier,
+    onSelect: (Int) -> Unit
+) {
+    if (options.isEmpty()) return
+    val active = selected.coerceIn(0, options.lastIndex)
+    BoxWithConstraints(
+        modifier
+            .fillMaxWidth()
+            .height(Space.touchRow)
+            .background(SurfaceHigh, Radius.pill)
+    ) {
+        val slot = maxWidth / options.size
+        val travel by animateDpAsState(slot * active, label = "segment")
+        Box(
+            Modifier
+                // The lambda overload, so the sliding indicator relayouts rather
+                // than recomposing the whole control on every animation frame.
+                .offset { IntOffset(travel.roundToPx(), 0) }
+                .width(slot)
+                .fillMaxHeight()
+                .padding(Space.xs)
+                .background(Accent, Radius.pill)
+        )
+        Row(Modifier.fillMaxSize()) {
+            options.forEachIndexed { index, label ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clip(Radius.pill)
+                        .clickable { onSelect(index) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        label,
+                        color = if (index == active) AccentInk else TextSecondary,
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.medium,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * A form that grows from the bottom edge instead of landing in the middle.
+ *
+ * Every one of these forms has a text field in it, and a centred dialog with the
+ * keyboard up had nowhere to go: the confirm button ended up under the keys, which
+ * is why one of them had scrolling bolted on and the rest simply did not fit. A
+ * sheet starts at the bottom, rises above the keyboard, and closes with the same
+ * downward swipe used everywhere else on the phone.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FormSheet(
+    title: String,
+    confirmLabel: String,
+    confirmEnabled: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        // Half height would put the confirm button below the fold on every one of
+        // these forms, so there is only one useful size.
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = SurfaceLow,
+        contentColor = TextPrimary,
+        dragHandle = { BottomSheetDefaults.DragHandle(color = HairLine) }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .padding(horizontal = Space.screen)
+                .padding(bottom = Space.xl)
+        ) {
+            Text(
+                title,
+                fontSize = Type.sectionSize,
+                lineHeight = Type.sectionLine,
+                fontWeight = Type.medium
+            )
+            Spacer(Modifier.height(Space.md))
+            content()
+            Spacer(Modifier.height(Space.xl))
+            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                TextButton(onDismiss, Modifier.weight(1f)) { Text("Скасувати") }
+                Button(
+                    onConfirm,
+                    Modifier.weight(1f),
+                    enabled = confirmEnabled,
+                    shape = Radius.pill
+                ) { Text(confirmLabel) }
+            }
         }
     }
 }
