@@ -124,6 +124,31 @@ fun nextPayment(items: List<Pay>, today: LocalDate, usdSellRate: Double): NextPa
     return null
 }
 
+/** Ukrainian plural for how many payments fall together. */
+fun paymentsLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "платежів"
+        last == 1 -> "платіж"
+        last in 2..4 -> "платежі"
+        else -> "платежів"
+    }
+    return "$count $word"
+}
+
+/**
+ * What falls on a date, said in a line rather than a paragraph.
+ *
+ * Listing six names wrapped the panel to three lines and repeated what the
+ * timeline shows directly underneath, so past a pair the count says it better.
+ */
+fun dueSummary(items: List<Pay>): String = when {
+    items.isEmpty() -> ""
+    items.size <= 2 -> items.joinToString(", ") { it.name }
+    else -> paymentsLabel(items.size)
+}
+
 /** "сьогодні", "завтра", "через 3 дні". */
 fun dueLabel(daysAway: Int): String = when (daysAway) {
     0 -> "сьогодні"

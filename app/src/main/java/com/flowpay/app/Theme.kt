@@ -83,8 +83,8 @@ object Radius {
  * as greasy rather than strong.
  */
 object Type {
-    val heroSize = 34.sp
-    val heroLine = 36.sp
+    val heroSize = 28.sp
+    val heroLine = 32.sp
     val heroTracking = (-1.0).sp
 
     val screenTitleSize = 30.sp

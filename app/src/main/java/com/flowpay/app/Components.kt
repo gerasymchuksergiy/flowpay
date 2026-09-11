@@ -72,7 +72,9 @@ fun HeroPanel(
         shape = Radius.lg
     ) {
         Row(
-            Modifier.padding(Space.xl),
+            // Generous at the sides, tighter top and bottom: the panel was carrying
+            // more empty height than the figure inside it earned.
+            Modifier.padding(horizontal = Space.xl, vertical = Space.lg),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(Modifier.weight(1f)) {

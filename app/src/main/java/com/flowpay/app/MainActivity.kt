@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionLayout
 import androidx.compose.animation.SharedTransitionScope
@@ -456,14 +457,23 @@ fun FlowPayApp(context: Context) {
         else -> null
     }
 
-    // The bar is chrome, and chrome should yield to content. Scrolling down
-    // slides it off; the first upward movement brings it straight back.
-    val barHeight = with(LocalDensity.current) { 80.dp.toPx() }
-    var barHidden by remember { mutableFloatStateOf(0f) }
-    val barScroll = remember(barHeight) {
+    // The bar is chrome, and chrome should yield to content. It moves all the
+    // way or not at all: following the finger left it resting half off screen,
+    // with its labels cut and its icons crowding the system buttons.
+    val density = LocalDensity.current
+    val barTravel = with(density) { 80.dp.toPx() } +
+        WindowInsets.navigationBars.getBottom(density)
+    val barDown = remember { mutableStateOf(false) }
+    val barHidden by animateFloatAsState(
+        if (barDown.value) barTravel else 0f,
+        label = "bottom bar"
+    )
+    val barScroll = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                barHidden = (barHidden - available.y).coerceIn(0f, barHeight)
+                // A threshold, so a stray pixel of movement does not flap the bar.
+                if (available.y < -8f) barDown.value = true
+                if (available.y > 8f) barDown.value = false
                 return Offset.Zero
             }
         }
@@ -1480,7 +1490,30 @@ fun CalculatorScreen(store: Store) {
                         HeroPanel(
                             label = if (hryvniaToDollar) "У доларах" else "У гривнях",
                             value = if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
-                            muted = converted == 0.0
+                            muted = converted == 0.0,
+                            // A short number left the right half of the panel empty.
+                            // The rate it was converted at belongs there: it is the
+                            // one thing you would otherwise scroll up to check.
+                            trailing = if (exchangeRate > 0) {
+                                {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            "за курсом",
+                                            color = AccentInk.copy(alpha = 0.65f),
+                                            fontSize = Type.captionSize
+                                        )
+                                        Text(
+                                            "%.2f".format(exchangeRate),
+                                            color = AccentInk,
+                                            fontSize = Type.sectionSize,
+                                            lineHeight = Type.sectionLine,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            }
                         )
                     }
                 }
@@ -1559,8 +1592,7 @@ fun PaymentsScreen(
                         next == null -> null
                         next.total.rateMissing ->
                             "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
-                        else ->
-                            "${dayMonth(next.date)} · ${next.items.joinToString(", ") { it.name }}"
+                        else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
                     },
                     muted = next == null
                 )
@@ -1678,17 +1710,18 @@ fun PaymentsScreen(
                             ) {
                                 IconChip(payIcon(pay.name))
                                 Spacer(Modifier.width(Space.md))
+                                // No dotted leader here. Two weighted children split
+                                // the row in half, which cut "Оренда квартири" down to
+                                // "Оренда к…" — and a name earns that space before a
+                                // decoration does.
                                 Text(
                                     pay.name,
                                     fontSize = Type.cardTitleSize,
                                     fontWeight = Type.medium,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
+                                    modifier = Modifier.weight(1f).padding(end = Space.md)
                                 )
-                                Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
-                                    DottedLeader(Modifier.fillMaxWidth())
-                                }
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text(
                                         amountLabel(pay.amount, pay.currency),

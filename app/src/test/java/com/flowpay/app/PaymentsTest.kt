@@ -262,6 +262,24 @@ class PaymentsTest {
     }
 
     @Test
+    fun `a panel says how many when naming them all would be a paragraph`() {
+        // Six names wrapped the panel to three lines and repeated the list below it.
+        assertEquals("Інтернет", dueSummary(listOf(dueInternet)))
+        assertEquals("Оренда квартири, Скинутись на їжу", dueSummary(listOf(dueRent, dueFood)))
+        assertEquals("3 платежі", dueSummary(dueAll))
+        assertEquals("", dueSummary(emptyList()))
+    }
+
+    @Test
+    fun `payments are counted the way Ukrainian counts them`() {
+        assertEquals("1 платіж", paymentsLabel(1))
+        assertEquals("2 платежі", paymentsLabel(2))
+        assertEquals("5 платежів", paymentsLabel(5))
+        assertEquals("11 платежів", paymentsLabel(11))
+        assertEquals("21 платіж", paymentsLabel(21))
+    }
+
+    @Test
     fun `the strip marks every day that carries a payment`() {
         assertEquals(setOf(1, 10), paymentDays(dueAll, monthLength = 30))
         // A day past the end of the month is drawn on the last one.
