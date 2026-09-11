@@ -169,6 +169,24 @@ data class RefreshResult(val wishes: List<Wish>, val updated: Int)
  * not be read, so a shop being down leaves that wish exactly as it was rather
  * than dropping it or zeroing its price.
  */
+/**
+ * Folds already-followed readings back into the list.
+ *
+ * The sibling of [applyRefresh] for the path that resolves each wish's own
+ * variant before merging: the work is done by then, so a non-null entry replaces
+ * its wish outright, and a null — an unreadable page or a vanished variant —
+ * leaves it exactly as it was.
+ */
+fun applyFollowed(items: List<Wish>, refreshed: List<Wish?>): RefreshResult {
+    var updated = 0
+    val next = items.mapIndexed { index, previous ->
+        val current = refreshed.getOrNull(index) ?: return@mapIndexed previous
+        updated++
+        current
+    }
+    return RefreshResult(next, updated)
+}
+
 fun applyRefresh(
     items: List<Wish>,
     fetched: List<Wish?>,

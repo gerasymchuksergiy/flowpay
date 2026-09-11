@@ -103,7 +103,14 @@ data class Wish(
     /** Buy-by date as an epoch day. Zero means the plan runs from a monthly sum. */
     val deadline: Long = 0L,
     /** The last price a notification announced, so the next one has to beat it. */
-    val notifiedPrice: Double = 0.0
+    val notifiedPrice: Double = 0.0,
+    /**
+     * Which of a page's prices this wish follows, by the name the shop gave it.
+     *
+     * Empty on a page that states one price, which is most of them. On a page of
+     * editions or sizes it is the anchor that keeps later checks on the same one.
+     */
+    val variant: String = ""
 )
 
 data class Pay(
@@ -209,6 +216,7 @@ class Store(context: Context) {
             }.filter { it.price > 0 },
             checkedDay = o.optLong("cd", 0L),
             notifiedPrice = o.optDouble("np", 0.0),
+            variant = o.optString("v"),
             saved = o.optDouble("s", 0.0),
             monthlyPlan = o.optDouble("m", 0.0),
             deadline = o.optLong("dl", 0L)
@@ -228,7 +236,7 @@ class Store(context: Context) {
             )
             .put("cd", it.checkedDay)
             .put("s", it.saved).put("m", it.monthlyPlan).put("dl", it.deadline)
-            .put("np", it.notifiedPrice)
+            .put("np", it.notifiedPrice).put("v", it.variant)
     })
 
     fun pays(): List<Pay> = jsonList("pay") {
@@ -365,7 +373,25 @@ fun refreshedWish(previous: Wish, current: Wish, today: Long = LocalDate.now().t
         checkedDay = today
     )
 
-suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
+/**
+ * Re-reads a page and follows the variant this wish was set to.
+ *
+ * Kept apart from [refreshedWish] because the interesting case is the one where
+ * nothing is returned: a page that no longer carries the followed variant must
+ * leave the stored price alone rather than swap in a neighbouring edition.
+ */
+fun refreshedFromPage(previous: Wish, html: String, today: Long = LocalDate.now().toEpochDay()): Wish? {
+    val match = matchOffer(extractOffers(html), previous.variant, previous.price)
+    val offer = (match as? OfferMatch.Found)?.offer ?: return null
+    return previous.copy(
+        price = offer.price,
+        history = appendPrice(previous.history, offer.price, today),
+        checkedDay = today
+    )
+}
+
+/** Fetches a shop page. Separate from parsing it, so both uses share one request. */
+suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
     val normalizedLink = link.trim()
     require(isSupportedWebUrl(normalizedLink)) { "Вкажіть коректне HTTP або HTTPS посилання" }
     val connection = URL(normalizedLink).openConnection() as HttpURLConnection
@@ -373,9 +399,30 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     connection.connectTimeout = 15_000
     connection.readTimeout = 15_000
     connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
-    val html = connection.inputStream.bufferedReader().use { it.readText() }
-    parseProduct(html, normalizedLink, System.currentTimeMillis().toString(), LocalDate.now().toEpochDay())
+    connection.inputStream.bufferedReader().use { it.readText() }
 }
+
+suspend fun product(link: String): Wish {
+    val normalizedLink = link.trim()
+    val html = pageHtml(normalizedLink)
+    return parseProduct(
+        html,
+        normalizedLink,
+        System.currentTimeMillis().toString(),
+        LocalDate.now().toEpochDay()
+    )
+}
+
+/**
+ * Re-reads a wish's page and follows the variant it was set to.
+ *
+ * Null means the reading is not usable — the page lost its prices, or lost the
+ * edition being followed — and a null must leave the stored price alone. Silently
+ * adopting a neighbouring variant's price would corrupt the history a verdict is
+ * computed from, and nothing on screen would show it had happened.
+ */
+suspend fun refreshed(previous: Wish): Wish? =
+    refreshedFromPage(previous, pageHtml(previous.url))
 
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
 
@@ -561,8 +608,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     say(refreshMessage(0, 0))
                 } else {
                     say("Перевіряю ціни…")
-                    val fetched = wishes.map { runCatching { product(it.url) }.getOrNull() }
-                    val result = applyRefresh(wishes, fetched)
+                    val fetched = wishes.map { runCatching { refreshed(it) }.getOrNull() }
+                    val result = applyFollowed(wishes, fetched)
                     wishes = result.wishes
                     store.saveWishes(result.wishes)
                     say(refreshMessage(result.updated, result.wishes.size))
@@ -886,14 +933,11 @@ fun WishlistScreen(
                         onClick = {
                             scope.launch {
                                 refreshing = true
-                                var updated = 0
-                                val fresh = items.map { old ->
-                                    runCatching { product(old.url) }.getOrNull()?.let { now ->
-                                        updated++
-                                        refreshedWish(old, now)
-                                    } ?: old
-                                }
-                                save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
+                                val fetched = items.map { runCatching { refreshed(it) }.getOrNull() }
+                                val result = applyFollowed(items, fetched)
+                                save(result.wishes)
+                                refreshing = false
+                                message = refreshMessage(result.updated, items.size)
                             }
                         },
                         enabled = !refreshing && items.isNotEmpty()
@@ -1457,10 +1501,14 @@ fun SharedTransitionScope.WishDetailScreen(
                             scope.launch {
                                 refreshing = true
                                 message = null
-                                runCatching { product(wish.url) }
-                                    .onSuccess {
-                                        onChange(refreshedWish(wish, it))
-                                        message = "Ціну оновлено"
+                                runCatching { refreshed(wish) }
+                                    .onSuccess { updated ->
+                                        if (updated == null) {
+                                            message = "Цей варіант більше не вказано на сторінці"
+                                        } else {
+                                            onChange(updated)
+                                            message = "Ціну оновлено"
+                                        }
                                     }
                                     .onFailure { message = "Не вдалося прочитати сторінку" }
                                 refreshing = false

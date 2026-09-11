@@ -70,25 +70,130 @@ fun cleanProductTitle(raw: String): String {
 }
 
 /**
+ * One price a page states, and whatever the page called it.
+ *
+ * A page rarely has a single price. Editions of a game, sizes of a shoe, storage
+ * of a phone: each is an offer, and picking the first one found means tracking
+ * whichever the shop happened to list first.
+ */
+data class Offer(
+    val price: Double,
+    /** Edition, size, colour — empty when the page gave the figure no name. */
+    val label: String = ""
+)
+
+/** Any space a shop might put inside a number, including the ones that are not spaces. */
+private const val PRICE_SPACES = " \u00a0\u202f\u2009"
+
+/** "2 199" / "2199,50" / "2 199.00" -> the number, or null when it is not one. */
+internal fun priceNumber(raw: String): Double? {
+    var text = raw.trim()
+    PRICE_SPACES.forEach { text = text.replace(it.toString(), "") }
+    text = if (text.count { it == ',' } == 1 && !text.contains('.')) {
+        text.replace(',', '.')
+    } else {
+        text.replace(",", "")
+    }
+    if (!Regex("""^\d+(\.\d+)?$""").matches(text)) return null
+    return text.toDoubleOrNull()?.takeIf { it > 0 }
+}
+
+// Attributes whose name mentions price. Shops put the figure the page actually
+// renders in one of these, and on a page with variants it is often the only place
+// each variant's own price appears.
+private val PRICE_ATTRIBUTE = Regex("""data-([a-z-]*price[a-z-]*)=["'](\d+)["']""", RegexOption.IGNORE_CASE)
+
+// schema.org in attributes rather than in a script. Steam carries this and no
+// JSON-LD at all, which is why its pages used to yield nothing.
+private val MICRODATA_PRICE = listOf(
+    Regex("""itemprop=["']price["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+    Regex("""content=["']([^"']+)["'][^>]*itemprop=["']price["']""", RegexOption.IGNORE_CASE)
+)
+
+/**
+ * Every distinct price the page states, richest source first.
+ *
+ * Sources are tried in order of how much they can be trusted, and a price already
+ * seen is not added again: the same figure commonly appears as microdata and as an
+ * attribute, and offering the user the same number twice would be nonsense.
+ */
+fun extractOffers(html: String): List<Offer> {
+    val found = LinkedHashMap<Long, Offer>()
+
+    fun add(price: Double?, label: String) {
+        val value = price ?: return
+        val key = Math.round(value * 100)
+        if (!found.containsKey(key)) found[key] = Offer(value, label)
+    }
+
+    jsonLdOffers(html).forEach { add(it.price, it.label) }
+    MICRODATA_PRICE.forEach { pattern ->
+        pattern.findAll(html).forEach { add(priceNumber(it.groupValues[1]), "") }
+    }
+    listOf("product:price:amount", "og:price:amount").forEach { property ->
+        add(priceNumber(metaContent(html, property)), "")
+    }
+    PRICE_ATTRIBUTE.findAll(html).forEach { match ->
+        val raw = priceNumber(match.groupValues[2]) ?: return@forEach
+        // These are frequently in minor units: Steam writes 219900 for 2 199 ₴.
+        val value = if (raw >= 10_000 && raw % 100.0 == 0.0) raw / 100 else raw
+        add(value, "")
+    }
+    if (found.isEmpty()) {
+        add(
+            priceNumber(
+                Regex(""""price"\s*:\s*["']?([0-9][0-9\s.,]*)""", RegexOption.IGNORE_CASE)
+                    .find(html)?.groupValues?.get(1).orEmpty()
+            ),
+            ""
+        )
+    }
+    return found.values.toList()
+}
+
+/**
  * Finds the price on a product page.
  *
- * Prefers the Open Graph amount, then falls back to a JSON "price" field, which is
- * what most shop templates leave behind in embedded structured data.
+ * The first offer, which is the one from the most trustworthy source the page
+ * had. Not the cheapest: a stray small number in some unrelated attribute would
+ * then beat a correct price from structured data. Which variant to follow is a
+ * choice the user makes once; this is only the answer before anyone has chosen.
  */
-fun extractPrice(html: String): Double {
-    // Structured data first: it is the only source shops are actually pushed to fill
-    // in, and it is unambiguous. Meta tags next, then a bare JSON field as a guess.
-    val fromJsonLd = extractJsonLdPrice(html)
-    if (fromJsonLd > 0) return fromJsonLd
+fun extractPrice(html: String): Double = extractOffers(html).firstOrNull()?.price ?: 0.0
 
-    val fromMeta = listOf("product:price:amount", "og:price:amount")
-        .firstNotNullOfOrNull { metaContent(html, it).takeIf { value -> value.isNotBlank() } }
-        .orEmpty()
-    val raw = fromMeta.ifBlank {
-        Regex(""""price"\s*:\s*["']?([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1).orEmpty()
+/**
+ * The outcome of looking for a followed variant on a page that has been re-read.
+ *
+ * Three outcomes, not two: a page that lost the variant is a different thing from
+ * a page that lost its prices, and neither may quietly become "the price changed".
+ */
+sealed interface OfferMatch {
+    data class Found(val offer: Offer) : OfferMatch
+
+    /** The page still lists prices, but not the one being followed. */
+    data object Missing : OfferMatch
+
+    /** The page states no price at all: out of stock, redesigned, or gone. */
+    data object None : OfferMatch
+}
+
+/**
+ * Finds, among a page's offers, the one a wish is actually following.
+ *
+ * A name is the only anchor a page gives that survives a price change, so it wins
+ * when there is one. Without a name the nearest price to the last reading is the
+ * best available anchor — on a page of editions the gap between them is far wider
+ * than any sale, so this keeps following the same line rather than jumping to a
+ * cheaper edition the moment one is discounted.
+ */
+fun matchOffer(offers: List<Offer>, variant: String, lastPrice: Double): OfferMatch {
+    if (offers.isEmpty()) return OfferMatch.None
+    if (variant.isNotBlank()) {
+        val named = offers.firstOrNull { it.label == variant }
+        return if (named != null) OfferMatch.Found(named) else OfferMatch.Missing
     }
-    return raw.replace(" ", "").replace(',', '.').toDoubleOrNull() ?: 0.0
+    if (offers.size == 1 || lastPrice <= 0) return OfferMatch.Found(offers.first())
+    return OfferMatch.Found(offers.minByOrNull { kotlin.math.abs(it.price - lastPrice) }!!)
 }
 
 /**
@@ -224,6 +329,58 @@ fun extractJsonLdPrice(html: String): Double {
         if (price > 0) return price
     }
     return 0.0
+}
+
+/**
+ * Every offer a JSON-LD document states, with the name the shop gave each.
+ *
+ * Unlike the single-price walk below, this keeps going after the first hit: a
+ * page with editions or sizes carries them all in one offers array, and the name
+ * beside each is the only label a page reliably provides.
+ */
+private fun jsonLdOffers(html: String): List<Offer> {
+    val blocks = Regex(
+        """<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    ).findAll(html).map { it.groupValues[1] }
+
+    val offers = mutableListOf<Offer>()
+    blocks.forEach { block ->
+        runCatching { collectOffers(block.trim(), offers, depth = 0) }
+    }
+    return offers
+}
+
+private fun collectOffers(raw: String, into: MutableList<Offer>, depth: Int) {
+    val root: Any = when {
+        raw.startsWith("[") -> JSONArray(raw)
+        raw.startsWith("{") -> org.json.JSONObject(raw)
+        else -> return
+    }
+    offersInNode(root, into, depth, label = "")
+}
+
+private fun offersInNode(node: Any?, into: MutableList<Offer>, depth: Int, label: String) {
+    if (depth > 6) return
+    when (node) {
+        is JSONArray -> (0 until node.length()).forEach {
+            offersInNode(node.opt(it), into, depth + 1, label)
+        }
+        is org.json.JSONObject -> {
+            // A node names itself, and that name belongs to any price directly on it.
+            val own = node.optString("name").ifBlank { node.optString("sku") }.ifBlank { label }
+            listOf("price", "lowPrice", "highPrice").forEach { key ->
+                if (node.has(key)) {
+                    priceNumber(node.opt(key).toString())?.let { into.add(Offer(it, own)) }
+                }
+            }
+            node.keys().forEach { key ->
+                if (key !in setOf("price", "lowPrice", "highPrice")) {
+                    offersInNode(node.opt(key), into, depth + 1, own)
+                }
+            }
+        }
+    }
 }
 
 /** Walks a JSON-LD document looking for a Product offer, including inside @graph. */

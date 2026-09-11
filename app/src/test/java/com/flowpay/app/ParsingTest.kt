@@ -1,6 +1,7 @@
 package com.flowpay.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -13,6 +14,112 @@ import org.junit.Test
  * actually emit.
  */
 class ParsingTest {
+
+    // ------------------------------------------- every price a page states
+
+    /** Steam's shape: microdata for the base edition, an attribute per edition, no JSON-LD. */
+    private val twoEditions = """
+        <html><head>
+        <meta property="og:title" content="EA SPORTS FC 27"/>
+        <span itemprop="offers"><meta itemprop="priceCurrency" content="UAH">
+        <meta itemprop="price" content="2 199"></span>
+        </head><body>
+        <div class="game_purchase_price price" data-price-final="219900"></div>
+        <div class="game_purchase_price price" data-price-final="299900"></div>
+        </body></html>
+    """.trimIndent()
+
+    @Test
+    fun `a page with editions yields one offer per price`() {
+        val offers = extractOffers(twoEditions)
+
+        assertEquals(2, offers.size)
+        assertEquals(2199.0, offers[0].price, 0.001)
+        assertEquals(2999.0, offers[1].price, 0.001)
+    }
+
+    @Test
+    fun `microdata alone is enough, which is what this page used to fail on`() {
+        // No JSON-LD anywhere on it, so the old parser found nothing and the add
+        // dialog said "Не вдалося знайти ціну на сторінці".
+        assertEquals(2199.0, extractPrice(twoEditions), 0.001)
+    }
+
+    @Test
+    fun `a price written in minor units is brought back down`() {
+        val html = """<div data-price-final="299900"></div>"""
+
+        assertEquals(2999.0, extractOffers(html).single().price, 0.001)
+    }
+
+    @Test
+    fun `a round figure that is already whole hryvnia is left alone`() {
+        // 450 is under the threshold; 12300 is over it but not a plausible
+        // hundredfold of anything this app would see as a price.
+        assertEquals(450.0, extractOffers("""<i data-price="450"></i>""").single().price, 0.001)
+        assertEquals(123.0, extractOffers("""<i data-price="12300"></i>""").single().price, 0.001)
+    }
+
+    @Test
+    fun `the same figure from two sources is offered once`() {
+        val html = """
+            <meta itemprop="price" content="2199">
+            <div data-price-final="219900"></div>
+            <meta property="product:price:amount" content="2199"/>
+        """.trimIndent()
+
+        assertEquals(1, extractOffers(html).size)
+    }
+
+    @Test
+    fun `an offers array keeps the name the shop gave each price`() {
+        val html = """
+            <script type="application/ld+json">
+            {"@type":"Product","name":"Кросівки","offers":[
+              {"@type":"Offer","name":"42","price":"2499.00"},
+              {"@type":"Offer","name":"43","price":"2599.00"}]}
+            </script>
+        """.trimIndent()
+
+        val offers = extractOffers(html)
+
+        assertEquals(2, offers.size)
+        assertEquals("42", offers[0].label)
+        assertEquals(2599.0, offers[1].price, 0.001)
+        assertEquals("43", offers[1].label)
+    }
+
+    @Test
+    fun `one price is one offer, so nothing has to be asked`() {
+        assertEquals(1, extractOffers("""<meta property="og:price:amount" content="640"/>""").size)
+    }
+
+    @Test
+    fun `a page with no price at all yields no offers`() {
+        assertTrue(extractOffers("<html><body>Немає в наявності</body></html>").isEmpty())
+    }
+
+    @Test
+    fun `structured data outranks a stray number in an attribute`() {
+        // Taking the cheapest would pick the 9 here, which is a quantity.
+        val html = """
+            <script type="application/ld+json">{"@type":"Product","offers":{"price":"1500"}}</script>
+            <span data-price-per-item="9"></span>
+        """.trimIndent()
+
+        assertEquals(1500.0, extractPrice(html), 0.001)
+    }
+
+    @Test
+    fun `spaces shops use inside numbers do not break them`() {
+        assertEquals(12_499.5, priceNumber("12\u00a0499,50")!!, 0.001)
+        assertEquals(2199.0, priceNumber("2 199")!!, 0.001)
+        assertEquals(1234.56, priceNumber("1,234.56")!!, 0.001)
+        assertNull(priceNumber("від 138"))
+        assertNull(priceNumber(""))
+        assertNull(priceNumber("0"))
+    }
+
 
     @Test
     fun `a price glued on with non-breaking spaces still comes off the title`() {

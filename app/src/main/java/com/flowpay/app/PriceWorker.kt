@@ -24,7 +24,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         val old = store.wishes()
         var pricesRead = 0
         val fresh = old.map { previous ->
-            runCatching { product(previous.url) }.getOrNull()?.let { current ->
+            runCatching { refreshed(previous) }.getOrNull()?.let { current ->
                 pricesRead++
                 // A price that wobbles by a few hryvnia must not ring the phone twice a
                 // day, so an alert has to beat the last price already announced.
@@ -50,7 +50,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                     )
                     AlertKind.NONE -> Unit
                 }
-                refreshedWish(previous, current).copy(notifiedPrice = alert.notifyPrice)
+                current.copy(notifiedPrice = alert.notifyPrice)
             } ?: previous
         }
         store.saveWishes(fresh)
