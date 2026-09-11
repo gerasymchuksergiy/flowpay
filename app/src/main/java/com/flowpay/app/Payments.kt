@@ -220,3 +220,24 @@ fun approxMoney(value: Double): String = money(kotlin.math.round(value))
 /** An amount shown in whichever currency it was entered in. */
 fun amountLabel(value: Double, currency: String): String =
     if (currency == USD) dollars(value) else money(value)
+
+/**
+ * A set of payments as one figure, without ever pretending the dollars converted.
+ *
+ * Somewhere with no room for a caption — a widget, a notification — the missing
+ * rate has to be visible inside the figure itself, or a rent quoted in dollars
+ * simply vanishes from the total.
+ */
+fun totalLabel(total: MonthlyTotal): String = when {
+    total.rateMissing && total.uah > 0.0 -> "${money(total.uah)} + ${dollars(total.usd)}"
+    total.rateMissing -> dollars(total.usd)
+    total.hasUsd -> approxMoney(total.total)
+    else -> money(total.total)
+}
+
+/** What the month has left, in one line, including when the answer is "nothing". */
+fun freeCashLine(month: Budget): String = when {
+    month.unknown -> "Дохід не вказано"
+    month.overspent -> "Бракує ${money(-month.free)}"
+    else -> "Вільно ${money(month.free)}"
+}

@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.glance.appwidget.updateAll
 import androidx.work.*
 import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.TimeUnit
@@ -81,6 +82,10 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             applyStatus(order, status, checkedAt)
         }
         if (trackable.isNotEmpty()) store.saveOrders(freshParcels)
+
+        // The widget reads the same store, so it is stale the moment this pass
+        // writes to it, and nothing else would wake it before its half-hourly turn.
+        FlowPayWidget().updateAll(applicationContext)
 
         // Retry only when there was something to fetch and none of it arrived,
         // which is what a dropped connection looks like from here.
