@@ -42,6 +42,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
@@ -63,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -585,14 +590,16 @@ fun ScreenHeader(
     kicker: String,
     title: String,
     subtitle: String? = null,
-    trailing: (@Composable () -> Unit)? = null
+    trailing: (@Composable () -> Unit)? = null,
+    /** Zero where the list around it already supplies the screen margin. */
+    inset: Dp = Space.screen
 ) {
     // Overline, title and subtitle form one group, at most 8dp apart, followed by a
     // 32dp break. That break is what gives the screen a readable shape.
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = Space.screen, end = Space.screen, top = Space.md, bottom = Space.lg)
+            .padding(start = inset, end = inset, top = Space.md, bottom = Space.lg)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -679,10 +686,26 @@ fun WishlistScreen(
                     }
                 )
             } else {
-                LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
-                    item {
+                // Two columns, the way a shop lists goods. One wish per full-width
+                // row meant a photograph, a chart and four lines of text for every
+                // item, and half a screen spent on one of them.
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(
+                        start = Space.screen,
+                        end = Space.screen,
+                        bottom = Space.fabClearance
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(Space.md),
+                    verticalArrangement = Arrangement.spacedBy(Space.md)
+                ) {
+                    item(span = { GridItemSpan(maxLineSpan) }) {
                         ScreenHeader(
-                            "FLOWPAY", "Мої бажання", "Ціна, ціль та історія в одному місці",
+                            kicker = "FLOWPAY",
+                            title = "Мої бажання",
+                            subtitle = "Ціна, ціль та історія в одному місці",
+                            // The grid already supplies the screen margin.
+                            inset = 0.dp,
                             trailing = {
                                 IconButton(
                                     onClick = {
@@ -718,16 +741,12 @@ fun WishlistScreen(
                         }
                     }
                     if (items.size > 1) {
-                        item {
+                        item(span = { GridItemSpan(maxLineSpan) }) {
                             // Five chips in a row ran off the right edge with nothing
                             // to say they scrolled, so the last options were simply
                             // invisible. One line names the current order instead.
                             var sortOpen by remember { mutableStateOf(false) }
-                            Box(
-                                Modifier
-                                    .padding(horizontal = Space.screen)
-                                    .padding(bottom = Space.md)
-                            ) {
+                            Box {
                                 Row(
                                     Modifier.clickable { sortOpen = true },
                                     verticalAlignment = Alignment.CenterVertically
@@ -766,14 +785,12 @@ fun WishlistScreen(
                         }
                     }
                     if (items.isEmpty()) {
-                        item {
-                            Column(Modifier.padding(horizontal = Space.screen)) {
-                                EmptyInvite(
-                                    "Ще нічого не хочеться",
-                                    "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
-                                        "далі стежить за ціною сам і скаже, коли вигідно купувати."
-                                )
-                            }
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            EmptyInvite(
+                                "Ще нічого не хочеться",
+                                "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
+                                    "далі стежить за ціною сам і скаже, коли вигідно купувати."
+                            )
                         }
                     }
                     items(sortWishes(items, sort), key = { it.id }) { wish ->
@@ -1303,6 +1320,14 @@ fun SharedTransitionScope.WishDetailScreen(
     }
 }
 
+/**
+ * One wish in a two-column grid.
+ *
+ * Shaped like a shop listing rather than a report: a square photograph, the name
+ * in two lines, the price. The chart, the savings plan and how stale the reading
+ * is all live on the item's own page, one tap away. Carrying them here cost half
+ * a screen for a single item.
+ */
 @Composable
 fun SharedTransitionScope.WishCard(
     wish: Wish,
@@ -1310,114 +1335,74 @@ fun SharedTransitionScope.WishCard(
     onOpen: () -> Unit
 ) {
     val change = priceChangePercent(wish)
-    val goal = wishGoal(wish)
-    val plan = savingsPlan(goal, wish.saved, wish.monthlyPlan)
-    // The whole card opens the item page. Edit and delete moved there, which also
-    // took them out from under the floating action button.
+    val plan = savingsPlan(wishGoal(wish), wish.saved, wish.monthlyPlan)
     Card(
         onClick = onOpen,
-        modifier = Modifier.padding(horizontal = Space.screen, vertical = Space.sm).fillMaxWidth(),
-        shape = Radius.lg
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+        shape = Radius.md
     ) {
-        // A photo earns its 190dp, and carries the news on top of itself: the price
-        // move as a large numeral, the verdict in a capsule. Without a photo there is
-        // no block rather than a dead grey rectangle.
-        if (wish.image.isNotBlank()) {
-            val insightForPhoto = priceInsight(wish.history, wish.price, wish.checkedDay)
-            PhotoHeader(
-                imageUrl = wish.image,
-                description = wish.name,
-                overlayNumber = "%+.0f%%".format(change)
-                    .takeIf { change <= -1.0 && wish.history.size > 1 },
-                chip = verdictLabel(insightForPhoto.verdict)
-                    .takeIf { insightForPhoto.verdict != BuyVerdict.UNKNOWN },
-                chipIcon = Icons.Default.Bolt,
-                chipColor = when (insightForPhoto.verdict) {
-                    BuyVerdict.GOOD -> Accent
-                    BuyVerdict.POOR -> Negative
-                    else -> TextPrimary
-                }
-            ) { imageModifier ->
+        Box {
+            if (wish.image.isNotBlank()) {
                 AsyncImage(
-                    wish.image, wish.name,
-                    imageModifier
+                    wish.image,
+                    wish.name,
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
                         .sharedElement(
                             rememberSharedContentState("wish-photo-${wish.id}"),
                             animatedVisibilityScope = visibility
                         )
                         .background(SurfaceRaised),
+                    // Cropped square rather than the whole photograph: shop pictures
+                    // come in every proportion, and a grid only holds together when
+                    // every tile is the same shape.
                     contentScale = ContentScale.Crop
+                )
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .background(AppBackground.copy(alpha = 0.14f))
+                )
+            } else {
+                Box(Modifier.fillMaxWidth().aspectRatio(1f).background(SurfaceRaised))
+            }
+            // The one thing worth knowing without opening the item: it got cheaper.
+            if (wish.history.size > 1 && change <= -1.0) {
+                Text(
+                    "%+.0f%%".format(change),
+                    color = AccentInk,
+                    fontSize = Type.captionSize,
+                    fontWeight = Type.strong,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(Space.sm)
+                        .background(Accent, Radius.pill)
+                        .padding(horizontal = Space.sm, vertical = 2.dp)
                 )
             }
         }
         Column(Modifier.padding(Space.md)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                AssistChip({}, { Text(wish.category, fontSize = Type.captionSize) })
-                Spacer(Modifier.weight(1f))
-                // One measurement cannot have moved. The card said "Ще збираю дані"
-                // and "+0,0%" at the same time, which contradict each other.
-                if (wish.history.size > 1) {
-                    Text(
-                        "%+.1f%%".format(change),
-                        color = if (change <= 0) Accent else Negative,
-                        fontSize = Type.captionSize,
-                        fontWeight = Type.strong
-                    )
-                }
-            }
-            Spacer(Modifier.height(Space.sm))
             Text(
                 wish.name,
-                fontSize = Type.cardTitleSize,
-                lineHeight = Type.cardTitleLine,
-                fontWeight = Type.medium,
-                maxLines = 2
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
             )
-            FigureWithTarget(
-                value = money(wish.price),
-                target = wish.targetPrice.takeIf { it > 0 }?.let { "ціль ${money(it)}" }
-            )
-            if (wish.saved > 0 || wish.monthlyPlan > 0) {
-                Spacer(Modifier.height(Space.md))
-                PillProgress(plan.progress)
+            Spacer(Modifier.height(Space.xs))
+            Text(money(wish.price), fontSize = Type.cardTitleSize, fontWeight = Type.strong)
+            if (wish.targetPrice > 0) {
                 Text(
-                    if (plan.reached) "Накопичено повністю"
-                    else "Відкладено ${money(plan.saved)} з ${money(plan.goal)}",
+                    "ціль ${money(wish.targetPrice)}",
                     color = TextSecondary,
-                    fontSize = Type.captionSize,
-                    modifier = Modifier.padding(top = Space.sm)
+                    fontSize = Type.overlineSize
                 )
-            } else {
-                PriceBars(wish.history, Modifier.fillMaxWidth().height(40.dp).padding(top = Space.sm))
-                val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
-                // A quietly broken parser showing a week-old price as current is worse
-                // than no price at all, so staleness is stated rather than hidden.
-                stalenessDays(wish.checkedDay, LocalDate.now().toEpochDay())?.takeIf { it >= 2 }?.let {
-                    Text(
-                        "Ціна не оновлювалась ${daysLabel(it)}",
-                        color = Negative,
-                        fontSize = Type.captionSize
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        verdictLabel(insight.verdict),
-                        color = when (insight.verdict) {
-                            BuyVerdict.GOOD -> Accent
-                            BuyVerdict.POOR -> Negative
-                            else -> TextSecondary
-                        },
-                        fontSize = Type.captionSize,
-                        fontWeight = Type.strong
-                    )
-                    if (insight.daysTracked > 0) {
-                        Text(
-                            " · ${daysLabel(insight.daysTracked)} спостережень",
-                            color = TextSecondary,
-                            fontSize = Type.captionSize
-                        )
-                    }
-                }
+            }
+            if (wish.saved > 0 || wish.monthlyPlan > 0) {
+                Spacer(Modifier.height(Space.sm))
+                PillProgress(plan.progress, height = 4.dp)
             }
         }
     }
