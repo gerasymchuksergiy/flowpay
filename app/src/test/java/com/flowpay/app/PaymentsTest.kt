@@ -280,9 +280,25 @@ class PaymentsTest {
     }
 
     @Test
-    fun `the strip marks every day that carries a payment`() {
-        assertEquals(setOf(1, 10), paymentDays(dueAll, monthLength = 30))
-        // A day past the end of the month is drawn on the last one.
-        assertEquals(setOf(28), paymentDays(listOf(Pay("Хостинг", 1.0, 31)), monthLength = 28))
+    fun `the strip counts forward from today, not from the first of the month`() {
+        // Offsets, so the strip covers the same span as the timeline under it.
+        assertEquals(setOf(0, 9), paymentOffsets(dueAll, LocalDate.of(2026, 9, 1)))
+        // From the 11th the window reaches 10 October: the 1st is 20 days out,
+        // the internet bill 29.
+        assertEquals(setOf(20, 29), paymentOffsets(dueAll, LocalDate.of(2026, 9, 11)))
+    }
+
+    @Test
+    fun `a day past the end of a short month is marked on its last day`() {
+        val end = listOf(Pay("Хостинг", 200.0, 31))
+
+        // 1 February 2027 plus 27 days is the 28th, the last day that month has.
+        assertEquals(setOf(27), paymentOffsets(end, LocalDate.of(2027, 2, 1)))
+    }
+
+    @Test
+    fun `nothing due in the window leaves the strip empty`() {
+        assertTrue(paymentOffsets(emptyList(), LocalDate.of(2026, 9, 11)).isEmpty())
+        assertTrue(paymentOffsets(dueAll, LocalDate.of(2026, 9, 11), days = 5).isEmpty())
     }
 }

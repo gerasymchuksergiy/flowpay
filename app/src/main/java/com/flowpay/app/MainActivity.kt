@@ -486,8 +486,12 @@ fun FlowPayApp(context: Context) {
             contentColor = TextPrimary,
             floatingActionButton = {
                 addLabel?.let { label ->
+                    // Collapses to a plus once you scroll. Its full width was
+                    // covering the bottom of whichever card sat under it, three
+                    // separate times; the label is needed once, not always.
                     ExtendedFloatingActionButton(
                         onClick = { adding = true },
+                        expanded = !barDown.value,
                         containerColor = Accent,
                         contentColor = AccentInk,
                         shape = Radius.pill,
@@ -588,7 +592,7 @@ fun ScreenHeader(
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(start = Space.screen, end = Space.screen, top = Space.lg, bottom = Space.xxl)
+            .padding(start = Space.screen, end = Space.screen, top = Space.md, bottom = Space.lg)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -715,17 +719,48 @@ fun WishlistScreen(
                     }
                     if (items.size > 1) {
                         item {
-                            LazyRow(
-                                Modifier.padding(bottom = Space.md),
-                                contentPadding = PaddingValues(horizontal = Space.screen),
-                                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                            // Five chips in a row ran off the right edge with nothing
+                            // to say they scrolled, so the last options were simply
+                            // invisible. One line names the current order instead.
+                            var sortOpen by remember { mutableStateOf(false) }
+                            Box(
+                                Modifier
+                                    .padding(horizontal = Space.screen)
+                                    .padding(bottom = Space.md)
                             ) {
-                                items(WishSort.entries.toList()) { option ->
-                                    FilterChip(
-                                        sort == option,
-                                        { sort = option; store.saveWishSort(option) },
-                                        { Text(option.label, fontSize = Type.captionSize) }
+                                Row(
+                                    Modifier.clickable { sortOpen = true },
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "Сортування",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
                                     )
+                                    Spacer(Modifier.width(Space.sm))
+                                    Text(
+                                        sort.label,
+                                        color = Accent,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.medium
+                                    )
+                                    Icon(
+                                        Icons.Default.ArrowDropDown,
+                                        "Змінити порядок",
+                                        tint = Accent
+                                    )
+                                }
+                                DropdownMenu(sortOpen, { sortOpen = false }) {
+                                    WishSort.entries.forEach { option ->
+                                        DropdownMenuItem(
+                                            text = { Text(option.label) },
+                                            onClick = {
+                                                sort = option
+                                                store.saveWishSort(option)
+                                                sortOpen = false
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -922,7 +957,8 @@ fun SharedTransitionScope.WishDetailScreen(
                     description = wish.name,
                     modifier = Modifier.padding(horizontal = Space.screen),
                     height = 240.dp,
-                    overlayNumber = "%+.0f%%".format(change).takeIf { change <= -1.0 },
+                    overlayNumber = "%+.0f%%".format(change)
+                    .takeIf { change <= -1.0 && wish.history.size > 1 },
                     chip = verdictLabel(insight.verdict)
                         .takeIf { insight.verdict != BuyVerdict.UNKNOWN },
                     chipIcon = Icons.Default.Bolt,
@@ -1291,7 +1327,8 @@ fun SharedTransitionScope.WishCard(
             PhotoHeader(
                 imageUrl = wish.image,
                 description = wish.name,
-                overlayNumber = "%+.0f%%".format(change).takeIf { change <= -1.0 },
+                overlayNumber = "%+.0f%%".format(change)
+                    .takeIf { change <= -1.0 && wish.history.size > 1 },
                 chip = verdictLabel(insightForPhoto.verdict)
                     .takeIf { insightForPhoto.verdict != BuyVerdict.UNKNOWN },
                 chipIcon = Icons.Default.Bolt,
@@ -1317,12 +1354,16 @@ fun SharedTransitionScope.WishCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 AssistChip({}, { Text(wish.category, fontSize = Type.captionSize) })
                 Spacer(Modifier.weight(1f))
-                Text(
-                    "%+.1f%%".format(change),
-                    color = if (change <= 0) Accent else Negative,
-                    fontSize = Type.captionSize,
-                    fontWeight = Type.strong
-                )
+                // One measurement cannot have moved. The card said "Ще збираю дані"
+                // and "+0,0%" at the same time, which contradict each other.
+                if (wish.history.size > 1) {
+                    Text(
+                        "%+.1f%%".format(change),
+                        color = if (change <= 0) Accent else Negative,
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.strong
+                    )
+                }
             }
             Spacer(Modifier.height(Space.sm))
             Text(
@@ -1598,14 +1639,10 @@ fun PaymentsScreen(
                 )
                 if (items.isNotEmpty()) {
                     Spacer(Modifier.height(Space.md))
-                    MonthStrip(
-                        monthLength = today.lengthOfMonth(),
-                        today = today.dayOfMonth,
-                        marked = paymentDays(items, today.lengthOfMonth())
-                    )
+                    DaysStrip(days = 30, marked = paymentOffsets(items, today))
                     Spacer(Modifier.height(Space.xs))
                     Text(
-                        "Дні списань цього місяця",
+                        "Списання у найближчі 30 днів",
                         color = TextSecondary,
                         fontSize = Type.captionSize
                     )

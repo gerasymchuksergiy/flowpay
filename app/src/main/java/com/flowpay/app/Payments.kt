@@ -178,9 +178,17 @@ private fun nextDateFor(pay: Pay, today: LocalDate): LocalDate {
     return next.withDayOfMonth(effectivePaymentDay(pay.day, next.lengthOfMonth()))
 }
 
-/** Which days of the current month carry a payment, for the month strip. */
-fun paymentDays(items: List<Pay>, monthLength: Int): Set<Int> =
-    items.map { effectivePaymentDay(it.day, monthLength) }.toSet()
+/**
+ * Days from today, 0 being today, that carry a payment.
+ *
+ * The strip used to draw the calendar month while the list below it was already
+ * showing next month's dates, so the two disagreed about what they described.
+ * Counting forward from today makes them the same span.
+ */
+fun paymentOffsets(items: List<Pay>, today: LocalDate, days: Int = 30): Set<Int> =
+    (0 until days)
+        .filter { paymentsDueOn(items, today.plusDays(it.toLong())).isNotEmpty() }
+        .toSet()
 
 private val UK = Locale("uk", "UA")
 

@@ -536,16 +536,16 @@ fun DottedLeader(modifier: Modifier = Modifier) {
 }
 
 /**
- * The shape of the month in a single line.
+ * The days ahead in a single line, today first.
  *
- * A tick for every day: short and grey for an ordinary one, tall and lime where
- * money leaves, full height and light where today is. It answers "when does it
- * all happen" before a single row of the list has been read.
+ * A tick per day: short and grey for an ordinary one, tall and lime where money
+ * leaves, full height and light for today. It counts forward rather than drawing
+ * the calendar month, because the list underneath already runs past the month's
+ * end and the two were describing different spans.
  */
 @Composable
-fun MonthStrip(
-    monthLength: Int,
-    today: Int,
+fun DaysStrip(
+    days: Int,
     marked: Set<Int>,
     modifier: Modifier = Modifier
 ) {
@@ -553,15 +553,15 @@ fun MonthStrip(
         modifier.fillMaxWidth().height(26.dp),
         verticalAlignment = Alignment.Bottom
     ) {
-        (1..monthLength).forEach { day ->
+        (0 until days).forEach { offset ->
             Box(
                 Modifier
                     .weight(1f)
                     .padding(horizontal = 1.dp)
                     .height(
                         when {
-                            day == today -> 26.dp
-                            day in marked -> 16.dp
+                            offset == 0 -> 26.dp
+                            offset in marked -> 16.dp
                             else -> 6.dp
                         }
                     )
@@ -569,8 +569,8 @@ fun MonthStrip(
                         when {
                             // Today is light rather than lime, so the colour keeps
                             // meaning one thing only: money.
-                            day == today -> TextPrimary
-                            day in marked -> Accent
+                            offset == 0 -> TextPrimary
+                            offset in marked -> Accent
                             else -> HairLine
                         },
                         RoundedCornerShape(2.dp)
@@ -697,6 +697,14 @@ fun PhotoHeader(
 ) {
     Box(modifier.fillMaxWidth().height(height)) {
         content(Modifier.fillMaxWidth().height(height))
+        // Shops photograph on white, which in a dark app is a lit panel rather
+        // than a picture. A thin wash of the page colour settles it down without
+        // hiding what the thing looks like.
+        Box(
+            Modifier
+                .matchParentSize()
+                .background(AppBackground.copy(alpha = 0.14f))
+        )
         overlayNumber?.let {
             Text(
                 it,
