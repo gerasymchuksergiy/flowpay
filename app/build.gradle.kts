@@ -60,6 +60,9 @@ dependencies {
  implementation("androidx.core:core-ktx:1.18.0")
  implementation("androidx.activity:activity-compose:1.13.0")
  implementation("androidx.compose.material3:material3")
+ // Arrives transitively through material3, but the shared element transition
+ // between a wishlist card and its page depends on it directly.
+ implementation("androidx.compose.animation:animation")
  implementation("androidx.compose.material:material-icons-extended")
  implementation("io.coil-kt:coil-compose:2.7.0")
  implementation("androidx.work:work-runtime-ktx:2.11.2")

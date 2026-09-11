@@ -18,6 +18,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
@@ -629,108 +633,109 @@ fun WishlistScreen(
     val scope = rememberCoroutineScope()
 
     val openedWish = opened?.let { id -> items.firstOrNull { it.id == id } }
-    if (openedWish != null) {
-        WishDetailScreen(
-            wish = openedWish,
-            context = context,
-            onBack = { setOpened(null) },
-            onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
-            onEdit = { editing = openedWish },
-            onDelete = { save(items - openedWish); setOpened(null) },
-            freeCash = freeCash,
-            onBought = { trackingNumber ->
-                onBought(
-                    Order(
-                        id = openedWish.id,
-                        name = openedWish.name,
-                        url = openedWish.url,
-                        status = "Замовлено",
-                        tracking = trackingNumber,
-                        image = openedWish.image,
-                        price = openedWish.price
-                    )
+    // The list and the page live in one composition, so the photo can travel
+    // between them: the card image grows into the page header instead of being
+    // replaced by a second copy of itself.
+    SharedTransitionLayout {
+        AnimatedContent(openedWish, label = "wish") { shown ->
+            if (shown != null) {
+                WishDetailScreen(
+                    wish = shown,
+                    visibility = this@AnimatedContent,
+                    context = context,
+                    onBack = { setOpened(null) },
+                    onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
+                    onEdit = { editing = shown },
+                    onDelete = { save(items - shown); setOpened(null) },
+                    freeCash = freeCash,
+                    onBought = { trackingNumber ->
+                        onBought(
+                            Order(
+                                id = shown.id,
+                                name = shown.name,
+                                url = shown.url,
+                                status = "Замовлено",
+                                tracking = trackingNumber,
+                                image = shown.image,
+                                price = shown.price
+                            )
+                        )
+                        save(items - shown)
+                        setOpened(null)
+                    }
                 )
-                save(items - openedWish)
-                setOpened(null)
-            }
-        )
-        editing?.let { selected ->
-            EditWishDialog(selected, { editing = null }) { changed ->
-                save(items.map { if (it.id == changed.id) changed else it })
-                editing = null
-            }
-        }
-        return
-    }
-
-    LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
-        item {
-            ScreenHeader(
-                "FLOWPAY", "Мої бажання", "Ціна, ціль та історія в одному місці",
-                trailing = {
-                    IconButton(
-                        onClick = {
-                            scope.launch {
-                                refreshing = true
-                                var updated = 0
-                                val fresh = items.map { old ->
-                                    runCatching { product(old.url) }.getOrNull()?.let { now ->
-                                        updated++
-                                        refreshedWish(old, now)
-                                    } ?: old
+            } else {
+                LazyColumn(contentPadding = PaddingValues(bottom = Space.fabClearance)) {
+                    item {
+                        ScreenHeader(
+                            "FLOWPAY", "Мої бажання", "Ціна, ціль та історія в одному місці",
+                            trailing = {
+                                IconButton(
+                                    onClick = {
+                                        scope.launch {
+                                            refreshing = true
+                                            var updated = 0
+                                            val fresh = items.map { old ->
+                                                runCatching { product(old.url) }.getOrNull()?.let { now ->
+                                                    updated++
+                                                    refreshedWish(old, now)
+                                                } ?: old
+                                            }
+                                            save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
+                                        }
+                                    },
+                                    enabled = !refreshing && items.isNotEmpty()
+                                ) {
+                                    if (refreshing) {
+                                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                                    } else {
+                                        Icon(Icons.Default.Refresh, "Оновити ціни", tint = TextSecondary)
+                                    }
                                 }
-                                save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
                             }
-                        },
-                        enabled = !refreshing && items.isNotEmpty()
-                    ) {
-                        if (refreshing) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
-                        } else {
-                            Icon(Icons.Default.Refresh, "Оновити ціни", tint = TextSecondary)
+                        )
+                        message?.let {
+                            Text(
+                                it,
+                                Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
                         }
                     }
-                }
-            )
-            message?.let {
-                Text(
-                    it,
-                    Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
-                    color = TextSecondary,
-                    fontSize = Type.captionSize
-                )
-            }
-        }
-        if (items.size > 1) {
-            item {
-                LazyRow(
-                    Modifier.padding(bottom = Space.md),
-                    contentPadding = PaddingValues(horizontal = Space.screen),
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm)
-                ) {
-                    items(WishSort.entries.toList()) { option ->
-                        FilterChip(
-                            sort == option,
-                            { sort = option; store.saveWishSort(option) },
-                            { Text(option.label, fontSize = Type.captionSize) }
-                        )
+                    if (items.size > 1) {
+                        item {
+                            LazyRow(
+                                Modifier.padding(bottom = Space.md),
+                                contentPadding = PaddingValues(horizontal = Space.screen),
+                                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                            ) {
+                                items(WishSort.entries.toList()) { option ->
+                                    FilterChip(
+                                        sort == option,
+                                        { sort = option; store.saveWishSort(option) },
+                                        { Text(option.label, fontSize = Type.captionSize) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (items.isEmpty()) {
+                        item {
+                            Column(Modifier.padding(horizontal = Space.screen)) {
+                                EmptyInvite(
+                                    "Ще нічого не хочеться",
+                                    "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
+                                        "далі стежить за ціною сам і скаже, коли вигідно купувати."
+                                )
+                            }
+                        }
+                    }
+                    items(sortWishes(items, sort), key = { it.id }) { wish ->
+                        WishCard(wish, this@AnimatedContent) { setOpened(wish.id) }
                     }
                 }
             }
-        }
-        if (items.isEmpty()) {
-            item {
-                Column(Modifier.padding(horizontal = Space.screen)) {
-                    EmptyInvite(
-                        "Ще нічого не хочеться",
-                        "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
-                            "далі стежить за ціною сам і скаже, коли вигідно купувати."
-                    )
-                }
-            }
-        }
-        items(sortWishes(items, sort), key = { it.id }) { wish ->
-            WishCard(wish) { setOpened(wish.id) }
         }
     }
     if (adding) AddWishDialog({ setAdding(false) }, { wish -> save(items + wish); setAdding(false) })
@@ -836,8 +841,9 @@ fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted:
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WishDetailScreen(
+fun SharedTransitionScope.WishDetailScreen(
     wish: Wish,
+    visibility: AnimatedVisibilityScope,
     context: Context,
     onBack: () -> Unit,
     onChange: (Wish) -> Unit,
@@ -918,7 +924,13 @@ fun WishDetailScreen(
                 ) { imageModifier ->
                     AsyncImage(
                         wish.image, wish.name,
-                        imageModifier.clip(Radius.lg).background(SurfaceRaised),
+                        imageModifier
+                            .sharedElement(
+                                rememberSharedContentState("wish-photo-${wish.id}"),
+                                animatedVisibilityScope = visibility
+                            )
+                            .clip(Radius.lg)
+                            .background(SurfaceRaised),
                         contentScale = ContentScale.Crop
                     )
                 }
@@ -1246,7 +1258,11 @@ fun WishDetailScreen(
 }
 
 @Composable
-fun WishCard(wish: Wish, onOpen: () -> Unit) {
+fun SharedTransitionScope.WishCard(
+    wish: Wish,
+    visibility: AnimatedVisibilityScope,
+    onOpen: () -> Unit
+) {
     val change = priceChangePercent(wish)
     val goal = wishGoal(wish)
     val plan = savingsPlan(goal, wish.saved, wish.monthlyPlan)
@@ -1277,7 +1293,12 @@ fun WishCard(wish: Wish, onOpen: () -> Unit) {
             ) { imageModifier ->
                 AsyncImage(
                     wish.image, wish.name,
-                    imageModifier.background(SurfaceRaised),
+                    imageModifier
+                        .sharedElement(
+                            rememberSharedContentState("wish-photo-${wish.id}"),
+                            animatedVisibilityScope = visibility
+                        )
+                        .background(SurfaceRaised),
                     contentScale = ContentScale.Crop
                 )
             }
