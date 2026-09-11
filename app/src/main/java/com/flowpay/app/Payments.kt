@@ -51,6 +51,32 @@ fun monthlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
     )
 }
 
+/** A recurring cost is charged this many times a year. */
+const val MONTHS_IN_YEAR = 12
+
+/** What one recurring expense costs in a year, in the currency it was entered in. */
+fun yearlyCost(pay: Pay): Double = pay.amount * MONTHS_IN_YEAR
+
+/**
+ * A year of the same standing costs.
+ *
+ * The figure that changes minds: 400 ₴ a month is a rounding error and 4 800 ₴ a
+ * year is a decision. Built from [monthlyTotal] so a missing rate stays missing
+ * rather than being quietly multiplied into a smaller number twelve times over.
+ */
+fun yearlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
+    val monthly = monthlyTotal(items, usdSellRate)
+    return monthly.copy(
+        uah = monthly.uah * MONTHS_IN_YEAR,
+        usd = monthly.usd * MONTHS_IN_YEAR,
+        usdInUah = monthly.usdInUah * MONTHS_IN_YEAR,
+        total = monthly.total * MONTHS_IN_YEAR
+    )
+}
+
+/** "36 000 ₴ на рік" — one expense's annual cost, in its own currency. */
+fun annualLabel(pay: Pay): String = "${amountLabel(yearlyCost(pay), pay.currency)} на рік"
+
 data class Budget(
     val income: Double,
     val expenses: Double,
@@ -190,6 +216,83 @@ fun paymentOffsets(items: List<Pay>, today: LocalDate, days: Int = 30): Set<Int>
         .filter { paymentsDueOn(items, today.plusDays(it.toLong())).isNotEmpty() }
         .toSet()
 
+// ------------------------------------------------------------ advance warning
+
+/**
+ * Days of notice an expense gets when it does not say otherwise.
+ *
+ * One, not nought, because that is exactly what every expense already had: the
+ * reminder used to look at tomorrow and only at tomorrow. Reading a missing field
+ * as nought would have silently moved every existing expense on the phone to a
+ * reminder that arrives on the charge date, which is the thing this feature exists
+ * to stop.
+ */
+const val DEFAULT_WARN_DAYS = 1
+
+/**
+ * The notice periods the editor offers.
+ *
+ * A day is enough to move money; a week is what a subscription needs, because
+ * cancelling before the charge is the only way not to pay it. Nought is kept for
+ * the bills you cannot avoid and only need to remember on the day.
+ */
+val WARN_CHOICES = listOf(0, 1, 3, 7)
+
+/** How a notice period reads on a chip. */
+fun warnLabel(days: Int): String = when {
+    days <= 0 -> "У день оплати"
+    days == 1 -> "За день"
+    else -> "За ${daysLabel(days)}"
+}
+
+/** An expense whose warning window has opened, and how long is left before it is charged. */
+data class DueReminder(val pay: Pay, val daysAway: Int)
+
+/**
+ * Everything worth saying on [today], soonest first.
+ *
+ * The window is per expense: a subscription set to seven days starts appearing a
+ * week out, while the electricity bill set to nought appears only on the morning
+ * it is taken. Everything found here goes into one notification, so a long notice
+ * period costs a line in a daily message rather than a week of separate alarms.
+ */
+fun remindersDue(items: List<Pay>, today: LocalDate): List<DueReminder> =
+    items.mapNotNull { pay ->
+        val daysAway = java.time.temporal.ChronoUnit
+            .DAYS.between(today, nextDateFor(pay, today)).toInt()
+        DueReminder(pay, daysAway).takeIf { daysAway <= pay.warnDays.coerceAtLeast(0) }
+    }.sortedBy { it.daysAway }
+
+/** The line a daily reminder leads with. */
+fun reminderTitle(reminders: List<DueReminder>): String {
+    val days = reminders.map { it.daysAway }.distinct()
+    return when {
+        reminders.isEmpty() -> ""
+        reminders.size == 1 -> "Оплата ${dueLabel(reminders.first().daysAway)}"
+        days.size == 1 -> "${paymentsLabel(reminders.size)} ${dueLabel(days.first())}"
+        else -> "Найближчі платежі"
+    }
+}
+
+/**
+ * The body of the reminder.
+ *
+ * When everything falls on the same day the title has already said when, so
+ * repeating it under each name would be noise. When the days differ, each name has
+ * to carry its own, or a week's notice and today's charge read as the same thing.
+ */
+fun reminderText(reminders: List<DueReminder>): String {
+    val mixed = reminders.map { it.daysAway }.distinct().size > 1
+    return reminders.joinToString(if (mixed) " · " else ", ") { reminder ->
+        val amount = amountLabel(reminder.pay.amount, reminder.pay.currency)
+        if (mixed) {
+            "${reminder.pay.name} $amount — ${dueLabel(reminder.daysAway)}"
+        } else {
+            "${reminder.pay.name} $amount"
+        }
+    }
+}
+
 private val UK = Locale("uk", "UA")
 
 /**
@@ -220,3 +323,37 @@ fun approxMoney(value: Double): String = money(kotlin.math.round(value))
 /** An amount shown in whichever currency it was entered in. */
 fun amountLabel(value: Double, currency: String): String =
     if (currency == USD) dollars(value) else money(value)
+
+/**
+ * A rate, always with both decimals.
+ *
+ * "41,2" reads as a truncated number rather than a rate, and the second place is
+ * worth about forty kopecks on a hundred dollars.
+ */
+fun rateFigure(value: Double): String =
+    NumberFormat.getNumberInstance(UK).apply {
+        maximumFractionDigits = 2
+        minimumFractionDigits = 2
+    }.format(value)
+
+/**
+ * Where the figure came from, said plainly.
+ *
+ * The official rate and a bank's rate are different numbers — usually by the best
+ * part of a hryvnia — so a rate that reaches the screen without its source invites
+ * reading one as the other. This is why the label is never omitted, not even when
+ * the fallback worked perfectly.
+ */
+fun rateSourceLabel(rate: FxRate): String = when {
+    rate.sell <= 0.0 -> ""
+    rate.source == SOURCE_NBU && rate.date.isNotBlank() -> "Офіційний курс НБУ на ${rate.date}"
+    rate.source == SOURCE_NBU -> "Офіційний курс НБУ"
+    else -> "Ринковий курс Monobank"
+}
+
+/** The rate itself: a spread where there is one, a single official figure where there is not. */
+fun rateHeadline(rate: FxRate): String = when {
+    rate.sell <= 0.0 -> "Курс ще не завантажено"
+    rate.source == SOURCE_NBU -> "${rateFigure(rate.sell)} ₴ за долар"
+    else -> "Купівля ${rateFigure(rate.buy)} · продаж ${rateFigure(rate.sell)}"
+}

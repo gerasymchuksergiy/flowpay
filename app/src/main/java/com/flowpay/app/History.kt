@@ -213,3 +213,71 @@ fun stalenessDays(checkedDay: Long, today: Long): Int? {
     val days = (today - checkedDay).toInt()
     return days.takeIf { it > 0 }
 }
+
+// ------------------------------------------------------------ exchange rate
+
+/**
+ * How many daily exchange-rate readings to keep.
+ *
+ * A month, because that is the span the chart claims to show. Kept short on
+ * purpose: unlike a price history, which only grows when something changes, this
+ * gains a point every single day, so an unbounded list would grow for ever.
+ */
+const val RATE_HISTORY_CAP = 30
+
+/**
+ * Records the day's exchange rate.
+ *
+ * Deliberately unlike [appendPrice], which skips an unchanged value. A rate chart
+ * is a shape over time, and a week where the rate held still is information — drop
+ * those days and a flat week would draw as a single bar, making the axis a lie.
+ *
+ * A second reading on a day already recorded replaces it rather than adding to it,
+ * so opening the screen five times in an afternoon still leaves one point per day.
+ */
+fun appendRate(history: List<PricePoint>, rate: Double, today: Long): List<PricePoint> {
+    if (rate <= 0.0 || today <= 0L) return history
+    val base = if (history.lastOrNull()?.day == today) history.dropLast(1) else history
+    return (base + PricePoint(rate, today)).takeLast(RATE_HISTORY_CAP)
+}
+
+/** Ukrainian plural for how many readings the rate history holds. */
+fun entriesLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "записів"
+        last == 1 -> "запис"
+        last in 2..4 -> "записи"
+        else -> "записів"
+    }
+    return "$count $word"
+}
+
+/**
+ * What the rate chart is allowed to claim about itself.
+ *
+ * Nothing recorded the rate before this version, so on every existing phone the
+ * chart starts empty and fills a bar a day. A chart captioned "за місяць" while
+ * holding three days would read as a month in which the rate barely moved, which
+ * is the opposite of the truth. So the caption says how much has actually been
+ * seen, and on day one says plainly that the history begins now.
+ */
+fun rateHistoryNote(history: List<PricePoint>, today: Long): String {
+    if (history.isEmpty()) return "Історія курсу почнеться з сьогодні"
+    val first = history.mapNotNull { point -> point.day.takeIf { it > 0L } }.minOrNull()
+        ?: return "${entriesLabel(history.size)} без дат"
+    val span = (today - first).toInt()
+    if (span <= 0) return "Записую курс щодня, поки що ${entriesLabel(history.size)}"
+    return "${entriesLabel(history.size)} за ${daysLabel(span + 1)}"
+}
+
+/** "41,10 – 41,80" — the span the recorded rate covered, or null while it has not moved. */
+fun rateRangeNote(history: List<PricePoint>): String? {
+    val prices = history.map { it.price }.filter { it > 0.0 }
+    if (prices.size < 2) return null
+    val low = prices.min()
+    val high = prices.max()
+    if (high <= low) return null
+    return "${rateFigure(low)} – ${rateFigure(high)}"
+}

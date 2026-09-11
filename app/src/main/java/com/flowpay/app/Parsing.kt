@@ -109,6 +109,26 @@ fun parseProduct(html: String, url: String, id: String, today: Long = 0L): Wish 
     )
 }
 
+/** Monobank: what a bank actually buys and sells dollars at today. */
+const val SOURCE_MONOBANK = "mono"
+
+/** The National Bank: the official rate, which nobody trades at. */
+const val SOURCE_NBU = "nbu"
+
+data class FxRate(
+    val buy: Double = 0.0,
+    val sell: Double = 0.0,
+    /**
+     * Which feed the figure came from. Empty means there is no figure yet.
+     *
+     * Carried with the numbers rather than kept beside them, because the whole
+     * point is that a rate must never reach the screen without its source.
+     */
+    val source: String = "",
+    /** The day the source itself dated the rate, in its own wording. Empty when it did not say. */
+    val date: String = ""
+)
+
 /** Picks the USD to UAH pair out of the Monobank currency feed. */
 fun parseUsdRate(json: String): FxRate {
     val array = JSONArray(json)
@@ -116,7 +136,33 @@ fun parseUsdRate(json: String): FxRate {
         .map { array.getJSONObject(it) }
         .firstOrNull { it.optInt("currencyCodeA") == 840 && it.optInt("currencyCodeB") == 980 }
         ?: return FxRate()
-    return FxRate(item.optDouble("rateBuy", 0.0), item.optDouble("rateSell", 0.0))
+    val buy = item.optDouble("rateBuy", 0.0)
+    val sell = item.optDouble("rateSell", 0.0)
+    if (sell <= 0.0) return FxRate()
+    return FxRate(buy, sell, SOURCE_MONOBANK)
+}
+
+/**
+ * Reads the National Bank's own feed.
+ *
+ * Monobank allows about one request a minute and answers a rejection after that,
+ * which used to leave the screen showing yesterday's figure with no way to refresh
+ * it. The National Bank publishes the official rate with no key and no limit, so
+ * it is what the app falls back to.
+ *
+ * Buy and sell come back as the same number on purpose. The official rate is a
+ * single published figure, not a price with two sides, and inventing a spread for
+ * it would make a converted amount look more exact than it is.
+ */
+fun parseNbuRate(json: String): FxRate {
+    val array = JSONArray(json)
+    val item = (0 until array.length())
+        .map { array.getJSONObject(it) }
+        .firstOrNull { it.optString("cc").equals("USD", ignoreCase = true) }
+        ?: return FxRate()
+    val rate = item.optDouble("rate", 0.0)
+    if (rate <= 0.0) return FxRate()
+    return FxRate(rate, rate, SOURCE_NBU, item.optString("exchangedate"))
 }
 
 /**

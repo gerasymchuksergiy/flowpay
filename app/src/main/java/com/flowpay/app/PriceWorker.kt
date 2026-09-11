@@ -54,6 +54,17 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         }
         store.saveWishes(fresh)
 
+        // The rate chart needs a point a day. Recording it only when the currency
+        // screen is opened would leave the axis full of holes on every day the app
+        // was not used, and the cached rate the expenses screen converts with would
+        // go stale in exactly the same way.
+        runCatching { usdRate() }.getOrNull()?.takeIf { it.sell > 0 }?.let { rate ->
+            store.saveFxRate(rate, System.currentTimeMillis())
+            store.saveRateHistory(
+                appendRate(store.rateHistory(), rate.sell, java.time.LocalDate.now().toEpochDay())
+            )
+        }
+
         val parcels = store.orders()
         val trackable = parcels.filter { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
         var parcelsRead = 0

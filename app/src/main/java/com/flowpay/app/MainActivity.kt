@@ -108,7 +108,14 @@ data class Pay(
     val amount: Double,
     val day: Int = 1,
     /** "UAH" or "USD". Rent is commonly quoted and paid in dollars. */
-    val currency: String = UAH
+    val currency: String = UAH,
+    /**
+     * Days of notice before the charge. Nought means the morning of.
+     *
+     * A reminder that arrives on the day a subscription renews is too late to do
+     * anything about it, which is the one thing a subscription tracker is for.
+     */
+    val warnDays: Int = DEFAULT_WARN_DAYS
 )
 data class Order(
     val id: String,
@@ -201,12 +208,16 @@ class Store(context: Context) {
             it.optDouble("a"),
             it.optInt("d", 1),
             // Entries saved before currencies existed were all hryvnia.
-            it.optString("cur", UAH).ifBlank { UAH }
+            it.optString("cur", UAH).ifBlank { UAH },
+            // Entries saved before the warning existed got a day's notice from the
+            // worker itself, so that is what they keep.
+            it.optInt("wd", DEFAULT_WARN_DAYS)
         )
     }
 
     fun savePays(items: List<Pay>) = save("pay", items.map {
         JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day).put("cur", it.currency)
+            .put("wd", it.warnDays)
     })
 
     fun orders(): List<Order> = jsonList("orders") {
@@ -252,14 +263,36 @@ class Store(context: Context) {
     fun fxRate(): Pair<FxRate, Long> {
         val buy = prefs.getFloat("fx_buy", 0f).toDouble()
         val sell = prefs.getFloat("fx_sell", 0f).toDouble()
-        return FxRate(buy, sell) to prefs.getLong("fx_at", 0L)
+        if (sell <= 0.0) return FxRate() to 0L
+        // A rate saved before the app knew about sources can only have come from
+        // Monobank, which is the only feed there was.
+        val source = prefs.getString("fx_src", SOURCE_MONOBANK) ?: SOURCE_MONOBANK
+        return FxRate(buy, sell, source, prefs.getString("fx_day", "").orEmpty()) to
+            prefs.getLong("fx_at", 0L)
     }
 
     fun saveFxRate(rate: FxRate, atMillis: Long) = prefs.edit {
         putFloat("fx_buy", rate.buy.toFloat())
         putFloat("fx_sell", rate.sell.toFloat())
+        putString("fx_src", rate.source)
+        putString("fx_day", rate.date)
         putLong("fx_at", atMillis)
     }
+
+    /**
+     * One exchange-rate reading per day, for the chart on the currency screen.
+     *
+     * Kept apart from [fxRate], which is the current figure and is overwritten on
+     * every refresh. Nothing recorded a series before this, so on every existing
+     * phone this starts empty and the screen says so.
+     */
+    fun rateHistory(): List<PricePoint> =
+        jsonList("fxh") { PricePoint(it.optDouble("p", 0.0), it.optLong("d", 0L)) }
+            .filter { it.price > 0 }
+
+    fun saveRateHistory(points: List<PricePoint>) = save("fxh", points.map {
+        JSONObject().put("p", it.price).put("d", it.day)
+    })
 
     fun exportJson(): String = JSONObject()
         .put("version", 1)
@@ -315,16 +348,44 @@ suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
     parseProduct(html, normalizedLink, System.currentTimeMillis().toString(), LocalDate.now().toEpochDay())
 }
 
-data class FxRate(val buy: Double = 0.0, val sell: Double = 0.0)
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
 
+/**
+ * The rate, from whichever source will answer.
+ *
+ * Monobank is asked first because a bank's own buy and sell prices are what money
+ * actually changes hands at. But it allows roughly one request a minute per
+ * address and answers a 429 after that, and a rate tracker that goes blank the
+ * second time you open it is not a rate tracker. The National Bank publishes the
+ * official rate with no key and no limit, so it takes over — and the figure is
+ * labelled with where it came from, because the two are not the same number.
+ */
 suspend fun usdRate(): FxRate = withContext(Dispatchers.IO) {
-    // Monobank rate limits this endpoint, so a hung request must not sit forever.
+    val market = runCatching { monobankRate() }.getOrNull()
+    if (market != null && market.sell > 0) return@withContext market
+    runCatching { nbuRate() }.getOrNull() ?: FxRate()
+}
+
+private fun monobankRate(): FxRate {
+    // Rate limited, so a hung request must not sit forever.
     val connection = URL("https://api.monobank.ua/bank/currency").openConnection() as HttpURLConnection
     connection.connectTimeout = 15_000
     connection.readTimeout = 15_000
+    // A 429 body is not a rate feed, and parsing it would throw rather than fall back.
+    if (connection.responseCode !in 200..299) return FxRate()
     val body = connection.inputStream.bufferedReader().use { it.readText() }
-    parseUsdRate(body)
+    return parseUsdRate(body)
+}
+
+private fun nbuRate(): FxRate {
+    val connection = URL(
+        "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?valcode=USD&json"
+    ).openConnection() as HttpURLConnection
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    if (connection.responseCode !in 200..299) return FxRate()
+    val body = connection.inputStream.bufferedReader().use { it.readText() }
+    return parseNbuRate(body)
 }
 
 suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
@@ -1421,6 +1482,7 @@ fun CalculatorScreen(store: Store) {
     var fetchedAt by remember { mutableLongStateOf(cached.second) }
     var loading by remember { mutableStateOf(false) }
     var rateError by remember { mutableStateOf(false) }
+    var history by remember { mutableStateOf(store.rateHistory()) }
     val scope = rememberCoroutineScope()
 
     fun refresh() {
@@ -1433,6 +1495,11 @@ fun CalculatorScreen(store: Store) {
                         rate = fresh
                         fetchedAt = System.currentTimeMillis()
                         store.saveFxRate(fresh, fetchedAt)
+                        // The series the chart draws. Recorded here rather than only
+                        // on a schedule, so a phone that is opened daily builds a
+                        // month of history whether or not background work ran.
+                        history = appendRate(history, fresh.sell, LocalDate.now().toEpochDay())
+                        store.saveRateHistory(history)
                     } else {
                         rateError = true
                     }
@@ -1474,11 +1541,14 @@ fun CalculatorScreen(store: Store) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
                                 Text("USD / UAH", color = TextSecondary, fontSize = Type.captionSize)
-                                Text(
-                                    if (rate.sell > 0) "Купівля ${"%.2f".format(rate.buy)} · продаж ${"%.2f".format(rate.sell)}"
-                                    else "Курс ще не завантажено",
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Text(rateHeadline(rate), fontWeight = FontWeight.Bold)
+                                // Never the figure without its source: the official
+                                // rate and a bank's rate differ by most of a hryvnia,
+                                // and an unlabelled number invites reading one as the
+                                // other.
+                                rateSourceLabel(rate).takeIf { it.isNotBlank() }?.let {
+                                    Text(it, color = TextSecondary, fontSize = Type.captionSize)
+                                }
                                 if (fetchedAt > 0) {
                                     Text(
                                         "станом на ${timeLabel(fetchedAt)}" +
@@ -1488,7 +1558,7 @@ fun CalculatorScreen(store: Store) {
                                     )
                                 } else if (rateError) {
                                     Text(
-                                        "Monobank обмежує запити, спробуйте за хвилину",
+                                        "Ні Monobank, ні НБУ не відповіли, спробуйте пізніше",
                                         color = Negative,
                                         fontSize = Type.captionSize
                                     )
@@ -1529,7 +1599,7 @@ fun CalculatorScreen(store: Store) {
                                             fontSize = Type.captionSize
                                         )
                                         Text(
-                                            "%.2f".format(exchangeRate),
+                                            rateFigure(exchangeRate),
                                             color = AccentInk,
                                             fontSize = Type.sectionSize,
                                             lineHeight = Type.sectionLine,
@@ -1541,6 +1611,35 @@ fun CalculatorScreen(store: Store) {
                                 null
                             }
                         )
+                    }
+                }
+
+                Text(
+                    "Курс за місяць",
+                    Modifier.padding(top = Space.xxl, bottom = Space.md),
+                    fontSize = Type.sectionSize,
+                    lineHeight = Type.sectionLine,
+                    fontWeight = Type.medium
+                )
+                Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceBase)) {
+                    Column(Modifier.padding(Space.lg)) {
+                        if (history.isNotEmpty()) {
+                            PriceBars(history, Modifier.fillMaxWidth().height(120.dp))
+                            Spacer(Modifier.height(Space.sm))
+                        }
+                        // Nothing recorded the rate before this version, so the chart
+                        // says how many days it has actually seen rather than letting
+                        // four bars pass for a month.
+                        Text(
+                            rateHistoryNote(history, LocalDate.now().toEpochDay()),
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine
+                        )
+                        rateRangeNote(history)?.let {
+                            Spacer(Modifier.height(Space.sm))
+                            LeaderRow("Від і до", it)
+                        }
                     }
                 }
 
@@ -1593,6 +1692,7 @@ fun PaymentsScreen(
     // converted at the sell rate, since that is what buying dollars costs.
     val rate = remember { store.fxRate().first }
     val monthly = monthlyTotal(items, rate.sell)
+    val yearly = yearlyTotal(items, rate.sell)
     var income by remember { mutableDoubleStateOf(store.income()) }
     var editingIncome by remember { mutableStateOf(false) }
     val month = budget(income, monthly)
@@ -1678,12 +1778,20 @@ fun PaymentsScreen(
                         if (items.isNotEmpty()) {
                             Spacer(Modifier.height(Space.sm))
                             LeaderRow("Разом на місяць", money(monthly.total))
+                            // A year of the same costs, because that is the scale at
+                            // which a subscription is worth arguing with.
+                            LeaderRow("Разом на рік", money(yearly.total))
                             if (monthly.rateMissing) {
-                                LeaderRow("Плюс ${dollars(monthly.usd)}", "курс ще не завантажено")
+                                // Both totals are short by this much, so it is said as
+                                // a gap rather than folded in as a smaller number.
+                                LeaderRow(
+                                    "Плюс ${dollars(yearly.usd)} на рік",
+                                    "курс ще не завантажено"
+                                )
                             } else if (monthly.hasUsd) {
                                 LeaderRow(
-                                    "З них ${dollars(monthly.usd)}",
-                                    "≈ ${approxMoney(monthly.usdInUah)}"
+                                    "З них ${dollars(yearly.usd)} на рік",
+                                    "≈ ${approxMoney(yearly.usdInUah)}"
                                 )
                             }
                         }
@@ -1736,14 +1844,25 @@ fun PaymentsScreen(
                                 // the row in half, which cut "Оренда квартири" down to
                                 // "Оренда к…" — and a name earns that space before a
                                 // decoration does.
-                                Text(
-                                    pay.name,
-                                    fontSize = Type.cardTitleSize,
-                                    fontWeight = Type.medium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f).padding(end = Space.md)
-                                )
+                                Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                    Text(
+                                        pay.name,
+                                        fontSize = Type.cardTitleSize,
+                                        fontWeight = Type.medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    // The annual figure is the one that changes minds
+                                    // about a subscription, so it rides with the name
+                                    // rather than waiting on another screen.
+                                    Text(
+                                        annualLabel(pay),
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                                 Column(horizontalAlignment = Alignment.End) {
                                     Text(
                                         amountLabel(pay.amount, pay.currency),
@@ -1811,6 +1930,7 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
     var amount by remember { mutableStateOf("") }
     var day by remember { mutableStateOf("1") }
     var currency by remember { mutableStateOf(UAH) }
+    var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Нова постійна витрата") },
@@ -1831,6 +1951,7 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
                 CurrencyChips(currency) { currency = it }
                 NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
+                WarnDaysChips(warnDays) { warnDays = it }
             }
         },
         confirmButton = {
@@ -1842,7 +1963,8 @@ fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
                                 name.trim().ifBlank { "Інше" },
                                 value,
                                 day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
-                                currency
+                                currency,
+                                warnDays
                             )
                         )
                     }
@@ -2517,6 +2639,7 @@ fun EditPaymentDialog(
     var amount by remember { mutableStateOf(amountText(pay.amount)) }
     var day by remember { mutableStateOf(pay.day.toString()) }
     var currency by remember { mutableStateOf(pay.currency) }
+    var warnDays by remember { mutableIntStateOf(pay.warnDays) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Змінити витрату") },
@@ -2532,6 +2655,7 @@ fun EditPaymentDialog(
                 CurrencyChips(currency) { currency = it }
                 NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
                 NumberField("День оплати", day) { day = it }
+                WarnDaysChips(warnDays) { warnDays = it }
                 // Deleting used to sit on the row itself, a thumb's width from the
                 // tap that opens this dialog, and it asked nothing before erasing.
                 Spacer(Modifier.height(Space.md))
@@ -2556,7 +2680,8 @@ fun EditPaymentDialog(
                                 name = name.trim().ifBlank { pay.name },
                                 amount = value,
                                 day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
-                                currency = currency
+                                currency = currency,
+                                warnDays = warnDays
                             )
                         )
                     }
@@ -2639,6 +2764,32 @@ fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
 }
 
 /** Picks the currency an expense is actually billed in. */
+/**
+ * How much notice this expense gets.
+ *
+ * A row of chips rather than a number field: the useful answers are few, and one
+ * of them — a week — is the difference between cancelling a subscription and
+ * paying for another year of it.
+ */
+@Composable
+fun WarnDaysChips(warnDays: Int, set: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
+        Text("Нагадати", color = TextSecondary, fontSize = Type.captionSize)
+        LazyRow(
+            Modifier.padding(top = Space.xs),
+            horizontalArrangement = Arrangement.spacedBy(Space.sm)
+        ) {
+            items(WARN_CHOICES) { choice ->
+                FilterChip(
+                    warnDays == choice,
+                    { set(choice) },
+                    { Text(warnLabel(choice), fontSize = Type.captionSize) }
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun CurrencyChips(currency: String, set: (String) -> Unit) {
     Row(

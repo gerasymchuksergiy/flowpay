@@ -2,6 +2,7 @@ package com.flowpay.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -175,5 +176,89 @@ class HistoryTest {
         assertEquals("3 зміни", changesLabel(3))
         assertEquals("12 змін", changesLabel(12))
         assertEquals("21 зміна", changesLabel(21))
+    }
+
+    // --------------------------------------------------------- exchange rate
+
+    @Test
+    fun `a rate is recorded even when it has not moved`() {
+        // The opposite rule to a price. A week in which the rate held still is a flat
+        // week on the chart, and skipping those days would draw it as a single bar.
+        val history = appendRate(listOf(PricePoint(41.2, day)), 41.2, day + 1)
+
+        assertEquals(2, history.size)
+        assertEquals(day + 1, history.last().day)
+    }
+
+    @Test
+    fun `a second reading on the same day corrects it instead of adding a bar`() {
+        val morning = appendRate(emptyList(), 41.2, day)
+        val evening = appendRate(morning, 41.6, day)
+
+        assertEquals(1, evening.size)
+        assertEquals(41.6, evening.single().price, 0.001)
+        assertEquals(day, evening.single().day)
+    }
+
+    @Test
+    fun `a rate that failed to load is not recorded as zero`() {
+        val start = listOf(PricePoint(41.2, day))
+
+        assertEquals(start, appendRate(start, 0.0, day + 1))
+        assertEquals(start, appendRate(start, -1.0, day + 1))
+        // No date is as useless as no rate: a bar has to sit somewhere on the axis.
+        assertEquals(start, appendRate(start, 41.5, 0L))
+    }
+
+    @Test
+    fun `the rate history stops at a month and drops the oldest day first`() {
+        var history = emptyList<PricePoint>()
+        repeat(40) { index -> history = appendRate(history, 41.0 + index, day + index) }
+
+        assertEquals(RATE_HISTORY_CAP, history.size)
+        assertEquals(day + 10, history.first().day)
+        assertEquals(day + 39, history.last().day)
+    }
+
+    @Test
+    fun `a brand new install says the history starts today rather than showing a month`() {
+        assertEquals("Історія курсу почнеться з сьогодні", rateHistoryNote(emptyList(), day))
+    }
+
+    @Test
+    fun `the first day says so instead of claiming a span`() {
+        val history = appendRate(emptyList(), 41.2, day)
+
+        assertEquals("Записую курс щодня, поки що 1 запис", rateHistoryNote(history, day))
+    }
+
+    @Test
+    fun `the note counts the days actually observed, not the days the chart could hold`() {
+        val history = listOf(
+            PricePoint(41.2, day),
+            PricePoint(41.3, day + 1),
+            PricePoint(41.1, day + 2)
+        )
+
+        // Three readings covering three days, including both ends.
+        assertEquals("3 записи за 3 дні", rateHistoryNote(history, day + 2))
+    }
+
+    @Test
+    fun `entry counts use the three ukrainian plural forms`() {
+        assertEquals("1 запис", entriesLabel(1))
+        assertEquals("3 записи", entriesLabel(3))
+        assertEquals("11 записів", entriesLabel(11))
+        assertEquals("21 запис", entriesLabel(21))
+    }
+
+    @Test
+    fun `a range is only claimed once the rate has actually moved`() {
+        assertNull(rateRangeNote(emptyList()))
+        assertNull(rateRangeNote(listOf(PricePoint(41.2, day))))
+        assertNull(rateRangeNote(listOf(PricePoint(41.2, day), PricePoint(41.2, day + 1))))
+
+        val moved = listOf(PricePoint(41.2, day), PricePoint(41.8, day + 1))
+        assertEquals("41,20 – 41,80", rateRangeNote(moved))
     }
 }
