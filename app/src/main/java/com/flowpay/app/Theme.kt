@@ -5,7 +5,9 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -13,6 +15,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -146,6 +151,101 @@ object Type {
     val medium = FontWeight.SemiBold
     val strong = FontWeight.Bold
 }
+
+/**
+ * The app's own typeface, rather than whatever the phone happens to ship.
+ *
+ * Until this, FlowPay rendered in the system font — HyperOS's on this phone,
+ * Roboto on a Pixel, something else again on a Samsung. The app looked like a
+ * different app on every device and had no say at all in how its numerals lined
+ * up, which is the one thing a screen full of prices needs.
+ *
+ * **Inter**, and the binary was checked rather than the metadata. Plus Jakarta
+ * Sans advertises `cyrillic-ext` and ships a font with no Cyrillic outlines in it
+ * at all, so the only trustworthy answer comes from the file itself. Parsing the
+ * three files below: 248 codepoints in U+0400–04FF, every one of ґ є і ї with a
+ * real outline, ₴ present, the apostrophe reachable from both U+02BC and U+2019
+ * (both map to the same glyph), and `tnum` in GSUB — which [TabularFigures] needs.
+ *
+ * **Three static weights, not one variable file.** Variable axes do work at this
+ * app's floor: `Paint.setFontVariationSettings` arrived in API 26, and Compose's
+ * `setFontVariationSettings` is gated on `SDK_INT >= 26` and returns the typeface
+ * untouched below it. So the capability is there. It was declined anyway, because
+ * the way it fails is silent — an axis the file does not define is ignored, the
+ * boolean saying so is discarded, and the text simply renders at the font's
+ * default instance. Every title in the app would quietly stop being bold, and
+ * nothing would say why. The app asks for exactly three weights, so a variable
+ * axis buys no design freedom to pay for that risk. Static resource fonts are the
+ * oldest path in Android text and have no version gate at all.
+ *
+ * The files are subset to Latin-1, Cyrillic and the punctuation this app actually
+ * sets — 118 KB each, 355 KB in total, against 876 KB for Inter's full two-axis
+ * variable file. `opsz` is pinned to 14, its text optical size: the display sizes
+ * in [Type] already carry hand-tuned negative tracking, which is the part of an
+ * optical size that matters here.
+ *
+ * Licensed under the SIL Open Font License 1.1; the text is in `app/licenses/`.
+ */
+val Inter = FontFamily(
+    Font(R.font.inter_regular, FontWeight.Normal),
+    Font(R.font.inter_semibold, FontWeight.SemiBold),
+    Font(R.font.inter_bold, FontWeight.Bold)
+)
+
+/**
+ * The OpenType feature that makes every digit the same width.
+ *
+ * Proportional digits are drawn to look right inside a word: 1 is narrow, 0 is
+ * wide. That is correct in a sentence and wrong in a column, where "1 299 ₴" and
+ * "999 ₴" then fail to line up and the two-column wishlist grid reads as if it
+ * had been nudged. It is also why a figure counting up mid-animation makes the
+ * layout around it twitch — the string keeps changing width. Both are fixed here
+ * once, statically, with no motion involved.
+ *
+ * Applies to money and to figures. Not to prose: a date or a count inside a
+ * sentence wants the proportional digits the typeface was drawn with.
+ */
+const val TabularFigures = "tnum"
+
+/**
+ * The ambient text style with money digits locked to one width.
+ *
+ * Written as a copy of whatever style is already in force rather than as a style
+ * of its own, so a call site keeps its size, weight and colour and changes only
+ * the one thing: `Text(money(x), style = Tabular)`.
+ */
+val Tabular: TextStyle
+    @Composable get() = LocalTextStyle.current.copy(fontFeatureSettings = TabularFigures)
+
+/**
+ * Material's scale, in the app's typeface.
+ *
+ * Every role is respelled rather than a few, because the ones left out are exactly
+ * the ones that surface later: a Button's label, a Snackbar, the text inside a
+ * dialog. One of those still rendering in the system font is the sort of thing
+ * nobody sees until it ships.
+ */
+private fun typographyIn(family: FontFamily): Typography = Typography().run {
+    Typography(
+        displayLarge = displayLarge.copy(fontFamily = family),
+        displayMedium = displayMedium.copy(fontFamily = family),
+        displaySmall = displaySmall.copy(fontFamily = family),
+        headlineLarge = headlineLarge.copy(fontFamily = family),
+        headlineMedium = headlineMedium.copy(fontFamily = family),
+        headlineSmall = headlineSmall.copy(fontFamily = family),
+        titleLarge = titleLarge.copy(fontFamily = family),
+        titleMedium = titleMedium.copy(fontFamily = family),
+        titleSmall = titleSmall.copy(fontFamily = family),
+        bodyLarge = bodyLarge.copy(fontFamily = family),
+        bodyMedium = bodyMedium.copy(fontFamily = family),
+        bodySmall = bodySmall.copy(fontFamily = family),
+        labelLarge = labelLarge.copy(fontFamily = family),
+        labelMedium = labelMedium.copy(fontFamily = family),
+        labelSmall = labelSmall.copy(fontFamily = family)
+    )
+}
+
+private val FlowPayTypography = typographyIn(Inter)
 
 /**
  * The scheme names every role the app touches.
@@ -289,6 +389,10 @@ object Motion {
 @Composable
 fun FlowPayTheme(content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalReducedMotion provides systemReducedMotion()) {
-        MaterialTheme(colorScheme = FlowPayColors, content = content)
+        MaterialTheme(
+            colorScheme = FlowPayColors,
+            typography = FlowPayTypography,
+            content = content
+        )
     }
 }
