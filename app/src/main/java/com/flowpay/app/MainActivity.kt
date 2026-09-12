@@ -239,7 +239,21 @@ data class Pay(
      * you signed up. The expense is real from the day it is added — it belongs on
      * the list and on the calendar — but it takes nothing until this day comes.
      */
-    val trialEnd: Long = 0L
+    val trialEnd: Long = 0L,
+    /**
+     * Month of the year an annual charge lands in, 1..12. Zero means every month.
+     *
+     * One field rather than a period enum with an anchor beside it, because those
+     * two can disagree — "раз на рік" with no month is a state nothing could
+     * render — and this app has exactly two rhythms to tell apart. Zero is what
+     * every expense already on the phone reads as, and that is the truth about
+     * all of them: nothing here could express an annual charge before now.
+     *
+     * The blind spot it closes: an annual subscription charges once in twelve
+     * months, so every "наступні 30 днів" view hid it eleven months out of twelve
+     * while [yearlyCost] quietly multiplied it by twelve on top.
+     */
+    val billingMonth: Int = 0
 )
 data class Order(
     val id: String,
@@ -792,9 +806,11 @@ fun amountsOf(array: JSONArray?): List<PricePoint> {
 fun payJson(pay: Pay): JSONObject = JSONObject()
     .put("n", pay.name).put("a", pay.amount).put("d", pay.day)
     .put("cur", pay.currency).put("wd", pay.warnDays)
-    // Both of these have to travel, or the bin restores a subscription that has
-    // forgotten it was ever cheaper and a backup imports a trial as a live charge.
+    // All three have to travel, or the bin restores a subscription that has
+    // forgotten it was ever cheaper, a backup imports a trial as a live charge,
+    // and an annual domain fee comes back as a monthly one twelve times the size.
     .put("am", amountsJson(pay.amounts)).put("te", pay.trialEnd)
+    .put("bm", pay.billingMonth)
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
@@ -809,7 +825,12 @@ fun payOf(o: JSONObject): Pay = Pay(
     // is the truth: nothing was watching what it used to cost.
     amountsOf(o.optJSONArray("am")),
     // Nought is no trial, which is what every expense on the phone already is.
-    o.optLong("te", 0L)
+    o.optLong("te", 0L),
+    // Nought is "every month", which is what every expense saved before this
+    // genuinely was — there was no other rhythm to save. Anything outside 1..12
+    // is read the same way rather than trusted, since a month of 13 would put a
+    // charge on a date [LocalDate] refuses to build.
+    o.optInt("bm", 0).takeIf { it in 1..MONTHS_IN_YEAR } ?: 0
 )
 
 fun orderJson(order: Order): JSONObject = JSONObject()
@@ -4029,8 +4050,13 @@ fun PaymentsScreen(
                                         // looks at the trial: what a year of this costs is
                                         // what signing up commits you to, and a free month
                                         // does not change it.
+                                        //
+                                        // An annual charge says both denominators instead,
+                                        // because either alone misleads — and it says the
+                                        // rhythm between them, so the smoothed one can
+                                        // never be mistaken for cash.
                                         Text(
-                                            annualLabel(pay),
+                                            billingLine(pay),
                                             color = TextSecondary,
                                             fontSize = Type.captionSize,
                                             maxLines = 1,
@@ -4090,6 +4116,81 @@ fun PaymentsScreen(
                     }
                 }
             }
+            // The annual blind spot, given a place to be visible from.
+            //
+            // A charge that happens once in twelve months is off the timeline for
+            // eleven of them, and until this section existed that meant off the
+            // screen entirely — the quietest way a subscription tracker can lie.
+            // They are listed at their real amounts on their real dates rather
+            // than averaged into the monthly total, because an averaged figure in
+            // the month the charge actually lands shows a month that fits when it
+            // does not.
+            val dormant = annualElsewhere(items, today)
+            if (dormant.isNotEmpty()) {
+                item(key = "annual-elsewhere") {
+                    Column(
+                        Modifier
+                            .padding(horizontal = Space.screen)
+                            .padding(top = Space.xl, bottom = Space.sm)
+                    ) {
+                        SectionTitle("Раз на рік")
+                        annualElsewhereNote(items, today, rate.sell)?.let { note ->
+                            Text(
+                                note,
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                        }
+                    }
+                }
+                items(dormant, key = { "annual-${it.name}-${it.billingMonth}-${it.day}" }) { pay ->
+                    Card(
+                        Modifier
+                            .padding(horizontal = Space.screen, vertical = Space.xs)
+                            .fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+                        shape = Radius.md
+                    ) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { editing = items.indexOf(pay) }
+                                .padding(Space.lg),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconChip(payIcon(pay.name))
+                            Spacer(Modifier.width(Space.md))
+                            Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                Text(
+                                    pay.name,
+                                    fontSize = Type.cardTitleSize,
+                                    fontWeight = Type.medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    annualDueLine(pay, today),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            // The smoothed figure, and only ever here beside the
+                            // real one above it.
+                            Text(
+                                "≈${amountLabel(
+                                    kotlin.math.round(monthlyEquivalent(pay)),
+                                    pay.currency
+                                )}/міс",
+                                color = TextDisabled,
+                                fontSize = Type.captionSize
+                            )
+                        }
+                    }
+                }
+            }
         }
         CollapsingTitle("Постійні витрати", listState)
     }
@@ -4142,6 +4243,7 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var currency by remember { mutableStateOf(UAH) }
     var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
     var trialEnd by remember { mutableLongStateOf(0L) }
+    var billingMonth by remember { mutableIntStateOf(0) }
     val today = remember { LocalDate.now() }
     FormSheet(
         title = "Нова постійна витрата",
@@ -4160,7 +4262,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
                         // here can later say when its old price started; one seeded
                         // at the first edit instead can only say that it did.
                         listOf(PricePoint(value, today.toEpochDay())),
-                        trialEnd
+                        trialEnd,
+                        billingMonth
                     )
                 )
             }
@@ -4181,9 +4284,11 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
         )
         CurrencySegments(currency) { currency = it }
         NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
+        BillingSegments(billingMonth, today) { billingMonth = it }
         NumberField("День оплати", day) { day = it }
         TrialField(trialEnd, today) { trialEnd = it }
-        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today)?.let { note ->
+        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today, billingMonth)
+            ?.let { note ->
             Text(
                 note,
                 Modifier.padding(top = Space.xs),
@@ -5389,6 +5494,7 @@ fun EditPaymentSheet(
     var currency by remember { mutableStateOf(pay.currency) }
     var warnDays by remember { mutableIntStateOf(pay.warnDays) }
     var trialEnd by remember { mutableLongStateOf(pay.trialEnd) }
+    var billingMonth by remember { mutableIntStateOf(pay.billingMonth) }
     val today = remember { LocalDate.now() }
     FormSheet(
         title = "Змінити витрату",
@@ -5406,7 +5512,8 @@ fun EditPaymentSheet(
                         name = name.trim().ifBlank { pay.name },
                         day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
                         warnDays = warnDays,
-                        trialEnd = trialEnd
+                        trialEnd = trialEnd,
+                        billingMonth = billingMonth
                     )
                 )
             }
@@ -5434,10 +5541,16 @@ fun EditPaymentSheet(
                 lineHeight = Type.captionLine
             )
         }
+        BillingSegments(billingMonth, today) { billingMonth = it }
         NumberField("День оплати", day) { day = it }
         TrialField(trialEnd, today) { trialEnd = it }
         // The reminder counts to this date, not to the free renewal before it.
-        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day, trialEnd, today)
+        firstChargeNote(
+            day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+            trialEnd,
+            today,
+            billingMonth
+        )
             ?.let { note ->
                 Text(
                     note,
@@ -5736,6 +5849,46 @@ fun CurrencySegments(currency: String, set: (String) -> Unit) {
         selected = if (currency == USD) 1 else 0,
         modifier = Modifier.padding(top = Space.md)
     ) { index -> set(if (index == 1) USD else UAH) }
+}
+
+/**
+ * Picks how often an expense is charged, and when the annual one lands.
+ *
+ * The month only appears once "раз на рік" is chosen, because an annual charge
+ * without a month is not a thing the app could put on a calendar — which is why
+ * the rhythm and the month are one field on [Pay] rather than two that can
+ * disagree. Switching back to monthly clears it, so nothing keeps a stale March.
+ */
+@Composable
+fun BillingSegments(billingMonth: Int, today: LocalDate, set: (Int) -> Unit) {
+    val annual = billingMonth in 1..MONTHS_IN_YEAR
+    Column(Modifier.fillMaxWidth()) {
+        SegmentedControl(
+            options = listOf("Щомісяця", "Раз на рік"),
+            selected = if (annual) 1 else 0,
+            modifier = Modifier.padding(top = Space.md)
+        ) { index -> set(if (index == 1) billingMonth.takeIf { annual } ?: today.monthValue else 0) }
+        if (annual) {
+            Text(
+                "Місяць списання",
+                Modifier.padding(top = Space.md),
+                color = TextSecondary,
+                fontSize = Type.captionSize
+            )
+            LazyRow(
+                Modifier.padding(top = Space.xs),
+                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+            ) {
+                items((1..MONTHS_IN_YEAR).toList()) { month ->
+                    FilterChip(
+                        billingMonth == month,
+                        { set(month) },
+                        { Text(monthShort(month), fontSize = Type.captionSize) }
+                    )
+                }
+            }
+        }
+    }
 }
 
 /**

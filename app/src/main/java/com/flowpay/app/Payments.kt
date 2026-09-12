@@ -63,9 +63,16 @@ fun trialsRunning(items: List<Pay>, today: LocalDate): List<Pay> =
  * feature addresses is signing up in September and being charged in October with
  * nothing in between having mentioned October.
  */
-fun firstChargeNote(day: Int, trialEnd: Long, today: LocalDate): String? {
+fun firstChargeNote(day: Int, trialEnd: Long, today: LocalDate, billingMonth: Int = 0): String? {
     if (trialEnd <= 0L) return null
-    val charge = nextCharge(Pay("", 0.0, day, trialEnd = trialEnd), today)
+    // The rhythm has to come along. A trial on an annual fee ends in October and
+    // the first charge is the following March, and a note built as though the
+    // expense were monthly would name October — the very date the free period
+    // exists to hide.
+    val charge = nextCharge(
+        Pay("", 0.0, day, trialEnd = trialEnd, billingMonth = billingMonth),
+        today
+    )
     return "Перше списання ${dayMonth(charge)}"
 }
 
@@ -90,11 +97,34 @@ fun trialLabel(pay: Pay, today: LocalDate): String? =
  * would have let each of those keep compiling while quietly overstating the month
  * by the price of a subscription that is not being charged yet.
  */
-fun monthlyTotal(items: List<Pay>, usdSellRate: Double, today: LocalDate): MonthlyTotal {
-    val day = today.toEpochDay()
-    val billed = items.map { it.copy(amount = chargedAmount(it, day)) }
-    val uah = billed.filter { it.currency != USD }.sumOf { it.amount }
-    val usd = billed.filter { it.currency == USD }.sumOf { it.amount }
+fun monthlyTotal(
+    items: List<Pay>,
+    usdSellRate: Double,
+    today: LocalDate,
+    /**
+     * The month being added up, which is not always this one.
+     *
+     * Defaulted to [today], so every caller that means "this month" says nothing.
+     * The record of a past month needs the other answer: an annual fee charged in
+     * March belongs in March's figures and nowhere else.
+     */
+    forMonth: LocalDate = today
+): MonthlyTotal =
+    totalOf(items.map { it.currency to monthCharge(it, forMonth, today) }, usdSellRate)
+
+/**
+ * Two currencies added into one figure, without ever pretending the dollars
+ * converted.
+ *
+ * Shared by the monthly and the yearly total so that the rules about a missing
+ * rate are written once. The yearly figure used to be the monthly one multiplied
+ * by twelve, which stopped being true the moment an expense could be charged
+ * annually — twelve times a charge that happens once is the exact overstatement
+ * this whole change exists to remove.
+ */
+private fun totalOf(entries: List<Pair<String, Double>>, usdSellRate: Double): MonthlyTotal {
+    val uah = entries.filter { it.first != USD }.sumOf { it.second }
+    val usd = entries.filter { it.first == USD }.sumOf { it.second }
     val rate = usdSellRate.coerceAtLeast(0.0)
     val hasUsd = usd > 0.0
     val convertible = hasUsd && rate > 0.0
@@ -109,31 +139,147 @@ fun monthlyTotal(items: List<Pay>, usdSellRate: Double, today: LocalDate): Month
     )
 }
 
-/** A recurring cost is charged this many times a year. */
+/** A monthly cost is charged this many times a year. */
 const val MONTHS_IN_YEAR = 12
 
+/**
+ * Days in a year, for the one place a period has to be normalised away.
+ *
+ * A quarter of a day per year, because a fee paid every 29 February would
+ * otherwise drift. It changes a per-day figure by less than a hundredth of a
+ * hryvnia, and it is the reason [perDay] is never shown to anyone: it is the
+ * internal common denominator, and the screen always states a real period.
+ */
+const val DAYS_IN_YEAR = 365.25
+
+// ------------------------------------------------------------ once a year
+
+/**
+ * Whether this is charged once a year rather than every month.
+ *
+ * The whole period is one field, so this is the only question anything has to ask.
+ */
+fun isAnnual(pay: Pay): Boolean = pay.billingMonth in 1..MONTHS_IN_YEAR
+
+/** Whether a charge from this expense lands in the month [month] falls in. */
+fun chargesIn(pay: Pay, month: LocalDate): Boolean =
+    !isAnnual(pay) || pay.billingMonth == month.monthValue
+
+/**
+ * What this expense actually takes out of the month [month] falls in.
+ *
+ * The cash figure, not a smoothed one. A competitor shipped the averaged version
+ * and reverted it in public, because in the month a ₴1 200 annual fee really
+ * lands an averaged ₴100 shows a month that fits when it does not. So an annual
+ * charge is its whole self in its own month and nothing at all in the other
+ * eleven, and the eleven are covered by saying where it went rather than by
+ * spreading it thin.
+ */
+fun monthCharge(pay: Pay, month: LocalDate, today: LocalDate): Double = when {
+    onTrial(pay, today.toEpochDay()) -> 0.0
+    chargesIn(pay, month) -> pay.amount
+    else -> 0.0
+}
+
+/**
+ * The same cost per day, which is the only honest way to compare two rhythms.
+ *
+ * Internal on purpose. Every app that has solved this normalises to a day and
+ * then states whichever period is being displayed; none of them puts the daily
+ * figure on screen, because nobody pays for a subscription by the day.
+ */
+fun perDay(pay: Pay): Double = yearlyCost(pay) / DAYS_IN_YEAR
+
+/**
+ * What an annual charge works out at per month, for the row's second denominator.
+ *
+ * Never a substitute for [monthCharge]. It is there so both denominators can be
+ * shown at once — "₴1 200 · раз на рік · ≈₴100/міс" — and the smoothed one never
+ * appears on its own, where it would read as cash.
+ */
+fun monthlyEquivalent(pay: Pay): Double = yearlyCost(pay) / MONTHS_IN_YEAR
+
 /** What one recurring expense costs in a year, in the currency it was entered in. */
-fun yearlyCost(pay: Pay): Double = pay.amount * MONTHS_IN_YEAR
+fun yearlyCost(pay: Pay): Double =
+    if (isAnnual(pay)) pay.amount else pay.amount * MONTHS_IN_YEAR
+
+/** What this expense takes over the coming year. Nought while it is still free. */
+fun yearlyCharge(pay: Pay, today: LocalDate): Double =
+    if (onTrial(pay, today.toEpochDay())) 0.0 else yearlyCost(pay)
 
 /**
  * A year of the same standing costs.
  *
  * The figure that changes minds: 400 ₴ a month is a rounding error and 4 800 ₴ a
- * year is a decision. Built from [monthlyTotal] so a missing rate stays missing
- * rather than being quietly multiplied into a smaller number twelve times over.
+ * year is a decision. Built per expense rather than from twelve times the month,
+ * so an annual fee counts once and a missing rate stays missing.
  */
-fun yearlyTotal(items: List<Pay>, usdSellRate: Double, today: LocalDate): MonthlyTotal {
-    val monthly = monthlyTotal(items, usdSellRate, today)
-    return monthly.copy(
-        uah = monthly.uah * MONTHS_IN_YEAR,
-        usd = monthly.usd * MONTHS_IN_YEAR,
-        usdInUah = monthly.usdInUah * MONTHS_IN_YEAR,
-        total = monthly.total * MONTHS_IN_YEAR
-    )
-}
+fun yearlyTotal(items: List<Pay>, usdSellRate: Double, today: LocalDate): MonthlyTotal =
+    totalOf(items.map { it.currency to yearlyCharge(it, today) }, usdSellRate)
 
 /** "36 000 ₴ на рік" — one expense's annual cost, in its own currency. */
 fun annualLabel(pay: Pay): String = "${amountLabel(yearlyCost(pay), pay.currency)} на рік"
+
+/**
+ * The caption under an expense's name.
+ *
+ * A monthly expense gets the figure that changes minds, which is the year. An
+ * annual one gets both denominators at once, because either alone misleads: the
+ * yearly figure hides that nothing is taken this month, and the monthly one is
+ * not a sum anybody is ever charged. Naming the rhythm between them is what stops
+ * the smoothed figure being read as cash.
+ */
+fun billingLine(pay: Pay): String =
+    if (isAnnual(pay)) {
+        "раз на рік · ≈${amountLabel(kotlin.math.round(monthlyEquivalent(pay)), pay.currency)}/міс"
+    } else {
+        annualLabel(pay)
+    }
+
+/**
+ * How far ahead the timeline reaches.
+ *
+ * A month and a day, which is exactly what every monthly expense already fits
+ * into: whatever day of the month it falls on, its next occurrence is inside this
+ * window. So the number changes nothing about the screen as it was, and gives the
+ * annual charges a line to be on the far side of.
+ */
+const val TIMELINE_DAYS = 31
+
+/** Days from today until this expense next comes round, charged or free. */
+fun daysUntilDue(pay: Pay, today: LocalDate): Int =
+    java.time.temporal.ChronoUnit.DAYS.between(today, nextDateFor(pay, today)).toInt()
+
+/**
+ * The annual expenses too far off to be on the timeline.
+ *
+ * The eleven months in which they are invisible are the whole problem, so the
+ * screen gets a list of them rather than an average folded into a total. The exact
+ * complement of what [paymentGroups] shows, so nothing appears twice and nothing
+ * falls between the two. Ordered by the date each one comes round, which is the
+ * order they stop being hypothetical in.
+ */
+fun annualElsewhere(items: List<Pay>, today: LocalDate): List<Pay> =
+    items.filter { isAnnual(it) && daysUntilDue(it, today) > TIMELINE_DAYS }
+        .sortedBy { daysUntilDue(it, today) }
+
+/** "14 березня · 1 200 ₴" — one dormant annual charge, said in a row's worth of line. */
+fun annualDueLine(pay: Pay, today: LocalDate): String =
+    "${dayMonth(nextDateFor(pay, today))} · ${amountLabel(pay.amount, pay.currency)}"
+
+/**
+ * What the dormant annual charges add up to, said without a denominator.
+ *
+ * "3 400 ₴ протягом року" rather than a monthly share of it: the point of the
+ * section is that these are real charges on real dates, and dividing them by
+ * twelve here would undo the whole of it.
+ */
+fun annualElsewhereNote(items: List<Pay>, today: LocalDate, usdSellRate: Double): String? {
+    val dormant = annualElsewhere(items, today)
+    if (dormant.isEmpty()) return null
+    val total = totalOf(dormant.map { it.currency to it.amount }, usdSellRate)
+    return "Цього місяця не списуються · ${totalLabel(total)} протягом року"
+}
 
 /**
  * A year of these expenses once every running trial has ended.
@@ -379,7 +525,12 @@ fun effectivePaymentDay(day: Int, monthLength: Int): Int = day.coerceIn(1, month
 /** Payments falling due on exactly this date, whether or not money moves. */
 fun paymentsDueOn(items: List<Pay>, date: LocalDate): List<Pay> {
     val monthLength = date.lengthOfMonth()
-    return items.filter { effectivePaymentDay(it.day, monthLength) == date.dayOfMonth }
+    return items.filter {
+        // The month has to match before the day does. Without this an annual
+        // domain fee due on the 14th of March appeared on the 14th of every
+        // month — the opposite failure to the one hiding it, and just as wrong.
+        chargesIn(it, date) && effectivePaymentDay(it.day, monthLength) == date.dayOfMonth
+    }
 }
 
 /**
@@ -408,29 +559,23 @@ data class NextPayment(
 )
 
 /**
- * How far ahead the search for the next real charge looks.
+ * The next date money actually leaves, and everything leaving with it.
  *
- * A month and a day used to be enough to find the next occurrence of any day
- * number, including the 31st landing on the 30th of a short month. A trial breaks
- * that: a subscription free until March has no charge in the next thirty-one days,
- * and stopping there would report it as no charge at all — the free-month
- * blindness this exists to fix, reintroduced one function along. A year and a
- * month covers the longest trial anyone offers and still terminates.
+ * Asked of each expense rather than searched for by walking forward a day at a
+ * time. The walk had a ceiling — a year and a month, enough for any trial — and
+ * an annual charge with a trial behind it can sit further out than that, at which
+ * point the panel reported no charge at all. [nextCharge] answers outright and
+ * has no ceiling to outgrow.
  */
-private const val CHARGE_SEARCH_DAYS = 396
-
 fun nextPayment(items: List<Pay>, today: LocalDate, usdSellRate: Double): NextPayment? {
     if (items.isEmpty()) return null
-    for (offset in 0..CHARGE_SEARCH_DAYS) {
-        val date = today.plusDays(offset.toLong())
-        // Charged rather than merely due: this panel says when money next leaves,
-        // and during a trial the next renewal is not a day money leaves.
-        val due = chargedOn(items, date)
-        if (due.isNotEmpty()) {
-            return NextPayment(date, offset, due, monthlyTotal(due, usdSellRate, date))
-        }
-    }
-    return null
+    // Charged rather than merely due: this panel says when money next leaves,
+    // and during a trial the next renewal is not a day money leaves.
+    val dates = items.associateWith { nextCharge(it, today) }
+    val date = dates.values.minOrNull() ?: return null
+    val due = items.filter { dates[it] == date }
+    val daysAway = java.time.temporal.ChronoUnit.DAYS.between(today, date).toInt()
+    return NextPayment(date, daysAway.coerceAtLeast(0), due, monthlyTotal(due, usdSellRate, date))
 }
 
 /** Ukrainian plural for how many payments fall together. */
@@ -475,16 +620,41 @@ data class PaymentGroup(val date: LocalDate, val positions: List<Int>)
 
 fun paymentGroups(items: List<Pay>, today: LocalDate): List<PaymentGroup> =
     items.indices
+        // A timeline of dates stops being one at eleven months out. A monthly
+        // expense always falls inside the window, so this only ever removes an
+        // annual charge that is not due — and [annualElsewhere] is where it goes,
+        // rather than nowhere, which is what used to happen to it.
+        .filter { daysUntilDue(items[it], today) <= TIMELINE_DAYS }
         .groupBy { nextDateFor(items[it], today) }
         .toSortedMap()
         .map { (date, positions) -> PaymentGroup(date, positions) }
 
-/** The next time this expense comes round, this month or next. */
+/**
+ * The next time this expense comes round: this month or next, this year or next.
+ *
+ * An annual charge recurs on one date a year, so the search is the same one a
+ * month wider. The day is still clamped to the month's length, because the 31st
+ * of a February fee has to land somewhere real.
+ */
 private fun nextDateFor(pay: Pay, today: LocalDate): LocalDate {
+    if (isAnnual(pay)) {
+        val thisYear = chargeDate(today.year, pay.billingMonth, pay.day)
+        return if (!thisYear.isBefore(today)) {
+            thisYear
+        } else {
+            chargeDate(today.year + 1, pay.billingMonth, pay.day)
+        }
+    }
     val thisMonth = effectivePaymentDay(pay.day, today.lengthOfMonth())
     if (thisMonth >= today.dayOfMonth) return today.withDayOfMonth(thisMonth)
     val next = today.plusMonths(1)
     return next.withDayOfMonth(effectivePaymentDay(pay.day, next.lengthOfMonth()))
+}
+
+/** A day-of-month in a named month, clamped to a date that exists. */
+private fun chargeDate(year: Int, month: Int, day: Int): LocalDate {
+    val first = LocalDate.of(year, month.coerceIn(1, MONTHS_IN_YEAR), 1)
+    return first.withDayOfMonth(effectivePaymentDay(day, first.lengthOfMonth()))
 }
 
 /**
@@ -860,6 +1030,24 @@ private val MONTHS_NOMINATIVE = listOf(
     "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"
 )
 
+/**
+ * Month names cut to three letters, for a row of twelve chips.
+ *
+ * Written out rather than taken from the first three characters of the names
+ * above: "лют" and "лип" survive that, but a rule that happens to work on this
+ * alphabet is a rule nobody can check at a glance.
+ */
+private val MONTHS_SHORT = listOf(
+    "січ", "лют", "бер", "кві", "тра", "чер",
+    "лип", "сер", "вер", "жов", "лис", "гру"
+)
+
+/** "березень" — a month by its number, for anything that names one. */
+fun monthName(month: Int): String = MONTHS_NOMINATIVE[(month - 1).coerceIn(0, 11)]
+
+/** "бер" — the same month in the width a chip has. */
+fun monthShort(month: Int): String = MONTHS_SHORT[(month - 1).coerceIn(0, 11)]
+
 /** "Серпень 2026", the form a month takes as a heading. */
 fun monthTitle(key: String): String {
     val date = monthKeyDate(key) ?: return key
@@ -977,8 +1165,13 @@ fun monthRecord(
         usdSellRate,
         today
     )
-    val planned = monthlyTotal(pays, usdSellRate, today)
-    val settled = pays.all { isPaid(marks, it.name, month) }
+    // The month in question, so an annual fee counts in its own month and in no
+    // other. Without it a March domain fee sat in every month's plan, and eleven
+    // of those months read as unpaid for a charge that never happened in them.
+    val monthStart = monthKeyDate(month) ?: today
+    val due = pays.filter { chargesIn(it, monthStart) }
+    val planned = monthlyTotal(pays, usdSellRate, today, monthStart)
+    val settled = due.all { isPaid(marks, it.name, month) }
     return MonthRecord(
         month = month,
         title = monthTitle(month),
@@ -986,9 +1179,9 @@ fun monthRecord(
         planned = planned,
         gap = (planned.total - paid.total).coerceAtLeast(0.0),
         paidCount = forMonth.size,
-        plannedCount = pays.size,
+        plannedCount = due.size,
         state = when {
-            pays.isEmpty() && forMonth.isEmpty() -> MonthState.NOTHING_DUE
+            due.isEmpty() && forMonth.isEmpty() -> MonthState.NOTHING_DUE
             settled -> MonthState.SETTLED
             month >= monthKey(today) -> MonthState.RUNNING
             forMonth.isEmpty() -> MonthState.UNRECORDED
