@@ -69,22 +69,30 @@ val TextDisabled = Color(0xff5c5f56)
  * mitigations are to desaturate the colour where it carries large text, and to
  * keep the thinnest weights off the darkest surfaces.
  *
- * Neither is applied here, on the evidence rather than by omission:
+ * Neither is applied *to text*, on the evidence rather than by omission:
  *
- * Every piece of lime *text* in the app is 11sp or 13sp — overline kickers, short
+ * Every piece of lime text in the app is 11sp or 13sp — overline kickers, short
  * labels, a percentage. There is no large lime text area to desaturate. Where the
  * lime is large it is a fill with [AccentInk] on top of it — the hero panel, the
  * action button, a selected chip — and that is dark-on-light, the inverse case,
- * which does not halate at all. Splitting the accent into a reading lime and a
- * filling lime to serve a handful of captions would put two nearly identical
- * greens in a palette whose whole argument is that nearly identical values read
- * as carelessness rather than as a decision.
+ * which does not halate at all. Hand-picking a second, slightly calmer lime for a
+ * handful of captions would put two nearly identical greens in a palette whose
+ * whole argument is that nearly identical values read as carelessness rather than
+ * as a decision.
  *
  * The weight mitigation is already structural: [Type] offers three weights and
  * the lightest is Normal. Nothing thinner exists to misuse. That got better
  * rather than worse with [Inter] — until the app had a typeface of its own, what
  * "Normal" actually weighed was whatever the phone decided, and the system font
  * on this one is noticeably lighter than Inter's Regular.
+ *
+ * **Thin strokes are the other half of this, and they are treated.** A letter at
+ * 11sp has more ink in it than a two-pixel chart line, and the line is the case
+ * that buzzes worst. `ChartInk` in Components.kt therefore draws with the accent
+ * mixed a quarter of the way towards its own grey. That is not the second lime
+ * this note argues against: it is *derived* from this one by a named function, so
+ * there is still exactly one accent and one rule for calming it, and it is
+ * applied to strokes rather than to type.
  *
  * Revisit this if lime ever carries a sentence at [Type.bodySize] or above.
  */

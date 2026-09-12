@@ -578,7 +578,8 @@ fun PriceChart(
                 fontSize = Type.overlineSize,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
+                style = Tabular
             )
             drawn.getOrNull(selected)?.let { point ->
                 Spacer(Modifier.width(Space.sm))
@@ -591,7 +592,13 @@ fun PriceChart(
                     color = TextPrimary,
                     fontSize = Type.captionSize,
                     fontWeight = Type.medium,
-                    maxLines = 1
+                    maxLines = 1,
+                    // The read-out is rebuilt on every reading the finger crosses.
+                    // On proportional digits its width changes with the value, and
+                    // because it shares a row with a weighted label, that resizes
+                    // the label and moves its ellipsis — the whole row breathing
+                    // in time with the scrub. Equal-width digits hold it still.
+                    style = Tabular
                 )
             }
         }
@@ -681,9 +688,19 @@ fun PriceRangeBar(
         if (labels && !geometry.single) {
             Spacer(Modifier.height(Space.xs))
             Row(Modifier.fillMaxWidth()) {
-                Text(format(insight.lowest), color = TextDisabled, fontSize = Type.overlineSize)
+                Text(
+                    format(insight.lowest),
+                    color = TextDisabled,
+                    fontSize = Type.overlineSize,
+                    style = Tabular
+                )
                 Spacer(Modifier.weight(1f))
-                Text(format(insight.highest), color = TextDisabled, fontSize = Type.overlineSize)
+                Text(
+                    format(insight.highest),
+                    color = TextDisabled,
+                    fontSize = Type.overlineSize,
+                    style = Tabular
+                )
             }
         }
     }
