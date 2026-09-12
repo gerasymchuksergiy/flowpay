@@ -506,6 +506,28 @@ fun wantedLabel(wish: Wish, today: Long): String? {
     }
 }
 
+// ------------------------------------------------------------- reaching a price
+
+/**
+ * The price you named has been reached, and the reading that says so is current.
+ *
+ * One definition, because three different parts of the app act on this fact and
+ * they must not be able to disagree about it: the status pill announces it, the
+ * card changes shape for it, and the phone marks the moment it happens under your
+ * hand. Two of those reading the price one way and the third another would show a
+ * card wearing the shape of news the bar above it is not reporting.
+ *
+ * The freshness clause is the load-bearing half. A wish whose page stopped
+ * answering keeps its last price, so without it a thing that dipped under its
+ * target once, months ago, would sit in the reached state for ever — and a state
+ * nothing ever leaves is not information.
+ */
+fun targetHit(wish: Wish, today: Long): Boolean =
+    wish.targetPrice > 0.0 &&
+        wish.price > 0.0 &&
+        wish.price <= wish.targetPrice &&
+        wish.checkedDay >= today - TARGET_FRESH_DAYS
+
 // ------------------------------------------------------------ deliberate holds
 
 /** Put aside on purpose, and not due back yet: collapsed on the list and silent. */

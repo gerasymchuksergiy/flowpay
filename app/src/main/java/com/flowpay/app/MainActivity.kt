@@ -32,12 +32,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -1738,6 +1736,7 @@ fun WishlistScreen(
     // Which chip is down. Null is "Усі", and it is also where a category goes when
     // its last wish is renamed or deleted out from under the selection.
     var chosenCategory by remember { mutableStateOf<String?>(null) }
+    val touch = rememberTouch()
     val scope = rememberCoroutineScope()
     // Read once, so a session that crosses midnight cannot change its mind about
     // which wishes are still on hold halfway down the list.
@@ -1803,8 +1802,18 @@ fun WishlistScreen(
                                 refreshing = true
                                 val day = LocalDate.now().toEpochDay()
                                 val rate = store.fxRate().first
+                                val before = items.count { targetHit(it, day) }
                                 val fetched = items.map { refreshed(it, day, rate) }
                                 val result = applyFollowed(items, fetched)
+                                // One tick if this pass brought something to the
+                                // price you named — not one per wish. The count is
+                                // compared rather than the list, because what is
+                                // being reported is that the pass produced news at
+                                // all; which item it was is on the grid a moment
+                                // later, and the pill above it.
+                                if (result.wishes.count { targetHit(it, day) } > before) {
+                                    touch.landed()
+                                }
                                 save(result.wishes)
                                 refreshing = false
                                 message = listOfNotNull(
@@ -2165,10 +2174,15 @@ fun AddWishSheet(
     // fetch it a second time and cannot land on a different version of it.
     var page by remember { mutableStateOf<String?>(null) }
     var offers by remember { mutableStateOf(emptyList<Offer>()) }
+    val touch = rememberTouch()
     val scope = rememberCoroutineScope()
 
     fun finish(offer: Offer) {
         val html = page ?: return
+        // Both ways into the list come through here — the page with one price, and
+        // the card tapped when it had several — so the tick belongs here rather
+        // than at either call site, where one of them would have been forgotten.
+        touch.landed()
         add(
             wishFromOffer(
                 html,
@@ -2211,6 +2225,11 @@ fun AddWishSheet(
                         }
                     }
                     .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                // Whichever way it failed — no price on the page, money with no
+                // rate, or no page at all. The error text says which; this says
+                // that the link you pasted did not become a wish, which is what
+                // you were waiting to find out with the phone in your hand.
+                if (error != null) touch.refused()
                 loading = false
             }
         },
@@ -2275,6 +2294,7 @@ fun EditWishSheet(
     var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
     var category by remember { mutableStateOf(wish.category) }
     var price by remember { mutableStateOf(amountText(wish.price)) }
+    val touch = rememberTouch()
     val today = remember { LocalDate.now().toEpochDay() }
     FormSheet(
         title = "Редагувати товар",
@@ -2295,6 +2315,7 @@ fun EditWishSheet(
             } else {
                 wish
             }
+            touch.landed()
             save(
                 priced.copy(
                     name = name.ifBlank { wish.name },
@@ -2582,7 +2603,12 @@ fun SharedTransitionScope.WishDetailScreen(
     // the two rebased against the rate. Hryvnia until asked otherwise — the other
     // two answer a question, and a chart that opens on one is answering a question
     // nobody asked.
+    //
+    // No haptic on changing it. Picking one of three views is a selection, not a
+    // switch, and ToggleOn/ToggleOff would be claiming a two-state answer for a
+    // control that has three — the same reason the delivery rail says nothing.
     var chartView by remember(wish.id) { mutableIntStateOf(CHART_HRYVNIA) }
+    val touch = rememberTouch()
     val scope = rememberCoroutineScope()
     val store = remember(context) { Store(context) }
 
@@ -2767,7 +2793,10 @@ fun SharedTransitionScope.WishDetailScreen(
                 wish = wish,
                 today = today,
                 onPick = { pickingHold = true },
-                onRelease = { onChange(wish.copy(holdUntil = 0L)) }
+                onRelease = {
+                    touch.switched(false)
+                    onChange(wish.copy(holdUntil = 0L))
+                }
             )
 
             // Where the price comes from. Shown even for one shop, because that is
@@ -3211,6 +3240,18 @@ fun SharedTransitionScope.WishDetailScreen(
                                         refreshed(wish, today.toEpochDay(), store.fxRate().first)
                                 ) {
                                     is Reading.Priced -> {
+                                        // The one moment on this screen worth a
+                                        // haptic: you asked, and the price you were
+                                        // waiting for is the answer. Only on the
+                                        // crossing — a price already under its
+                                        // target before the tap is not news, and
+                                        // buzzing for it would make every refresh
+                                        // of a reached wish feel like an event.
+                                        if (targetHit(reading.wish, today.toEpochDay()) &&
+                                            !targetHit(wish, today.toEpochDay())
+                                        ) {
+                                            touch.landed()
+                                        }
                                         onChange(reading.wish)
                                         message = "Ціну оновлено"
                                     }
@@ -3220,7 +3261,15 @@ fun SharedTransitionScope.WishDetailScreen(
                                         onChange(reading.wish)
                                         message = freshnessNote(reading.wish.freshness)
                                     }
-                                    Reading.Failed -> message = "Не вдалося прочитати сторінку"
+                                    Reading.Failed -> {
+                                        // You asked and the network refused. This is
+                                        // the other half of the pair above, and it
+                                        // fires only because the refusal answers a
+                                        // tap: the background pass that reads the
+                                        // same page on a schedule stays silent.
+                                        touch.refused()
+                                        message = "Не вдалося прочитати сторінку"
+                                    }
                                 }
                                 refreshing = false
                             }
@@ -3314,6 +3363,10 @@ fun SharedTransitionScope.WishDetailScreen(
             confirmButton = {
                 TextButton({
                     state.selectedDateMillis?.let {
+                        // The hold going on, felt at the moment it does. Not on the
+                        // button that opened this dialog — that only asked until
+                        // when — and the matching answer comes when it is lifted.
+                        touch.switched(true)
                         onChange(wish.copy(holdUntil = it / millisPerDay))
                     }
                     pickingHold = false
@@ -3545,6 +3598,7 @@ fun SharedTransitionScope.WishCard(
 
 @Composable
 fun CalculatorScreen(store: Store) {
+    val touch = rememberTouch()
     var amount by remember { mutableStateOf("") }
     var hryvniaToDollar by remember { mutableStateOf(true) }
     var first by remember { mutableStateOf("") }
@@ -3561,7 +3615,13 @@ fun CalculatorScreen(store: Store) {
     var askingTarget by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    fun refresh() {
+    /**
+     * [asked] is what separates the refresh button from the one this screen runs
+     * for itself on open. Both set the same error text, but only the one you tapped
+     * is allowed to answer in the hand: a phone that shivers every time the rate
+     * tab is opened without a signal is reporting its own housekeeping.
+     */
+    fun refresh(asked: Boolean) {
         scope.launch {
             loading = true
             rateError = false
@@ -3581,6 +3641,7 @@ fun CalculatorScreen(store: Store) {
                     }
                 }
                 .onFailure { rateError = true }
+            if (rateError && asked) touch.refused()
             loading = false
         }
     }
@@ -3589,7 +3650,7 @@ fun CalculatorScreen(store: Store) {
     // refresh button always asks, which is what it is for.
     LaunchedEffect(Unit) {
         val age = System.currentTimeMillis() - fetchedAt
-        if (rate.sell <= 0 || age > 30 * 60 * 1000L) refresh()
+        if (rate.sell <= 0 || age > 30 * 60 * 1000L) refresh(asked = false)
     }
 
     val source = amount.replace(',', '.').toDoubleOrNull() ?: 0.0
@@ -3650,7 +3711,7 @@ fun CalculatorScreen(store: Store) {
                                         )
                                     }
                                 }
-                                IconButton({ refresh() }) {
+                                IconButton({ refresh(asked = true) }) {
                                     if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
                                     else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
                                 }
@@ -3659,7 +3720,15 @@ fun CalculatorScreen(store: Store) {
                             // Secondary action, so an outline rather than a second filled
                             // shape. The lime is spent on the one figure below.
                             OutlinedButton(
-                                { hryvniaToDollar = !hryvniaToDollar },
+                                {
+                                    // Which way round the conversion runs is a
+                                    // switch, not a command: the figure below keeps
+                                    // its digits and changes its meaning, which is
+                                    // easy to miss on a glance and impossible to
+                                    // miss in the hand.
+                                    hryvniaToDollar = !hryvniaToDollar
+                                    touch.switched(hryvniaToDollar)
+                                },
                                 Modifier.fillMaxWidth().padding(top = Space.md),
                                 shape = Radius.sm,
                                 border = BorderStroke(1.dp, HairLine),
@@ -4030,6 +4099,7 @@ fun PaymentsScreen(
     setPaid: (List<PaidMark>) -> Unit,
     onDelete: (Int) -> Unit
 ) {
+    val touch = rememberTouch()
     // The rate the exchange screen already fetched and cached. Dollar entries are
     // converted at the sell rate, since that is what buying dollars costs.
     val rate = remember { store.fxRate().first }
@@ -4320,7 +4390,15 @@ fun PaymentsScreen(
                                     // you have to remember to visit, which is the same
                                     // as not having one.
                                     val done = isPaid(paid, pay.name, thisMonth)
-                                    IconButton({ setPaid(togglePaid(paid, pay, thisMonth)) }) {
+                                    // A real two-state mark, and the two states feel
+                                    // different: this is the one control in the app
+                                    // you use without looking, halfway through paying
+                                    // something on another screen, so the phone
+                                    // saying which way it went is the whole point.
+                                    IconButton({
+                                        touch.switched(!done)
+                                        setPaid(togglePaid(paid, pay, thisMonth))
+                                    }) {
                                         Icon(
                                             if (done) {
                                                 Icons.Default.CheckCircle
@@ -5733,8 +5811,8 @@ fun EditPaymentSheet(
     delete: () -> Unit,
     save: (Pay) -> Unit
 ) {
-    // Two different answers: a tick for saving, a heavier one for erasing.
-    val touch = LocalHapticFeedback.current
+    // A correction landing is worth feeling; opening the form to make one is not.
+    val touch = rememberTouch()
     var name by remember { mutableStateOf(pay.name) }
     var amount by remember { mutableStateOf(amountText(pay.amount)) }
     var day by remember { mutableStateOf(pay.day.toString()) }
@@ -5749,7 +5827,7 @@ fun EditPaymentSheet(
         confirmEnabled = parseAmount(amount) > 0 && name.isNotBlank(),
         onConfirm = {
             parseAmount(amount).takeIf { it > 0 }?.let { value ->
-                touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                touch.landed()
                 save(
                     // The amount and the currency go through [edited] rather than
                     // straight into the copy: this is the one moment the app can
@@ -5825,11 +5903,12 @@ fun EditPaymentSheet(
         // Deleting used to sit on the row itself, a thumb's width from the tap
         // that opens this form, and it asked nothing before erasing.
         Spacer(Modifier.height(Space.md))
+        // Silent on purpose. The sheet closing and the row leaving the list say
+        // what happened, and the bin holds it if that was a mistake. The old buzz
+        // here was a long-press constant fired on a plain tap — it named a gesture
+        // nobody had made, and a confirming tick on an erasure would be no better.
         TextButton(
-            {
-                touch.performHapticFeedback(HapticFeedbackType.LongPress)
-                delete()
-            },
+            { delete() },
             Modifier.fillMaxWidth()
         ) {
             Text("Видалити витрату", color = Negative)
@@ -6091,11 +6170,20 @@ fun WarnDaysChips(warnDays: Int, set: (Int) -> Unit) {
  */
 @Composable
 fun CurrencySegments(currency: String, set: (String) -> Unit) {
+    val touch = rememberTouch()
     SegmentedControl(
         options = listOf("Гривня ₴", "Долар $"),
         selected = if (currency == USD) 1 else 0,
         modifier = Modifier.padding(top = Space.md)
-    ) { index -> set(if (index == 1) USD else UAH) }
+    ) { index ->
+        val dollars = index == 1
+        // The same switch as the one on the exchange screen, and it earns the same
+        // answer: which currency an expense is billed in changes what every total
+        // on the payments screen means, and it is set by tapping half of a control
+        // whose two halves look alike.
+        if (dollars != (currency == USD)) touch.switched(dollars)
+        set(if (dollars) USD else UAH)
+    }
 }
 
 /**

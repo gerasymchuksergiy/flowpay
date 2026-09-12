@@ -128,10 +128,7 @@ private fun paymentNote(pays: List<Pay>, today: LocalDate, usdSellRate: Double):
 }
 
 private fun targetNote(wishes: List<Wish>, today: LocalDate): StatusNote? {
-    val fresh = today.toEpochDay() - TARGET_FRESH_DAYS
-    val hit = wishes.firstOrNull {
-        it.targetPrice > 0.0 && it.price > 0.0 && it.price <= it.targetPrice && it.checkedDay >= fresh
-    } ?: return null
+    val hit = wishes.firstOrNull { targetHit(it, today.toEpochDay()) } ?: return null
     return StatusNote(
         kind = StatusKind.TARGET,
         title = "Ціна досягла цілі",

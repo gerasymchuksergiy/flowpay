@@ -65,11 +65,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
@@ -452,7 +450,7 @@ fun PriceChart(
     val drawn = remember(points) { points.filter { it.price > 0.0 } }
     val positions = remember(drawn) { chartPositions(drawn) }
     val axis = remember(drawn) { chartAxis(drawn.map { it.price }) }
-    val touch = LocalHapticFeedback.current
+    val touch = rememberTouch()
     var selected by remember(drawn) { mutableIntStateOf(-1) }
 
     val marker by animateFloatAsState(
@@ -490,6 +488,14 @@ fun PriceChart(
                                     true
                                 }
                                 if (!holding) return@awaitEachGesture
+                                // The hold has just turned a press into a scrub,
+                                // and that is the one moment in this app where a
+                                // gesture crosses a commit point. Felt here, under
+                                // a finger that has not moved yet, it says the
+                                // chart is yours to drag; felt on release it would
+                                // say only that a finger left the glass.
+                                touch.committed()
+                                var landing = true
                                 val width = size.width.toFloat()
                                 fun choose(x: Float) {
                                     if (width <= 0f) return
@@ -502,12 +508,15 @@ fun PriceChart(
                                     }
                                     if (best != selected) {
                                         selected = best
-                                        // One tick per reading crossed. Another
-                                        // agent owns haptics; this is the single
-                                        // call, with no plumbing behind it.
-                                        touch.performHapticFeedback(
-                                            HapticFeedbackType.SegmentTick
-                                        )
+                                        // One tick per reading crossed, and never
+                                        // per frame — a finger resting still on one
+                                        // point stays silent, which is what this
+                                        // guard is for. The first point is silent
+                                        // too: the commit above already answered
+                                        // for it, and two feedbacks a frame apart
+                                        // read as one bad buzz rather than two
+                                        // facts.
+                                        if (landing) landing = false else touch.stepped()
                                     }
                                 }
                                 down.consume()
@@ -1047,8 +1056,11 @@ fun StageRail(
     onPick: (String) -> Unit
 ) {
     val reached = stages.indexOf(current).coerceAtLeast(0)
-    // Moving a parcel along by hand should feel like moving something.
-    val touch = LocalHapticFeedback.current
+    // No haptic on these. Correcting a stop is a tap on a row of stops, and the dot
+    // springing across to the one you touched is already the answer; a buzz here
+    // would be the app reporting contact rather than consequence, and it is exactly
+    // the kind of feedback that spends the phone's whole vibration budget on the
+    // gestures that needed it least.
     Row(modifier.fillMaxWidth()) {
         stages.forEachIndexed { position, stage ->
             val passed = position < reached
@@ -1056,10 +1068,7 @@ fun StageRail(
             Column(
                 Modifier
                     .weight(1f)
-                    .clickable {
-                        touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onPick(stage)
-                    }
+                    .clickable { onPick(stage) }
                     .padding(vertical = Space.sm),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
