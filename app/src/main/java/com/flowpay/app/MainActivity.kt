@@ -2457,6 +2457,15 @@ fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted:
  * buy this. The plan works from the target price when one is set, and from the
  * current price otherwise, so the number on screen is always the sum that matters.
  */
+/** The price history as it was paid for: hryvnia, the only view always available. */
+const val CHART_HRYVNIA = 0
+
+/** The same history in dollars, dropping the readings that carry no rate. */
+const val CHART_DOLLAR = 1
+
+/** Price and rate together, both set to 100 at the first reading that had a rate. */
+const val CHART_REBASED = 2
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SharedTransitionScope.WishDetailScreen(
@@ -2482,9 +2491,11 @@ fun SharedTransitionScope.WishDetailScreen(
     var buying by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
-    // Hryvnia until asked otherwise. The dollar view is the answer to a question,
-    // and a chart that opens on it would be answering one nobody asked.
-    var inUsd by remember(wish.id) { mutableStateOf(false) }
+    // Which of the three views of the history is showing: hryvnia, dollars, or
+    // the two rebased against the rate. Hryvnia until asked otherwise — the other
+    // two answer a question, and a chart that opens on one is answering a question
+    // nobody asked.
+    var chartView by remember(wish.id) { mutableIntStateOf(CHART_HRYVNIA) }
     val scope = rememberCoroutineScope()
     val store = remember(context) { Store(context) }
 
@@ -2921,38 +2932,56 @@ fun SharedTransitionScope.WishDetailScreen(
                     shape = Radius.md
                 ) {
                     Column(Modifier.padding(Space.lg)) {
+                        // The range bar goes first because it is the densest thing
+                        // on the screen: where today sits between the cheapest and
+                        // the dearest ever seen, with the usual thirty days shaded
+                        // behind it, read without an axis and without a sentence.
+                        //
+                        // Gone while the reading is doubtful, for the same reason
+                        // the verdict below goes quiet: placing a price the shop has
+                        // stopped standing behind would be a picture of a claim the
+                        // next paragraph refuses to make in words.
+                        if (!stale && insight.highest > insight.lowest) {
+                            PriceRangeBar(insight)
+                            Spacer(Modifier.height(Space.lg))
+                        }
                         val usdPoints = remember(wish.history) { inDollars(wish.history) }
-                        val showUsd = inUsd && usdPoints.size >= 2
-                        PriceBars(
-                            if (showUsd) usdPoints else wish.history,
-                            Modifier.fillMaxWidth().height(120.dp)
-                        )
                         // Offered only once two points carry a rate. One converted
-                        // point is a number, not a history, and the switch would draw
-                        // a single bar saying nothing about direction.
-                        if (hasDollarHistory(wish.history)) {
+                        // point is a number, not a history, and the other two views
+                        // would draw a single dot saying nothing about direction.
+                        val twoCurrencies = hasDollarHistory(wish.history)
+                        val view = if (twoCurrencies) chartView else CHART_HRYVNIA
+                        if (twoCurrencies) {
+                            // One track with one marker, rather than three chips
+                            // that each look independently switchable.
+                            SegmentedControl(
+                                listOf("₴", "$", "Ціна і курс"),
+                                view
+                            ) { chartView = it }
                             Spacer(Modifier.height(Space.md))
-                            Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-                                FilterChip(
-                                    !inUsd,
-                                    { inUsd = false },
-                                    { Text("₴", fontSize = Type.captionSize) }
-                                )
-                                FilterChip(
-                                    inUsd,
-                                    { inUsd = true },
-                                    { Text("$", fontSize = Type.captionSize) }
-                                )
-                            }
-                            if (showUsd) {
-                                Text(
-                                    "Зараз ${dollars(usdPoints.last().price)} " +
-                                        "· курс записано з кожною ціною",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize,
-                                    modifier = Modifier.padding(top = Space.sm)
-                                )
-                            }
+                        }
+                        when (view) {
+                            // Both lines set to 100 at the first reading: the one
+                            // picture that separates a thing getting dearer from
+                            // the hryvnia moving underneath it.
+                            CHART_REBASED -> RebasedPriceAndRate(wish.history)
+                            CHART_DOLLAR -> PriceChart(usdPoints, format = ::dollars)
+                            else -> PriceChart(
+                                remember(wish.history, wish.price, wish.checkedDay) {
+                                    chartSeries(wish.history, wish.price, wish.checkedDay)
+                                }
+                            )
+                        }
+                        if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
+                            Text(
+                                "Зараз ${dollars(usdPoints.last().price)} " +
+                                    "· курс записано з кожною ціною",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                modifier = Modifier.padding(top = Space.sm)
+                            )
+                        }
+                        if (twoCurrencies) {
                             // The line the two-currency history exists to write: a
                             // flat hryvnia price that has quietly got cheaper, or a
                             // rise that was only ever the rate moving.
@@ -2962,7 +2991,7 @@ fun SharedTransitionScope.WishDetailScreen(
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine,
-                                    modifier = Modifier.padding(top = Space.xs)
+                                    modifier = Modifier.padding(top = Space.sm)
                                 )
                             }
                         }
@@ -3279,6 +3308,13 @@ fun SharedTransitionScope.WishCard(
     val stale = isStale(wish.freshness)
     val held = onHold(wish, today)
     val holdText = holdLabel(wish, today)
+    // Null wherever the price has never moved: a range bar with nothing to span
+    // would draw a dot in the middle of a grey track, which on twenty cards is
+    // twenty pieces of furniture saying nothing.
+    val rangeInsight = remember(wish.history, wish.price, wish.checkedDay) {
+        priceInsight(wish.history, wish.price, wish.checkedDay)
+            .takeIf { it.highest > it.lowest }
+    }
     Card(
         onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
@@ -3365,6 +3401,20 @@ fun SharedTransitionScope.WishCard(
                 // one that was read this morning.
                 color = if (stale || held) TextDisabled else TextPrimary
             )
+            // Where this price sits in its own range, unlabelled and five pixels
+            // tall. The percentage badge over the photograph says how far the price
+            // has come since the first reading, which is a different fact and the
+            // one that misleads on its own: a wish can be ten percent below where it
+            // started and still be sitting at the top of the last month. This is the
+            // other half. Withheld while the reading is doubtful or the wish is set
+            // aside, for the same reason the badge is — there is no live price to
+            // place. Each card is on its own scale, so the bars are not comparable
+            // between cards and nothing here invites reading them that way; the
+            // comparable figure is the percentage, in text, above.
+            if (!stale && !held && rangeInsight != null) {
+                Spacer(Modifier.height(Space.sm))
+                PriceRangeBar(rangeInsight, labels = false, height = 5.dp)
+            }
             if (holdText != null) {
                 Text(
                     holdText,
@@ -3553,7 +3603,17 @@ fun CalculatorScreen(store: Store) {
                     Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceBase)) {
                         Column(Modifier.padding(Space.lg)) {
                             if (history.isNotEmpty()) {
-                                PriceBars(history, Modifier.fillMaxWidth().height(120.dp))
+                                // A straight line here rather than a step, and the
+                                // difference is not cosmetic: appendRate records a
+                                // point every day whether or not the rate moved, so
+                                // the gaps are days the phone was off, not days the
+                                // rate stood still. A step would claim it held for a
+                                // week and then jumped.
+                                PriceChart(
+                                    history,
+                                    kind = ChartLine.LINEAR,
+                                    format = { "${rateFigure(it)} ₴" }
+                                )
                                 Spacer(Modifier.height(Space.sm))
                             }
                             // Nothing recorded the rate before this version, so the chart

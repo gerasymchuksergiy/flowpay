@@ -3,6 +3,7 @@ package com.flowpay.app
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -13,6 +14,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -56,26 +60,36 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import java.time.LocalDate
+import kotlin.math.abs
 
 /**
  * The pieces that carry the app's look.
@@ -200,51 +214,579 @@ fun ProgressRing(
     }
 }
 
+// ---------------------------------------------------------------------- charts
+
 /**
- * Price history as bars rather than a line.
+ * What the charts are allowed to draw with.
  *
- * At the size this occupies on a card a single-pixel line is nearly invisible and
- * says nothing; bars read as a shape. Bars are spaced by date, so a price that held
- * for a month occupies a month of the width, and the current one is highlighted.
+ * `AppBackground` is #0a0b09, and a saturated lime laid straight onto it
+ * vibrates: the edge between the two is very nearly the whole contrast the screen
+ * can produce, so the eye reads the boundary rather than the shape the line is
+ * making. Two rules follow from that, and neither invents a colour — both come
+ * off the ramp in Theme.kt.
+ *
+ * A chart gets its own ground, one step up from the card it sits on, so the data
+ * is drawn on a surface instead of on the page. And the accent is mixed a quarter
+ * of the way towards a grey of its own brightness before it is used as ink: at
+ * chart weights — a two-pixel line, a four-pixel marker — full lime on near-black
+ * is exactly the case that buzzes, while the calmer tone still reads as the app's
+ * colour.
+ *
+ * One hue and no category palette is a constraint working in the charts' favour.
+ * A second series is separated by opacity and by the shape of its line, never by
+ * a second colour, so nothing here has to invent a meaning for red or blue.
+ */
+private const val ChartDesaturation = 0.25f
+
+/**
+ * Mixes [color] towards a grey of the same brightness. Zero leaves it alone, one
+ * takes the colour out entirely.
+ */
+fun desaturated(color: Color, amount: Float): Color {
+    val mix = amount.coerceIn(0f, 1f)
+    val grey = 0.2126f * color.red + 0.7152f * color.green + 0.0722f * color.blue
+    return Color(
+        red = color.red * (1f - mix) + grey * mix,
+        green = color.green * (1f - mix) + grey * mix,
+        blue = color.blue * (1f - mix) + grey * mix,
+        alpha = color.alpha
+    )
+}
+
+/** The accent, calmed down for a thin line on a dark ground. */
+val ChartInk = desaturated(Accent, ChartDesaturation)
+
+/** The plate a chart draws on, a step above the card underneath it. */
+val ChartGround = SurfaceHigh
+
+/** Dim enough that the data wins. A gridline that competes is decoration. */
+val ChartGrid = HairLine.copy(alpha = 0.55f)
+
+/** How long a finger has to rest before it is scrubbing rather than tapping. */
+private const val SCRUB_HOLD_MS = 100L
+
+/** The vertical range a chart's axis covers, in the values' own units. */
+data class ChartAxis(val low: Double, val high: Double) {
+    val span: Double get() = high - low
+
+    /** Where [value] sits: zero at the bottom of the axis, one at the top. */
+    fun fraction(value: Double): Float =
+        if (span <= 0.0) 0.5f else ((value - low) / span).toFloat().coerceIn(0f, 1f)
+}
+
+/** The smallest slice of the price level an axis may cover, as a fraction of it. */
+const val MIN_AXIS_SPAN = 0.10
+
+/**
+ * Picks the axis for a set of values, and this is the decision the old chart got
+ * wrong.
+ *
+ * The bars scaled every history to its own `min..max` and then floored the
+ * shortest bar at 12% of the height. A wish that moved from ₴4 900 to ₴4 850 —
+ * one percent — therefore drew the same cliff as one that had halved. Two
+ * separate things are wrong there and they need separate answers.
+ *
+ * The first is the mark. A bar encodes a quantity as a **length**, which is why a
+ * bar chart has to start at zero: cut the bottom off a bar and its length is no
+ * longer the number. A line encodes as **position**, and a line may legitimately
+ * start wherever it likes — which is why every price chart ever drawn is a line
+ * and not a bar. So the bars are gone, and with them the truncated-length lie.
+ * That is not a preference about looks; it is what the two marks mean.
+ *
+ * The second is the zoom, and no automatic axis fully solves it: an axis fitted
+ * to its own data always makes that data fill the frame. What it can do is refuse
+ * to zoom past a point. The axis here never covers less than [MIN_AXIS_SPAN] of
+ * the price level, so a one-percent move takes up a tenth of the height and a
+ * month that barely moved draws nearly flat, instead of both being inflated into
+ * a full-height cliff. Above that floor the chart scales like any other and the
+ * two figures printed beneath it carry the magnitude, which is the contract an
+ * axis has always had and the reason it is labelled at all.
+ *
+ * Across a list the same trap scales up, and the answer taken here is the second
+ * of the two honest ones: per-item scales, with the size of the move stated in
+ * text beside the chart. The first — rebasing every row to a percentage on one
+ * shared scale — would make the wishlist comparable at the cost of never showing
+ * a price, and a wishlist whose rows do not show prices is not a wishlist.
+ */
+fun chartAxis(values: List<Double>, minimumSpan: Double = MIN_AXIS_SPAN): ChartAxis {
+    val real = values.filter { it > 0.0 }
+    if (real.isEmpty()) return ChartAxis(0.0, 1.0)
+    val low = real.min()
+    val high = real.max()
+    val middle = (low + high) / 2
+    // A little headroom at both ends, so the line never runs along an edge.
+    val span = maxOf((high - low) * 1.3, middle * minimumSpan)
+    return ChartAxis(middle - span / 2, middle + span / 2)
+}
+
+/** "вісь 4 850 – 5 350 ₴" — where the vertical axis starts and where it stops. */
+fun axisNote(axis: ChartAxis, format: (Double) -> String): String =
+    "вісь ${bareAmount(axis.low)} – ${format(axis.high)}"
+
+/**
+ * Where each reading sits horizontally: zero at the left edge, one at the right.
+ *
+ * By date, because [appendPrice] writes a point only when the price changes, so
+ * the gaps between points are wildly unequal. The old bars claimed in their own
+ * comment to be spaced by date and were in fact spaced by index, which put a
+ * change made yesterday and one made six months ago the same distance apart. A
+ * history with any undated point falls back to even spacing, because by then
+ * there is nothing else left to place it with.
+ */
+fun chartPositions(points: List<PricePoint>): List<Float> {
+    if (points.isEmpty()) return emptyList()
+    if (points.size == 1) return listOf(0.5f)
+    val even = points.indices.map { it / (points.size - 1).toFloat() }
+    if (points.any { it.day <= 0L }) return even
+    val first = points.first().day
+    val span = (points.last().day - first).toFloat()
+    if (span <= 0f) return even
+    return points.map { ((it.day - first) / span).coerceIn(0f, 1f) }
+}
+
+/**
+ * The series a price chart actually draws: the recorded changes, with the price
+ * in force right now closing the line.
+ *
+ * The history holds changes only, and today's price lives on the wish rather than
+ * in the list. Drawing the list alone therefore ends the line at the last change,
+ * which on a price that has held for three months is three months short and reads
+ * as the tracking having quietly stopped.
+ */
+fun chartSeries(history: List<PricePoint>, current: Double, today: Long): List<PricePoint> {
+    val points = history.filter { it.price > 0.0 }
+    if (current <= 0.0 || today <= 0L) return points
+    val last = points.lastOrNull()
+    if (last != null && last.price == current && last.day >= today) return points
+    return points + PricePoint(current, today, last?.rate ?: 0.0, last?.rateSource ?: "")
+}
+
+/** How the space between two readings is drawn. */
+enum class ChartLine {
+    /**
+     * Flat until the change, then straight up or down. The only honest rendering
+     * of what [appendPrice] stores: a point exists only where the price moved, so
+     * the history is a list of change events rather than a series sampled at
+     * intervals. A sloped line from ₴400 in March to ₴350 on 28 April would state
+     * that the price glided down across the whole of April. It did not — it sat
+     * at ₴400 and then dropped. Every corner in a step line is a real event, which
+     * is also why it looks more deliberate than a smooth curve.
+     */
+    STEP,
+
+    /**
+     * Straight from one reading to the next, for a quantity that genuinely does
+     * move between samples. [appendRate] records the rate every day whether or not
+     * it changed, so its gaps are gaps in sampling rather than periods of nothing
+     * happening, and a step there would claim the rate held still for a week and
+     * then jumped — the same lie, mirrored.
+     */
+    LINEAR
+}
+
+/** The line through the points, in canvas coordinates. */
+private fun chartPath(
+    points: List<PricePoint>,
+    positions: List<Float>,
+    axis: ChartAxis,
+    kind: ChartLine,
+    width: Float,
+    top: Float,
+    height: Float
+): Path {
+    val path = Path()
+    var lastY = 0f
+    points.forEachIndexed { index, point ->
+        val x = positions.getOrElse(index) { 0f } * width
+        val y = top + (1f - axis.fraction(point.price)) * height
+        when {
+            index == 0 -> path.moveTo(x, y)
+            // Hold the old level right up to the day it changed, then move.
+            kind == ChartLine.STEP -> {
+                path.lineTo(x, lastY)
+                path.lineTo(x, y)
+            }
+            else -> path.lineTo(x, y)
+        }
+        lastY = y
+    }
+    return path
+}
+
+/**
+ * A price history as a line, with the scrub a stock app has.
+ *
+ * Deliberately carries no shaded area under it. With a non-zero baseline the area
+ * is not a quantity — it is whatever the axis happened to be cut at — and a fill
+ * that size reads as volume whether or not it was meant to.
+ *
+ * Hold for a moment and drag to read a single day off it: the segment ahead of the
+ * finger drops back in opacity, a hairline marks the position, and the figure and
+ * date appear under the chart rather than floating over it, where a label near
+ * either edge would have to be nudged back inside. The touch target is the whole
+ * height of the plot. Nothing is consumed until the hold is over, so a tap or a
+ * scroll through the chart still reaches the list underneath it — an animation
+ * that eats a gesture is the worst thing a chart can do.
+ *
+ * The one moving part is the marker, and it moves on a spring through [Motion],
+ * which snaps under the system's reduced-motion setting. There is no draw-on or
+ * any other decorative motion to suppress: the guidance is to remove decorative
+ * movement outright and to replace meaningful movement rather than delete it, and
+ * the honest way to meet both is not to add the decorative kind in the first place.
  */
 @Composable
-fun PriceBars(history: List<PricePoint>, modifier: Modifier = Modifier) {
-    val points = history.filter { it.price > 0 }
-    Canvas(modifier) {
-        if (points.isEmpty()) return@Canvas
-        val min = points.minOf { it.price }
-        val max = points.maxOf { it.price }
-        val range = (max - min).takeIf { it > 0 } ?: max.takeIf { it > 0 } ?: 1.0
+fun PriceChart(
+    points: List<PricePoint>,
+    modifier: Modifier = Modifier,
+    kind: ChartLine = ChartLine.STEP,
+    format: (Double) -> String = ::money,
+    caption: String? = null,
+    height: Dp = 132.dp
+) {
+    val drawn = remember(points) { points.filter { it.price > 0.0 } }
+    val positions = remember(drawn) { chartPositions(drawn) }
+    val axis = remember(drawn) { chartAxis(drawn.map { it.price }) }
+    val touch = LocalHapticFeedback.current
+    var selected by remember(drawn) { mutableIntStateOf(-1) }
 
-        // A dotted baseline gives the bars something to stand on.
-        var dot = 0f
-        while (dot < size.width) {
-            drawRoundRect(
-                color = HairLine,
-                topLeft = Offset(dot, size.height - 1f),
-                size = Size(3f, 2f),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f)
-            )
-            dot += 8f
+    val marker by animateFloatAsState(
+        if (selected >= 0) positions.getOrElse(selected) { 0f } else 0f,
+        Motion.spatial(),
+        label = "scrub position"
+    )
+    val markerAlpha by animateFloatAsState(
+        if (selected >= 0) 1f else 0f,
+        Motion.effects(),
+        label = "scrub fade"
+    )
+
+    Column(modifier) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .clip(Radius.sm)
+                .background(ChartGround)
+                .then(
+                    if (drawn.size < 2) {
+                        Modifier
+                    } else {
+                        Modifier.pointerInput(drawn, positions) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                // A hold, not a press: letting go or being taken
+                                // over by the scrolling list first means this was
+                                // never a scrub, and nothing has been consumed.
+                                val holding = try {
+                                    withTimeout(SCRUB_HOLD_MS) { waitForUpOrCancellation() }
+                                    false
+                                } catch (_: PointerEventTimeoutCancellationException) {
+                                    true
+                                }
+                                if (!holding) return@awaitEachGesture
+                                val width = size.width.toFloat()
+                                fun choose(x: Float) {
+                                    if (width <= 0f) return
+                                    val target = (x / width).coerceIn(0f, 1f)
+                                    var best = 0
+                                    positions.forEachIndexed { index, at ->
+                                        if (abs(at - target) < abs(positions[best] - target)) {
+                                            best = index
+                                        }
+                                    }
+                                    if (best != selected) {
+                                        selected = best
+                                        // One tick per reading crossed. Another
+                                        // agent owns haptics; this is the single
+                                        // call, with no plumbing behind it.
+                                        touch.performHapticFeedback(
+                                            HapticFeedbackType.SegmentTick
+                                        )
+                                    }
+                                }
+                                down.consume()
+                                choose(down.position.x)
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val change = event.changes.firstOrNull { it.id == down.id }
+                                    if (change == null || !change.pressed) break
+                                    choose(change.position.x)
+                                    change.consume()
+                                }
+                                selected = -1
+                            }
+                        }
+                    }
+                )
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val inset = 6.dp.toPx()
+                val plot = (size.height - inset * 2).coerceAtLeast(1f)
+                // One gridline, across the middle of the axis. The two figures
+                // under the chart already say what the axis covers, so a grid of
+                // five would be ruling standing in front of the data.
+                val middle = inset + plot / 2
+                drawLine(ChartGrid, Offset(0f, middle), Offset(size.width, middle), 1f)
+
+                if (drawn.isEmpty()) return@Canvas
+                if (drawn.size == 1) {
+                    // One reading is a price, not a history. A dot says that; a
+                    // line drawn through a single point would say more.
+                    drawCircle(ChartInk, 4.dp.toPx(), Offset(size.width / 2, middle))
+                    return@Canvas
+                }
+
+                val path = chartPath(drawn, positions, axis, kind, size.width, inset, plot)
+                val stroke = Stroke(
+                    2.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round
+                )
+                // What the finger has passed stays lit and what is ahead of it
+                // drops back — by opacity, there being no second hue to reach for.
+                drawPath(path, ChartInk.copy(alpha = 1f - 0.65f * markerAlpha), style = stroke)
+                if (markerAlpha > 0f) {
+                    val x = marker * size.width
+                    clipRect(right = x.coerceIn(0f, size.width)) {
+                        drawPath(path, ChartInk, style = stroke)
+                    }
+                    drawLine(
+                        TextPrimary.copy(alpha = 0.5f * markerAlpha),
+                        Offset(x, 0f),
+                        Offset(x, size.height),
+                        1.dp.toPx()
+                    )
+                    drawn.getOrNull(selected)?.let { point ->
+                        val y = inset + (1f - axis.fraction(point.price)) * plot
+                        drawCircle(ChartGround, 6.dp.toPx(), Offset(x, y))
+                        drawCircle(Accent.copy(alpha = markerAlpha), 4.dp.toPx(), Offset(x, y))
+                    }
+                }
+            }
         }
+        Spacer(Modifier.height(Space.sm))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                caption ?: axisNote(axis, format),
+                color = TextDisabled,
+                fontSize = Type.overlineSize,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            drawn.getOrNull(selected)?.let { point ->
+                Spacer(Modifier.width(Space.sm))
+                Text(
+                    listOfNotNull(
+                        format(point.price),
+                        point.day.takeIf { it > 0L }
+                            ?.let { dayMonth(LocalDate.ofEpochDay(it)) }
+                    ).joinToString(" · "),
+                    color = TextPrimary,
+                    fontSize = Type.captionSize,
+                    fontWeight = Type.medium,
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
 
-        val count = points.size
-        val slot = size.width / count
-        val barWidth = (slot * 0.55f).coerceAtMost(14f).coerceAtLeast(3f)
+/** Everything a range bar needs, each a fraction of the bar's own width. */
+data class RangeBarGeometry(
+    val marker: Float,
+    val bandStart: Float,
+    val bandEnd: Float,
+    /** Nothing has a span yet, so the bar degrades to a dot rather than to a lie. */
+    val single: Boolean
+) {
+    val hasBand: Boolean get() = !single && bandEnd > bandStart
+}
 
-        points.forEachIndexed { index, point ->
-            // Floor of 12% so the cheapest bar is still visibly a bar.
-            val share = ((point.price - min) / range).toFloat().coerceIn(0f, 1f)
-            val height = (size.height * (0.12f + 0.88f * share)).coerceAtLeast(barWidth)
-            val x = slot * index + (slot - barWidth) / 2
-            val isLast = index == count - 1
+/** Places today's price, and the usual thirty days, along the whole tracked range. */
+fun rangeBarGeometry(insight: PriceInsight): RangeBarGeometry {
+    val low = insight.lowest
+    val span = insight.highest - low
+    if (low <= 0.0 || span <= 0.0) return RangeBarGeometry(0.5f, 0f, 0f, single = true)
+    fun at(value: Double) = ((value - low) / span).toFloat().coerceIn(0f, 1f)
+    val band = insight.referenceLow > 0.0 && insight.referenceHigh > insight.referenceLow
+    return RangeBarGeometry(
+        marker = at(insight.current),
+        bandStart = if (band) at(insight.referenceLow) else 0f,
+        bandEnd = if (band) at(insight.referenceHigh) else 0f,
+        single = false
+    )
+}
+
+/**
+ * Where today's price sits between the cheapest and the dearest ever recorded,
+ * with the usual thirty days shaded behind it.
+ *
+ * The range bar a stock app draws for a year, and the most a single row of pixels
+ * here can say: the low at the left end, the high at the right, a marker at
+ * today's proportional position. No axis, legible at any size, and it works on two
+ * readings — with one it becomes a dot, because one reading has no range.
+ *
+ * The band behind it is the thirty-day reference window, the same span the verdict
+ * is measured over, shaded the way Google Flights shades a route's usual fare.
+ * That is what lets "cheaper than usual" be read off the picture instead of out of
+ * a sentence: the marker sits to the left of the band, inside it, or past it.
+ */
+@Composable
+fun PriceRangeBar(
+    insight: PriceInsight,
+    modifier: Modifier = Modifier,
+    format: (Double) -> String = ::money,
+    labels: Boolean = true,
+    height: Dp = 10.dp
+) {
+    val geometry = remember(insight) { rangeBarGeometry(insight) }
+    Column(modifier) {
+        Canvas(Modifier.fillMaxWidth().height(height)) {
+            val radius = CornerRadius(size.height / 2)
+            drawRoundRect(ChartGround, size = size, cornerRadius = radius)
+            if (geometry.single) {
+                drawCircle(ChartInk, size.height / 2, Offset(size.width / 2, size.height / 2))
+                return@Canvas
+            }
+            if (geometry.hasBand) {
+                val left = geometry.bandStart * size.width
+                val right = geometry.bandEnd * size.width
+                drawRoundRect(
+                    HairLine,
+                    topLeft = Offset(left, 0f),
+                    size = Size(right - left, size.height),
+                    cornerRadius = radius
+                )
+            }
+            val width = 4.dp.toPx()
+            val half = width / 2
+            val x = (geometry.marker * size.width)
+                .coerceIn(half, (size.width - half).coerceAtLeast(half))
             drawRoundRect(
-                color = if (isLast) Accent else SurfaceHigh,
-                topLeft = Offset(x, size.height - height),
-                size = Size(barWidth, height),
-                cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2)
+                // The one place a brighter step of the same hue earns its keep:
+                // the cheapest it has ever been is a different fact from cheap.
+                if (insight.atLowest) Accent else ChartInk,
+                topLeft = Offset(x - half, 0f),
+                size = Size(width, size.height),
+                cornerRadius = CornerRadius(half)
             )
         }
+        if (labels && !geometry.single) {
+            Spacer(Modifier.height(Space.xs))
+            Row(Modifier.fillMaxWidth()) {
+                Text(format(insight.lowest), color = TextDisabled, fontSize = Type.overlineSize)
+                Spacer(Modifier.weight(1f))
+                Text(format(insight.highest), color = TextDisabled, fontSize = Type.overlineSize)
+            }
+        }
+    }
+}
+
+/** Two series on one scale, each divided by its own first value and set to 100. */
+data class RebasedSeries(val price: List<PricePoint>, val rate: List<PricePoint>)
+
+/** Null-ish — both lists empty — until two readings carry a rate to rebase against. */
+fun rebasedToHundred(history: List<PricePoint>): RebasedSeries {
+    val dated = history.filter { it.price > 0.0 && it.rate > 0.0 }
+    if (dated.size < 2) return RebasedSeries(emptyList(), emptyList())
+    val basePrice = dated.first().price
+    val baseRate = dated.first().rate
+    return RebasedSeries(
+        price = dated.map { it.copy(price = it.price / basePrice * 100) },
+        rate = dated.map { it.copy(price = it.rate / baseRate * 100) }
+    )
+}
+
+/**
+ * The price and the hryvnia's dollar rate on one scale, both set to 100 at the
+ * first reading that carried a rate.
+ *
+ * The chart no shopping app can draw, because none of them keeps the rate that was
+ * in force on the day a price was read — [PricePoint] does. Rebasing is the
+ * standard way to put two series with different units on one axis, and it beats a
+ * second axis down the right-hand side, where the reader has to keep remembering
+ * which line belongs to which edge.
+ *
+ * What it answers is the question the whole app exists for. The price line pulling
+ * above the rate line means the thing genuinely got dearer; the two travelling
+ * together mean nothing happened except the currency. [currencyMoveNote] says that
+ * in a sentence — this is the picture of it.
+ *
+ * The price is a step and the rate is a plain line, which is not decoration: one is
+ * a list of change events and the other a quantity sampled on whichever days a
+ * price happened to be read. The two are told apart by that shape and by opacity,
+ * never by a second colour.
+ */
+@Composable
+fun RebasedPriceAndRate(
+    history: List<PricePoint>,
+    modifier: Modifier = Modifier,
+    height: Dp = 132.dp
+) {
+    val series = remember(history) { rebasedToHundred(history) }
+    if (series.price.size < 2) return
+    val positions = remember(series) { chartPositions(series.price) }
+    val axis = remember(series) {
+        chartAxis(series.price.map { it.price } + series.rate.map { it.price })
+    }
+    Column(modifier) {
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .clip(Radius.sm)
+                .background(ChartGround)
+        ) {
+            Canvas(Modifier.fillMaxSize()) {
+                val inset = 6.dp.toPx()
+                val plot = (size.height - inset * 2).coerceAtLeast(1f)
+                // Everything is measured from a hundred, so that is the one line
+                // the grid gets.
+                val base = inset + (1f - axis.fraction(100.0)) * plot
+                drawLine(ChartGrid, Offset(0f, base), Offset(size.width, base), 1f)
+                drawPath(
+                    chartPath(
+                        series.rate, positions, axis, ChartLine.LINEAR,
+                        size.width, inset, plot
+                    ),
+                    ChartInk.copy(alpha = 0.45f),
+                    style = Stroke(1.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+                drawPath(
+                    chartPath(
+                        series.price, positions, axis, ChartLine.STEP,
+                        size.width, inset, plot
+                    ),
+                    ChartInk,
+                    style = Stroke(2.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+        }
+        Spacer(Modifier.height(Space.sm))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            ChartKey("Ціна", ChartInk)
+            Spacer(Modifier.width(Space.md))
+            ChartKey("Курс", ChartInk.copy(alpha = 0.45f))
+            Spacer(Modifier.weight(1f))
+            Text(
+                "100 = перше вимірювання",
+                color = TextDisabled,
+                fontSize = Type.overlineSize,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/** One entry of the two-line key. Needed only where opacity carries the meaning. */
+@Composable
+private fun ChartKey(label: String, colour: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(width = 12.dp, height = 2.dp).background(colour))
+        Spacer(Modifier.width(Space.xs))
+        Text(label, color = TextSecondary, fontSize = Type.overlineSize)
     }
 }
 
