@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -233,7 +234,7 @@ fun RecapInvite(recap: Recap, modifier: Modifier = Modifier, onOpen: () -> Unit)
                     .background(Accent, Radius.pill),
                 contentAlignment = Alignment.Center
             ) {
-                Text("▶", color = AccentInk, fontSize = Type.bodySize)
+                Icon(Icons.Default.PlayArrow, null, tint = AccentInk)
             }
         }
     }

@@ -49,9 +49,6 @@ data class MonthlyTotal(
  */
 fun onTrial(pay: Pay, day: Long): Boolean = pay.trialEnd > day
 
-/** What this expense actually takes on [day]. Nothing, while a trial is running. */
-fun chargedAmount(pay: Pay, day: Long): Double = if (onTrial(pay, day)) 0.0 else pay.amount
-
 /** The expenses that are still free today. */
 fun trialsRunning(items: List<Pay>, today: LocalDate): List<Pay> =
     items.filter { onTrial(it, today.toEpochDay()) }
