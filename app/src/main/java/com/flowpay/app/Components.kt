@@ -896,7 +896,7 @@ fun StatStrip(
     rings: List<Float>? = null
 ) {
     Card(
-        modifier.fillMaxWidth(),
+        modifier.fillMaxWidth().litEdge(Radius.lg),
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
         shape = Radius.lg
     ) {
@@ -1232,7 +1232,7 @@ fun PlaceholderRows(fields: List<Pair<String, String>>, modifier: Modifier = Mod
     ) {
         fields.forEach { (primary, secondary) ->
             Card(
-                Modifier.fillMaxWidth(),
+                Modifier.fillMaxWidth().litEdge(Radius.md),
                 colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                 shape = Radius.md
             ) {

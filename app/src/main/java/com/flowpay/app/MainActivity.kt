@@ -2147,7 +2147,7 @@ fun AddWishSheet(
             offers.forEachIndexed { index, offer ->
                 Card(
                     onClick = { finish(offer) },
-                    modifier = Modifier.fillMaxWidth().padding(bottom = Space.sm),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.sm),
                     colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
                     shape = Radius.sm
                 ) {
@@ -2437,7 +2437,7 @@ fun SectionTitle(text: String) {
 @Composable
 fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted: Boolean = false) {
     Card(
-        modifier,
+        modifier.litEdge(Radius.sm),
         colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
         shape = Radius.sm
     ) {
@@ -2696,7 +2696,7 @@ fun SharedTransitionScope.WishDetailScreen(
             SectionTitle("Де стежимо")
             Column(Modifier.padding(horizontal = Space.screen)) {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().litEdge(Radius.md),
                     colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
                     shape = Radius.md
                 ) {
@@ -2886,7 +2886,7 @@ fun SharedTransitionScope.WishDetailScreen(
                 SectionTitle("Про товар")
                 Column(Modifier.padding(horizontal = Space.screen)) {
                     Card(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().litEdge(Radius.md),
                         colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
                         shape = Radius.md
                     ) {
@@ -2934,7 +2934,7 @@ fun SharedTransitionScope.WishDetailScreen(
             SectionTitle("Історія ціни")
             Column(Modifier.padding(horizontal = Space.screen)) {
                 Card(
-                    Modifier.fillMaxWidth(),
+                    Modifier.fillMaxWidth().litEdge(Radius.md),
                     colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
                     shape = Radius.md
                 ) {
@@ -3268,7 +3268,7 @@ fun HoldBlock(wish: Wish, today: LocalDate, onPick: () -> Unit, onRelease: () ->
         return
     }
     Card(
-        Modifier.fillMaxWidth().padding(horizontal = Space.screen).padding(top = Space.lg),
+        Modifier.fillMaxWidth().padding(horizontal = Space.screen).padding(top = Space.lg).litEdge(Radius.sm),
         colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
         shape = Radius.sm
     ) {
@@ -3334,7 +3334,7 @@ fun SharedTransitionScope.WishCard(
     }
     Card(
         onClick = onOpen,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
         shape = Radius.md
     ) {
@@ -3537,7 +3537,11 @@ fun CalculatorScreen(store: Store) {
             item { ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки") }
             item {
                 Column(Modifier.padding(horizontal = Space.screen)) {
-                    Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceRaised)) {
+                    Card(
+                        Modifier.litEdge(Radius.lg),
+                        shape = Radius.lg,
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised)
+                    ) {
                         Column(Modifier.padding(Space.lg)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
@@ -3623,7 +3627,11 @@ fun CalculatorScreen(store: Store) {
                         lineHeight = Type.sectionLine,
                         fontWeight = Type.medium
                     )
-                    Card(shape = Radius.lg, colors = CardDefaults.cardColors(containerColor = SurfaceBase)) {
+                    Card(
+                        Modifier.litEdge(Radius.lg),
+                        shape = Radius.lg,
+                        colors = CardDefaults.cardColors(containerColor = SurfaceBase)
+                    ) {
                         Column(Modifier.padding(Space.lg)) {
                             if (history.isNotEmpty()) {
                                 // A straight line here rather than a step, and the
@@ -3857,7 +3865,7 @@ fun PaymentsScreen(
                     }
                     Spacer(Modifier.height(Space.md))
                     Card(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
                         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                         shape = Radius.md
                     ) {
@@ -4531,7 +4539,7 @@ fun OrdersScreen(
 fun ArchivedPurchase(order: Order, onEdit: () -> Unit, onDelete: () -> Unit) {
     val review = purchaseReview(order.paid, order.lowestSeen, order.uses)
     Card(
-        Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+        Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth().litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceLow),
         shape = Radius.md
     ) {
@@ -4752,7 +4760,7 @@ fun SettingsScreen(
                     if (summary.plansConflict) {
                         Spacer(Modifier.height(Space.md))
                         Card(
-                            Modifier.fillMaxWidth(),
+                            Modifier.fillMaxWidth().litEdge(Radius.md),
                             colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
                             shape = Radius.md
                         ) {
@@ -4780,7 +4788,7 @@ fun SettingsScreen(
                     if (moved.tracked > 0) {
                         Spacer(Modifier.height(Space.md))
                         Card(
-                            Modifier.fillMaxWidth(),
+                            Modifier.fillMaxWidth().litEdge(Radius.md),
                             colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                             shape = Radius.md
                         ) {
@@ -4922,7 +4930,7 @@ fun SettingsScreen(
 
                     Spacer(Modifier.height(Space.lg))
                     Card(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().litEdge(Radius.lg),
                         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                         shape = Radius.lg
                     ) {
@@ -4959,7 +4967,7 @@ fun SettingsScreen(
                     months.forEach { record ->
                         val open = openMonth == record.month
                         Card(
-                            Modifier.fillMaxWidth().padding(bottom = Space.sm),
+                            Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
                             colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                             shape = Radius.md
                         ) {
@@ -5084,7 +5092,7 @@ fun SettingsScreen(
                     )
                     sortedBin(bin).forEach { entry ->
                         Card(
-                            Modifier.fillMaxWidth().padding(bottom = Space.sm),
+                            Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
                             colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                             shape = Radius.md
                         ) {
@@ -5780,7 +5788,7 @@ fun SummaryCard(
     detail: String? = null
 ) {
     Card(
-        Modifier.fillMaxWidth(),
+        Modifier.fillMaxWidth().litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
         shape = Radius.md
     ) {

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,17 +20,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.ImageShader
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -169,6 +173,45 @@ object Radius {
     val lg = RoundedCornerShape(26.dp)
     val pill = RoundedCornerShape(50)
 }
+
+/**
+ * How strongly the top edge of a raised surface catches the light.
+ *
+ * Material puts its baseline dark surface at #121212 partly so that a shadow
+ * still has somewhere to fall. This app's ground is darker than that, which costs
+ * it the shadow channel outright: a shadow on #0a0b09 is a shadow on black, and
+ * nothing is drawn.
+ *
+ * Material's own replacement, tonal surface tint, does not survive here either.
+ * It tints every elevated surface with the primary, and with a single lime accent
+ * that turns the entire interface green — which is also the opposite of the rule
+ * [HeroPanel] enforces, that exactly one surface per screen may be lime.
+ *
+ * What works for a one-accent dark design is neutral: lighten, and light the top
+ * edge. A hairline of white along the top reads as a raised edge catching the
+ * light from above, which is the same cue a shadow gives, drawn from the other
+ * side. It fades out down the sides, because an edge lit all the way round reads
+ * as an outline instead — a box drawn on the surface rather than the surface
+ * itself standing slightly proud.
+ */
+private const val LitEdgeStrength = 0.08f
+
+/**
+ * The lit top edge, following whatever shape the surface is cut to.
+ *
+ * Given as a border rather than a line across the top so that it tracks the
+ * corner radius: a straight hairline would overshoot a rounded corner and hang
+ * off both ends.
+ */
+fun Modifier.litEdge(shape: Shape, strength: Float = LitEdgeStrength): Modifier = border(
+    width = Dp.Hairline,
+    brush = Brush.verticalGradient(
+        0f to Color.White.copy(alpha = strength),
+        0.45f to Color.White.copy(alpha = strength * 0.12f),
+        1f to Color.Transparent
+    ),
+    shape = shape
+)
 
 /**
  * Seven levels, three weights.
