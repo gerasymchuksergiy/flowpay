@@ -111,6 +111,29 @@ class AmountTrendTest {
         assertEquals(raised.amount, points.last().price, 0.001)
     }
 
+    /**
+     * The row's step line is drawn locally rather than by [PriceChart] — a 132dp
+     * plate with an axis row and a scrub does not become a 28dp sparkline — but it
+     * takes its scale from the shared [chartAxis], and this is the reason. Fitted
+     * to its own two points, a 1% raise filled the row exactly as a doubling did.
+     */
+    @Test
+    fun `a small raise draws small, the way it does on the full-size chart`() {
+        val nudged = amountStepPoints(
+            Pay("Дрібниця", 201.0, amounts = listOf(PricePoint(199.0, july), PricePoint(201.0, september)))
+        ).map { it.price }
+        val doubled = amountStepPoints(
+            Pay("Стрибок", 398.0, amounts = listOf(PricePoint(199.0, july), PricePoint(398.0, september)))
+        ).map { it.price }
+
+        val smallRise = chartAxis(nudged).let { it.fraction(201.0) - it.fraction(199.0) }
+        val bigRise = chartAxis(doubled).let { it.fraction(398.0) - it.fraction(199.0) }
+
+        // A tenth of the height against most of it. Both used to be the full sweep.
+        assertTrue(smallRise < 0.2f)
+        assertTrue(bigRise > 0.6f)
+    }
+
     @Test
     fun `a restored expense whose amount outran its history still ends at the truth`() {
         // What a backup written before any of this produces: an amount with a

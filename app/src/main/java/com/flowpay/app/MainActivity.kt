@@ -1429,6 +1429,22 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     }
 
     FlowPayTheme {
+        // The deck replaces the app rather than floating over it. As a dialog it
+        // would be a second window, outside the box the theme paints the ground and
+        // the grain in, and it would have had to fill the whole screen with flat
+        // near-black — the one surface in the app that would then band. Composed
+        // here instead, the theme's ground is its ground, and the navigation bar
+        // and the action button are gone for the duration without being suppressed
+        // one condition at a time.
+        val deck = recap.takeIf { recapOpen }
+        if (deck != null) {
+            RecapDeck(deck) {
+                store.saveRecapSeen(deck.month)
+                recapSeen = deck.month
+                recapOpen = false
+            }
+            return@FlowPayTheme
+        }
         Scaffold(
             modifier = Modifier.nestedScroll(barScroll),
             // Transparent, not AppBackground: the theme has already painted the
@@ -1615,15 +1631,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
             // Marked seen on opening rather than on being shown. A deck that
             // vanished because you scrolled past it once would be a month's worth
             // of the app's only ceremony, lost to a flick.
-            if (recapOpen) {
-                recap?.let { deck ->
-                    RecapDeck(deck) {
-                        store.saveRecapSeen(deck.month)
-                        recapSeen = deck.month
-                        recapOpen = false
-                    }
-                }
-            }
             if (healthOpen) {
                 health?.let { current ->
                     WorkHealthSheet(
@@ -3867,15 +3874,33 @@ fun CalculatorScreen(store: Store) {
 /**
  * A subscription's own price history, two or three points wide, in its row.
  *
- * A step rather than a slope: a subscription's price does not drift, it is held
- * and then changed, and a line sloping between two figures would draw six months
- * of a rise that happened on one morning.
+ * A step rather than a slope, for the reason [ChartLine.STEP] sets out: a point is
+ * written only where the price moved, so a sloping line between two figures would
+ * draw six months of a rise that happened on one morning.
  *
- * Deliberately local and deliberately small. The shared chart primitives are
- * being rewritten in Components.kt, including a step chart of their own, and a
- * second one competing with it is how two charts in one app end up disagreeing
- * about what a step looks like. This draws the row's worth and nothing more, and
- * should be deleted in favour of the shared primitive the moment it lands.
+ * **Why this is not [PriceChart], having looked.** The shared step chart landed and
+ * it does not fit here, and forcing it in would be worse than these thirty lines.
+ * It is a `Column`: a 132dp plate in [ChartGround] clipped to [Radius.sm], a
+ * gridline across the middle, a 6dp inset, and — not optionally — an axis row
+ * underneath carrying [axisNote]. In a 28×14dp slot the 12dp corner radius rounds
+ * the plate into a lozenge, the insets leave two device pixels of plot, and the
+ * axis line would print "вісь 199 – 249 ₴" beside [amountMoveLine], which already
+ * says both figures in words. It also owns a press-and-drag scrub, and this sits
+ * inside a row that is itself clickable to open the expense — two gestures
+ * competing for the same 28 dp. None of that is a flaw in [PriceChart]; it is a
+ * full-width card component being asked to be a sparkline.
+ *
+ * **What is adopted, rather than duplicated.** The scale comes from [chartAxis],
+ * so the [MIN_AXIS_SPAN] floor applies here too — that was a real bug in the first
+ * version of this, which fitted two points to their own min and max and so drew a
+ * 1% raise as the same cliff as a doubling. The line colour is [ChartInk], so the
+ * rule about calming the lime on a 2dp stroke holds in a list row exactly as it
+ * does on the card. What stays local is the twenty lines of `drawLine`.
+ *
+ * Spaced evenly rather than by [chartPositions]. There is no horizontal axis here
+ * and the date is in the text beside it, so date spacing would buy no readable
+ * information and would cost the common case: two changes a week apart and one six
+ * months later collapse the first tread to a fraction of a pixel at this width.
  */
 @Composable
 fun AmountStep(points: List<PricePoint>, modifier: Modifier = Modifier) {
@@ -3883,16 +3908,13 @@ fun AmountStep(points: List<PricePoint>, modifier: Modifier = Modifier) {
     // The last move decides the colour. A raise is the fact worth noticing, and it
     // is a fact about the subscription rather than about the person paying it.
     val raised = prices.size >= 2 && prices.last() > prices[prices.size - 2]
+    val axis = remember(prices) { chartAxis(prices) }
     Canvas(modifier) {
         if (prices.size < 2) return@Canvas
-        val low = prices.min()
-        val high = prices.max()
-        val range = (high - low).takeIf { it > 0.0 } ?: 1.0
         val width = 2.dp.toPx()
         val usable = (size.height - width * 2).coerceAtLeast(1f)
         val slot = size.width / prices.size
-        fun height(price: Double) =
-            width + usable * (1f - ((price - low) / range).toFloat())
+        fun height(price: Double) = width + usable * (1f - axis.fraction(price))
 
         var x = 0f
         var previous = height(prices.first())
@@ -3901,8 +3923,14 @@ fun AmountStep(points: List<PricePoint>, modifier: Modifier = Modifier) {
             val last = index == prices.size - 1
             val ink = when {
                 !last -> TextDisabled
+                // [Negative] is left alone. The desaturation rule behind [ChartInk]
+                // is about the lime specifically — 17:1 on this ground at a maxed
+                // green channel is what blooms — and this salmon is nowhere near
+                // that. Mixing it a quarter towards grey would only make the one
+                // stroke that means "this went up" harder to tell from the ones
+                // that do not.
                 raised -> Negative
-                else -> Accent
+                else -> ChartInk
             }
             // The riser first, so the tread that follows caps it cleanly.
             if (index > 0) {
@@ -3942,7 +3970,12 @@ fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
                 CommittedState.KNOWN -> Accent
                 CommittedState.OVERSPENT -> Negative
                 CommittedState.UNKNOWN -> TextSecondary
-            }
+            },
+            // This figure is rewritten the moment the income is edited, and the
+            // bar it sits above changes width at the same time. Proportional
+            // digits would make the headline change width too, so two things
+            // would move when only one of them is the answer.
+            style = Tabular
         )
         Spacer(Modifier.height(Space.sm))
         Box(
@@ -4217,7 +4250,11 @@ fun PaymentsScreen(
                                             color = TextSecondary,
                                             fontSize = Type.captionSize,
                                             maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            overflow = TextOverflow.Ellipsis,
+                                            // One of these under every name in the
+                                            // timeline, so they stack into a column
+                                            // whether or not anything drew one.
+                                            style = Tabular
                                         )
                                         // The date the free ride ends, on the row, in
                                         // the accent — because it is the one fact about
@@ -4252,7 +4289,13 @@ fun PaymentsScreen(
                                                     color = TextSecondary,
                                                     fontSize = Type.captionSize,
                                                     maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    // "було 199 → стало 249 ₴" is two
+                                                    // figures asking to be compared
+                                                    // across an arrow. Unequal digit
+                                                    // widths are exactly what stops
+                                                    // that reading as a comparison.
+                                                    style = Tabular
                                                 )
                                             }
                                         }
@@ -4330,7 +4373,8 @@ fun PaymentsScreen(
                     Card(
                         Modifier
                             .padding(horizontal = Space.screen, vertical = Space.xs)
-                            .fillMaxWidth(),
+                            .fillMaxWidth()
+                            .litEdge(Radius.md),
                         colors = CardDefaults.cardColors(containerColor = SurfaceLow),
                         shape = Radius.md
                     ) {
@@ -4356,7 +4400,9 @@ fun PaymentsScreen(
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    // A stack of dates and amounts, one per row.
+                                    style = Tabular
                                 )
                             }
                             // The smoothed figure, and only ever here beside the
@@ -4367,7 +4413,10 @@ fun PaymentsScreen(
                                     pay.currency
                                 )}/міс",
                                 color = TextDisabled,
-                                fontSize = Type.captionSize
+                                fontSize = Type.captionSize,
+                                // Right-aligned against the row's edge, so unequal
+                                // digits would leave the column of them ragged.
+                                style = Tabular
                             )
                         }
                     }
