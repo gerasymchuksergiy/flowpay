@@ -202,11 +202,16 @@ fun withAmount(pay: Pay, amount: Double, today: Long): Pay {
  * would then announce. A currency change starts the history again from the new
  * figure, because in the new currency that is genuinely all the app has ever seen.
  */
-fun edited(pay: Pay, amount: Double, currency: String, today: Long): Pay = when {
-    amount <= 0.0 -> pay
-    currency != pay.currency ->
-        pay.copy(amount = amount, currency = currency, amounts = listOf(PricePoint(amount, today)))
-    else -> withAmount(pay, amount, today)
+fun edited(pay: Pay, amount: Double, currency: String, today: Long): Pay {
+    if (amount <= 0.0) return pay
+    // Blank reads as hryvnia, the same way [toHryvnia] reads an unlabelled price.
+    // The two have to agree on what "the currency changed" means, or an expense
+    // restored from old storage with an empty code would look like a switch and
+    // lose its history to a change that never happened.
+    val code = currency.ifBlank { UAH }
+    val was = pay.currency.ifBlank { UAH }
+    if (code == was) return withAmount(pay.copy(currency = code), amount, today)
+    return pay.copy(amount = amount, currency = code, amounts = listOf(PricePoint(amount, today)))
 }
 
 /** A move in what an expense costs, from the figure before it to the one after. */
@@ -676,7 +681,7 @@ fun approxMoney(value: Double): String = money(kotlin.math.round(value))
 fun amountLabel(value: Double, currency: String): String = when {
     currency == USD -> dollars(value)
     currency.isBlank() || currency == UAH -> money(value)
-    else -> "${amountFormat().format(value)} $currency"
+    else -> "${bareAmount(value)} $currency"
 }
 
 // ------------------------------------------------- a price that is not in hryvnia

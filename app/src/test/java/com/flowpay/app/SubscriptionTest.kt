@@ -109,6 +109,28 @@ class SubscriptionTest {
         assertEquals(listOf(269.0, 309.0), after.amounts.map { it.price })
     }
 
+    @Test
+    fun `an unlabelled currency is hryvnia, not a switch away from it`() {
+        // [toHryvnia] reads a price with no currency on it as hryvnia, and this has
+        // to agree: an expense restored from old storage with an empty code would
+        // otherwise look like a switch and lose its history to a change that never
+        // happened.
+        val blank = raised.copy(currency = "")
+
+        val after = edited(blank, 349.0, UAH, epochToday)
+
+        assertEquals(UAH, after.currency)
+        assertEquals(listOf(269.0, 309.0, 349.0), after.amounts.map { it.price })
+    }
+
+    @Test
+    fun `a real switch away from hryvnia still starts the history again`() {
+        val after = edited(raised.copy(currency = ""), 9.0, USD, epochToday)
+
+        assertEquals(USD, after.currency)
+        assertEquals(listOf(9.0), after.amounts.map { it.price })
+    }
+
     // -------------------------------------------------------- reading it back
 
     @Test
@@ -344,6 +366,32 @@ class SubscriptionTest {
             0.001
         )
         assertEquals(468.0, monthlyTotal(listOf(trial, netflix), 0.0, ends).total, 0.001)
+    }
+
+    @Test
+    fun `a dollar expense on trial converts nothing, then converts in full`() {
+        // With a live rate the conversion must not happen early: a trial is nought
+        // hryvnia and nought dollars, not nought dollars at 44,80.
+        val hosting = trial.copy(currency = USD, amount = 12.0)
+        val ends = LocalDate.of(2026, 10, 3)
+
+        val free = monthlyTotal(listOf(hosting), usdSellRate = 44.8, today = today)
+        val charged = monthlyTotal(listOf(hosting), usdSellRate = 44.8, today = ends)
+
+        assertEquals(0.0, free.usd, 0.001)
+        assertEquals(0.0, free.usdInUah, 0.001)
+        assertEquals(0.0, free.total, 0.001)
+        assertEquals(12.0, charged.usd, 0.001)
+        assertEquals(537.6, charged.usdInUah, 0.001)
+    }
+
+    @Test
+    fun `a dollar expense still labels and totals its year as dollars`() {
+        // The three-branch amountLabel must keep sending USD to the dollar branch.
+        val hosting = trial.copy(currency = USD, amount = 12.0)
+
+        assertEquals("12 $", shown(amountLabel(hosting.amount, hosting.currency)))
+        assertEquals("144 $ на рік", shown(annualLabel(hosting)))
     }
 
     @Test
