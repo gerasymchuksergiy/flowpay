@@ -112,6 +112,15 @@ data class Wish(
      */
     val variant: String = "",
     /**
+     * What the shop says about the thing: description, brand, rating, specs.
+     *
+     * Empty for most wishes, and emphatically not a failure — only what a page
+     * declares about itself in a standard place is read, and plenty of shops
+     * declare nothing. Refreshed with the price, because a shop that starts
+     * filling these in should not need the wish to be added again.
+     */
+    val about: ProductAbout = ProductAbout(),
+    /**
      * How much the price above is currently worth believing.
      *
      * Defaults to [Freshness.OK] so that every wish saved before this existed reads
@@ -533,6 +542,40 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     .put("s", wish.saved).put("m", wish.monthlyPlan).put("dl", wish.deadline)
     .put("np", wish.notifiedPrice).put("v", wish.variant)
     .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil)
+    .put("ab", aboutJson(wish.about))
+
+/**
+ * The page's own words, stored beside the wish.
+ *
+ * A nested object rather than five more top-level keys, so the bin's restore and
+ * the backup file carry it whole or not at all — a half-restored description is
+ * harder to notice than a missing one.
+ */
+fun aboutJson(about: ProductAbout): JSONObject = JSONObject()
+    .put("d", about.description).put("b", about.brand)
+    .put("r", about.rating).put("rc", about.ratingCount)
+    .put(
+        "s",
+        JSONArray().apply {
+            about.specs.forEach { (name, value) ->
+                put(JSONObject().put("n", name).put("v", value))
+            }
+        }
+    )
+
+fun aboutOf(o: JSONObject?): ProductAbout {
+    if (o == null) return ProductAbout()
+    val specs = o.optJSONArray("s") ?: JSONArray()
+    return ProductAbout(
+        description = o.optString("d"),
+        brand = o.optString("b"),
+        rating = o.optDouble("r", 0.0),
+        ratingCount = o.optInt("rc", 0),
+        specs = (0 until specs.length()).mapNotNull { index ->
+            specs.optJSONObject(index)?.let { it.optString("n") to it.optString("v") }
+        }.filter { it.first.isNotBlank() && it.second.isNotBlank() }
+    )
+}
 
 fun wishOf(o: JSONObject): Wish {
     val recorded = o.optJSONArray("h") ?: JSONArray()
@@ -567,7 +610,8 @@ fun wishOf(o: JSONObject): Wish {
         // page, so that is the honest default rather than a fresh doubt.
         freshness = freshnessFrom(o.optString("fr")),
         addedDay = o.optLong("ad", 0L),
-        holdUntil = o.optLong("hu", 0L)
+        holdUntil = o.optLong("hu", 0L),
+        about = aboutOf(o.optJSONObject("ab"))
     )
 }
 
@@ -694,7 +738,10 @@ fun readWish(
             price = match.offer.price,
             history = appendPrice(previous.history, match.offer.price, today, rate.sell, rate.source),
             checkedDay = today,
-            freshness = Freshness.OK
+            freshness = Freshness.OK,
+            // Refreshed with the price, but never replaced by nothing: a shop that
+            // drops a field between two reads should not erase what it said before.
+            about = extractAbout(html).takeIf { !it.isEmpty } ?: previous.about
         )
     )
     // The checked day still moves: the page was genuinely looked at, and the item
@@ -2121,6 +2168,58 @@ fun SharedTransitionScope.WishDetailScreen(
                                 formatDate(readyDate(plan.months, today)),
                                 Modifier.weight(1f)
                             )
+                        }
+                    }
+                }
+            }
+
+            // Only where the shop actually said something. A heading over an
+            // empty block is worse than no block: it reads as something broken
+            // rather than as a shop that publishes nothing.
+            if (!wish.about.isEmpty) {
+                SectionTitle("Про товар")
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            if (wish.about.brand.isNotBlank() || wish.about.rating > 0) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (wish.about.brand.isNotBlank()) {
+                                        Text(
+                                            wish.about.brand,
+                                            color = Accent,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    ratingLine(wish.about).takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color = TextSecondary, fontSize = Type.captionSize)
+                                    }
+                                }
+                                Spacer(Modifier.height(Space.sm))
+                            }
+                            if (wish.about.description.isNotBlank()) {
+                                var expanded by remember(wish.id) { mutableStateOf(false) }
+                                Text(
+                                    wish.about.description,
+                                    color = TextSecondary,
+                                    fontSize = Type.bodySize,
+                                    lineHeight = Type.bodyLine,
+                                    maxLines = if (expanded) Int.MAX_VALUE else 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable { expanded = !expanded }
+                                )
+                            }
+                            if (wish.about.specs.isNotEmpty()) {
+                                Spacer(Modifier.height(Space.md))
+                                wish.about.specs.forEach { (name, value) ->
+                                    LeaderRow(name, value)
+                                }
+                            }
                         }
                     }
                 }

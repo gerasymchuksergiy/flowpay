@@ -385,7 +385,8 @@ fun wishFromOffer(
         price = offer.price,
         history = listOf(PricePoint(offer.price, today, rate.sell, rate.source)),
         variant = offer.label,
-        addedDay = today
+        addedDay = today,
+        about = extractAbout(html)
     )
 
 /**

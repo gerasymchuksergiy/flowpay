@@ -138,7 +138,13 @@ data class PriceMovement(
 private const val MOVEMENT_EPSILON = 0.005
 
 fun priceMovement(wishes: List<Wish>): PriceMovement {
-    val tracked = wishes.filter { it.history.size > 1 && it.price > 0 }
+    // A wish whose page stopped answering still shows its last known figure, and
+    // counting that as "the list held steady" is the same lie the card refuses to
+    // tell. A typed-in price is excluded for the matching reason: it measures the
+    // person, not the shop.
+    val tracked = wishes.filter {
+        it.history.size > 1 && it.price > 0 && it.freshness == Freshness.OK
+    }
     val firstTotal = tracked.sumOf { it.history.first().price }
     val nowTotal = tracked.sumOf { it.price }
     val change = nowTotal - firstTotal
@@ -421,6 +427,44 @@ fun purchaseTallyLine(tally: PurchaseTally): String {
     if (tally.judged == 0) return "Порівнювати ще нема з чим"
     val base = "Куплено вчасно: ${tally.patient} з ${tally.judged}"
     return if (tally.overpaid > 0.0) "$base · переплата ${money(tally.overpaid)}" else base
+}
+
+/** Ukrainian plural for how many people rated a thing. */
+fun reviewsLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "відгуків"
+        last == 1 -> "відгук"
+        last in 2..4 -> "відгуки"
+        else -> "відгуків"
+    }
+    return "$count $word"
+}
+
+/**
+ * A rating as a shop states it, with the weight behind it.
+ *
+ * The count matters more than the score: 5,0 from two people says less than 4,3
+ * from four hundred, and a score with no count beside it invites the wrong read.
+ */
+fun ratingLine(about: ProductAbout): String = when {
+    about.rating <= 0 -> ""
+    about.ratingCount > 0 -> "%.1f / 5 · %s".format(about.rating, reviewsLabel(about.ratingCount))
+    else -> "%.1f / 5".format(about.rating)
+}
+
+/** Ukrainian plural for how many specifications a shop published. */
+fun specsLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "характеристик"
+        last == 1 -> "характеристика"
+        last in 2..4 -> "характеристики"
+        else -> "характеристик"
+    }
+    return "$count $word"
 }
 
 /** Ukrainian plural for how many wishes are being watched. */

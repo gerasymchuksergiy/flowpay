@@ -291,4 +291,39 @@ class OverviewTest {
         assertEquals("21 позиція", positionsLabel(21))
     }
 
+
+    @Test
+    fun `a wish whose page stopped answering is left out of the verdict`() {
+        // Its card already refuses to promise the figure; the statistic that asks
+        // "is waiting working out" must not quietly count it as holding steady.
+        val watched = wish("a", price = 800.0, history = listOf(1000.0, 800.0))
+        val gone = wish("b", price = 2000.0, history = listOf(2000.0, 2000.0))
+            .copy(freshness = Freshness.GONE)
+
+        val moved = priceMovement(listOf(watched, gone))
+
+        assertEquals(1, moved.tracked)
+        assertEquals(-200.0, moved.change, 0.001)
+        assertEquals(1000.0, moved.firstTotal, 0.001)
+    }
+
+    @Test
+    fun `a hand-typed price measures the person, not the shop`() {
+        val typed = wish("a", price = 500.0, history = listOf(900.0, 500.0))
+            .copy(freshness = Freshness.MANUAL)
+
+        assertEquals(0, priceMovement(listOf(typed)).tracked)
+    }
+
+    @Test
+    fun `an out of stock wish stops counting the moment it goes stale`() {
+        val stale = wish("a", price = 700.0, history = listOf(1000.0, 700.0))
+            .copy(freshness = Freshness.OUT_OF_STOCK)
+
+        val moved = priceMovement(listOf(stale))
+
+        assertEquals(0, moved.tracked)
+        assertNull(moved.biggestDropName)
+    }
+
 }
