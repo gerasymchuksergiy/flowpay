@@ -1,10 +1,18 @@
 package com.flowpay.app
 
+import android.provider.Settings
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -194,7 +202,93 @@ private val FlowPayColors = darkColorScheme(
     scrim = Color(0xcc000000)
 )
 
+/**
+ * Material 3 Expressive's motion, written out as the springs it actually is.
+ *
+ * A duration and an easing curve describe a film of a movement. A spring describes
+ * the movement: interrupt it halfway and it carries its velocity into wherever it
+ * is going next, which is the whole reason a state change can be read at a glance
+ * on a 120 Hz screen instead of being a cut between two pictures.
+ *
+ * The numbers are the Expressive motion scheme's own token values. They are
+ * spelled out here rather than read from `MaterialTheme.motionScheme`, because in
+ * material3 1.4.0 that property and the whole `MotionScheme` type are `internal`
+ * — the Expressive motion API is compiled into the artifact but not yet released
+ * to callers. Written out, the two knobs that matter are visible anyway: damping
+ * below one overshoots and settles back, which is the bounce, and stiffness is how
+ * quickly it gets there.
+ *
+ * Spatial springs move things — size, offset, corner radius — and may overshoot.
+ * Effects springs change colour and alpha, and are critically damped at 1.0,
+ * because a colour that overshoots is simply the wrong colour for a few frames.
+ */
+private const val SpatialDamping = 0.8f
+private const val SpatialStiffness = 380f
+private const val FastSpatialDamping = 0.6f
+private const val FastSpatialStiffness = 800f
+private const val EffectsDamping = 1.0f
+private const val EffectsStiffness = 1600f
+
+/**
+ * Whether the phone has been told to stop animating.
+ *
+ * Read once at the top of the app rather than per animation: it is a system
+ * setting, and a screen where half the motion honoured it would be worse than
+ * either answer.
+ */
+val LocalReducedMotion = staticCompositionLocalOf { false }
+
+/**
+ * The system's own switch, which is what "Вимкнути анімацію" in accessibility
+ * settings and developer options both write to. Anything unreadable counts as
+ * motion allowed, because refusing to animate on a phone that never asked would
+ * be its own kind of wrong.
+ */
+@Composable
+private fun systemReducedMotion(): Boolean {
+    val context = LocalContext.current
+    return remember(context) {
+        runCatching {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) == 0f
+        }.getOrDefault(false)
+    }
+}
+
+/**
+ * The springs the app animates with, already answering the reduced-motion setting.
+ *
+ * Reduced motion is honoured by snapping rather than by shortening: a fast
+ * animation is still an animation, and the point of the setting is that there
+ * should not be one. The state still changes, instantly.
+ */
+object Motion {
+    /** Movement: size, offset, corner radius. Allowed to overshoot. */
+    @Composable
+    fun <T> spatial(): FiniteAnimationSpec<T> =
+        honoured(spring(dampingRatio = SpatialDamping, stiffness = SpatialStiffness))
+
+    /** The same, for a small thing that should feel immediate. Bouncier on purpose. */
+    @Composable
+    fun <T> fastSpatial(): FiniteAnimationSpec<T> =
+        honoured(spring(dampingRatio = FastSpatialDamping, stiffness = FastSpatialStiffness))
+
+    /** Colour and alpha. Never overshoots. */
+    @Composable
+    fun <T> effects(): FiniteAnimationSpec<T> =
+        honoured(spring(dampingRatio = EffectsDamping, stiffness = EffectsStiffness))
+
+    @Composable
+    private fun <T> honoured(spec: FiniteAnimationSpec<T>): FiniteAnimationSpec<T> =
+        if (LocalReducedMotion.current) snap() else spec
+}
+
 @Composable
 fun FlowPayTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = FlowPayColors, content = content)
+    CompositionLocalProvider(LocalReducedMotion provides systemReducedMotion()) {
+        MaterialTheme(colorScheme = FlowPayColors, content = content)
+    }
 }
