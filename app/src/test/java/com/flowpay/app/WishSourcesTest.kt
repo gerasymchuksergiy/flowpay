@@ -482,4 +482,81 @@ class WishSourcesTest {
     fun `with nothing to go on the wish reports itself unreadable`() {
         assertEquals(Freshness.UNREADABLE, sourceFreshness(emptyList()))
     }
+
+    // ------------------------------------------- where browsing meets the sources
+
+    @Test
+    fun `ordering by price uses the cheapest shop, not the one added first`() {
+        val cheapElsewhere = wish(source("rozetka.ua", 5_000.0), source("comfy.ua", 900.0))
+            .copy(id = "a", price = 900.0, url = "https://comfy.ua/item")
+        val plain = Wish("b", "Б", "https://shop.ua/b", "", 2_000.0, history = emptyList())
+
+        assertEquals(
+            listOf("a", "b"),
+            sortWishes(listOf(plain, cheapElsewhere), WishSort.CHEAPEST).map { it.id }
+        )
+        assertEquals(
+            listOf("b", "a"),
+            sortWishes(listOf(plain, cheapElsewhere), WishSort.DEAREST).map { it.id }
+        )
+    }
+
+    @Test
+    fun `a category total counts the cheapest shop's price`() {
+        val watched = wish(source("rozetka.ua", 5_000.0), source("comfy.ua", 900.0))
+            .copy(price = 900.0, category = "Техніка")
+
+        assertEquals(900.0, allCategoriesTotal(listOf(watched)), 0.001)
+        assertEquals(900.0, categoryTotals(listOf(watched)).single().total, 0.001)
+    }
+
+    @Test
+    fun `a wish with no readable price never reads as the cheapest thing on the list`() {
+        // Its one shop quotes kronor, so nothing could be converted and the price
+        // stayed at nought. Sorting on the bare figure used to float it to the very
+        // top of "Дешевші", where it looked free.
+        val unpriced = Wish("none", "Något", "https://shop.se/x", "", 0.0, history = emptyList())
+            .copy(freshness = Freshness.UNREADABLE)
+        val cheap = Wish("cheap", "Дешеве", "https://shop.ua/c", "", 100.0, history = emptyList())
+        val dear = Wish("dear", "Дороге", "https://shop.ua/d", "", 9_000.0, history = emptyList())
+        val list = listOf(unpriced, dear, cheap)
+
+        assertEquals(
+            listOf("cheap", "dear", "none"),
+            sortWishes(list, WishSort.CHEAPEST).map { it.id }
+        )
+        assertEquals(
+            listOf("dear", "cheap", "none"),
+            sortWishes(list, WishSort.DEAREST).map { it.id }
+        )
+        assertFalse(hasReadablePrice(unpriced))
+    }
+
+    @Test
+    fun `a wish whose shops went quiet keeps its place in a price ordering`() {
+        // Its last known price is a real figure someone once could have paid, so it
+        // sorts on that rather than being shoved to the end with the unpriced.
+        val stale = Wish("stale", "Тихе", "https://shop.ua/s", "", 500.0, history = emptyList())
+            .copy(freshness = Freshness.GONE)
+        val dear = Wish("dear", "Дороге", "https://shop.ua/d", "", 9_000.0, history = emptyList())
+
+        assertEquals(
+            listOf("stale", "dear"),
+            sortWishes(listOf(dear, stale), WishSort.CHEAPEST).map { it.id }
+        )
+        assertTrue(hasReadablePrice(stale))
+    }
+
+    @Test
+    fun `an unreadable wish still answers to search and to its category`() {
+        // Vanishing from the grid would read as a deletion the person did not do.
+        val unpriced = Wish("none", "Något", "https://shop.se/x", "", 0.0, history = emptyList())
+            .copy(freshness = Freshness.UNREADABLE, category = "Техніка")
+
+        assertEquals(listOf("none"), filterWishes(listOf(unpriced), null, "något").map { it.id })
+        assertEquals(
+            listOf("none"),
+            filterWishes(listOf(unpriced), "Техніка", "").map { it.id }
+        )
+    }
 }

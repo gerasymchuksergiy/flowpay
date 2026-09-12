@@ -773,6 +773,15 @@ fun positionsLabel(count: Int): String {
     return "$count $word"
 }
 
+/**
+ * Whether there is a figure here a price ordering can honestly use.
+ *
+ * A wish keeps its last known price when its shops go quiet, so this is only
+ * false for one that never had a readable price at all: a page that states none,
+ * or one priced in money the app has no rate for.
+ */
+fun hasReadablePrice(wish: Wish): Boolean = wish.price > 0.0
+
 /** The sum this wish is actually aiming at: the target when set, else the price. */
 fun wishGoal(wish: Wish): Double = if (wish.targetPrice > 0) wish.targetPrice else wish.price
 
@@ -792,8 +801,14 @@ fun sortWishes(items: List<Wish>, sort: WishSort): List<Wish> = when (sort) {
     // top pretending to be the oldest thing on the list.
     WishSort.NEWEST -> items.sortedByDescending { addedDay(it) }
     WishSort.BIGGEST_DROP -> items.sortedBy { priceChangePercent(it) }
-    WishSort.CHEAPEST -> items.sortedBy { it.price }
-    WishSort.DEAREST -> items.sortedByDescending { it.price }
+    // A wish with no readable price — a page that states none, or one priced in
+    // money there is no rate for — is not the cheapest thing on the list, it is
+    // the one thing the list cannot price. Sorting on the bare figure put those
+    // zeroes at the very top of "Дешевші", reading as free.
+    WishSort.CHEAPEST -> items.sortedWith(compareBy({ !hasReadablePrice(it) }, { it.price }))
+    WishSort.DEAREST -> items.sortedWith(
+        compareBy<Wish> { !hasReadablePrice(it) }.thenByDescending { it.price }
+    )
     WishSort.CLOSEST -> items.sortedByDescending { wishProgress(it) }
     WishSort.NAME -> items.sortedWith(wishNameOrder())
 }
