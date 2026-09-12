@@ -3495,11 +3495,18 @@ fun SharedTransitionScope.WishCard(
     // until March, and a card that reshaped itself to say "now!" would be the app
     // overruling the one decision the hold exists to protect.
     val reached = targetHit(wish, today) && !held
+    // One shape, handed to both the card and its lit edge. The edge is a border
+    // that follows whatever outline it is given — that is the whole reason it is a
+    // border rather than a line across the top — so a card clipped to the morph
+    // while its edge still traced an 18dp rectangle would have the hairline cutting
+    // across the opened corners and hanging off them, which is exactly the failure
+    // litEdge was shaped to avoid.
+    val cardShape = wishCardShape(reached)
     Card(
         onClick = onOpen,
-        modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
+        modifier = Modifier.fillMaxWidth().litEdge(cardShape),
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-        shape = wishCardShape(reached)
+        shape = cardShape
     ) {
         Box {
             if (wish.image.isNotBlank()) {
@@ -4285,7 +4292,16 @@ fun PaymentsScreen(
                 item(key = group.date.toString()) {
                     val isToday = group.date == today
                     Card(
-                        Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+                        Modifier
+                            .padding(horizontal = Space.screen, vertical = Space.xs)
+                            .fillMaxWidth()
+                            // The edge on every one of them, including today's
+                            // tinted card. The timeline was the one run of cards
+                            // the original pass missed, so it sat flat directly
+                            // above sections that stand proud — and an edge that
+                            // came and went with the date would trade one
+                            // inconsistency for a stranger one.
+                            .litEdge(Radius.md),
                         colors = CardDefaults.cardColors(
                             containerColor = if (isToday) AccentSoft else SurfaceBase
                         ),
