@@ -77,6 +77,184 @@ fun yearlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
 /** "36 000 ₴ на рік" — one expense's annual cost, in its own currency. */
 fun annualLabel(pay: Pay): String = "${amountLabel(yearlyCost(pay), pay.currency)} на рік"
 
+// ------------------------------------------------------- what it used to cost
+
+/**
+ * A subscription's price is not a fact, it is a series.
+ *
+ * Netflix goes from 269 to 309 and an expense that remembers one number simply
+ * loses the 269. Nothing here fetches anything — a recurring charge has no page to
+ * read — so the whole history is built from the one moment the app can observe: a
+ * person opening the expense and typing a different figure.
+ */
+
+/**
+ * The recorded amounts, ending at what the expense costs now.
+ *
+ * The closing point is added only when the two disagree, which they can after a
+ * restore from a backup written before any of this. Without it the sheet would
+ * quote a "current" figure from the history that the amount beside it contradicts.
+ */
+fun amountTrail(pay: Pay): List<PricePoint> {
+    val recorded = pay.amounts.filter { it.price > 0.0 }
+    if (pay.amount <= 0.0 || recorded.lastOrNull()?.price == pay.amount) return recorded
+    return recorded + PricePoint(pay.amount, 0L)
+}
+
+/**
+ * Records a new amount, and the one it replaces.
+ *
+ * An expense that has never been edited carries no history, so the figure being
+ * replaced is written in first. Without that seed the very first raise would store
+ * the new price on its own and the "було" this exists to show would be gone — the
+ * exact loss the feature is here to stop, reintroduced at the one moment it
+ * matters. The seed is dated day zero, which [PricePoint] already reads as "seen,
+ * but not dated": the app genuinely does not know when the old price started.
+ *
+ * An unchanged amount writes nothing. Opening the sheet and saving it again is not
+ * a price change, and recording one would put a 0% line in tomorrow's digest.
+ */
+fun withAmount(pay: Pay, amount: Double, today: Long): Pay {
+    if (amount <= 0.0 || amount == pay.amount) return pay
+    val seeded = pay.amounts.ifEmpty {
+        listOfNotNull(PricePoint(pay.amount, 0L).takeIf { pay.amount > 0.0 })
+    }
+    return pay.copy(amount = amount, amounts = appendPrice(seeded, amount, today))
+}
+
+/**
+ * Applies an edited amount, keeping the history only where it still describes the
+ * same thing.
+ *
+ * Switching an expense from hryvnia to dollars replaces 309 with 9, and recording
+ * that as a 97% fall would be the history's first and worst lie — one the digest
+ * would then announce. A currency change starts the history again from the new
+ * figure, because in the new currency that is genuinely all the app has ever seen.
+ */
+fun edited(pay: Pay, amount: Double, currency: String, today: Long): Pay = when {
+    amount <= 0.0 -> pay
+    currency != pay.currency ->
+        pay.copy(amount = amount, currency = currency, amounts = listOf(PricePoint(amount, today)))
+    else -> withAmount(pay, amount, today)
+}
+
+/** A move in what an expense costs, from the figure before it to the one after. */
+data class AmountChange(
+    val from: Double,
+    val to: Double,
+    /** Epoch day the new figure took effect. Zero when it was never dated. */
+    val day: Long,
+    val percent: Double
+) {
+    val raised: Boolean get() = to > from
+}
+
+/** The latest move, or null while the expense has only ever cost one thing. */
+fun lastAmountChange(pay: Pay): AmountChange? {
+    val trail = amountTrail(pay)
+    if (trail.size < 2) return null
+    val from = trail[trail.size - 2].price
+    val to = trail.last()
+    if (from <= 0.0 || from == to.price) return null
+    return AmountChange(from, to.price, to.day, (to.price - from) / from * 100)
+}
+
+/**
+ * What the expense cost on [day], as far as anything recorded knows.
+ *
+ * The last figure written on or before that day. With nothing written that early
+ * the oldest figure there is stands in, because a point is only ever written when
+ * the amount moves: an expense with no point before the day had not moved by then.
+ */
+fun amountOn(pay: Pay, day: Long): Double {
+    val recorded = pay.amounts.filter { it.price > 0.0 }
+    return recorded.lastOrNull { it.day in 1..day }?.price
+        ?: recorded.firstOrNull()?.price
+        ?: pay.amount
+}
+
+/** "Було 269 ₴ · +15% з 12 вересня" — the line under the amount on the expense's own sheet. */
+fun amountHistoryNote(pay: Pay): String? {
+    val change = lastAmountChange(pay) ?: return null
+    // No verb. A name typed by the user has no gender the app can know, and
+    // "Інтернет подорожчала" is how an app comes out reading as machine-translated.
+    val since = change.day.takeIf { it > 0L }
+        ?.let { " з ${dayMonth(LocalDate.ofEpochDay(it))}" }
+        .orEmpty()
+    return "Було ${amountLabel(change.from, pay.currency)} · ${signedPercent(change.percent, 0)}$since"
+}
+
+/** How many recorded amounts the sheet lists before it stops being a history and starts being a wall. */
+const val TRAIL_LINES = 6
+
+/** The history as rows, newest first: "309 ₴ · з 12 вересня". */
+fun amountTrailLines(pay: Pay, limit: Int = TRAIL_LINES): List<String> {
+    val trail = amountTrail(pay)
+    if (trail.size < 2) return emptyList()
+    return trail.reversed().take(limit.coerceAtLeast(1)).map { point ->
+        val since = point.day.takeIf { it > 0L }
+            ?.let { "з ${dayMonth(LocalDate.ofEpochDay(it))}" }
+            // The oldest figure predates the app watching, so it gets no date
+            // rather than a guessed one.
+            ?: "раніше"
+        "${amountLabel(point.price, pay.currency)} · $since"
+    }
+}
+
+/** "Netflix 269 → 309 ₴, +15%" — one raise, said in the length a notification allows. */
+fun amountChangeLine(pay: Pay, change: AmountChange): String =
+    "${pay.name} ${bareAmount(change.from)} → ${amountLabel(change.to, pay.currency)}, " +
+        signedPercent(change.percent, 0)
+
+/**
+ * A year of the same standing costs, then and now.
+ *
+ * The figure a subscription tracker exists to produce. Each raise on its own is a
+ * few tens of hryvnia and reads as nothing; the same raises added up over twelve
+ * months are the number that gets a subscription cancelled.
+ */
+data class YearlyShift(
+    /** A year of these expenses at the amounts they carried a year ago. */
+    val before: MonthlyTotal,
+    /** A year of them at what they cost now. */
+    val now: MonthlyTotal,
+    /** Now minus then, in hryvnia. Negative on the rare year something got cheaper. */
+    val difference: Double,
+    val percent: Double,
+    /** Nothing recorded moved, so the two figures are one figure. */
+    val unchanged: Boolean
+)
+
+/**
+ * Compares the list against itself a year ago.
+ *
+ * The expenses are the ones standing now, restated at their old amounts — not the
+ * list as it stood last year, which nothing on the phone records. That keeps the
+ * comparison about prices rather than about what was added or deleted, which is
+ * the only version of the question the app can answer honestly.
+ */
+fun yearlyShift(items: List<Pay>, usdSellRate: Double, today: LocalDate): YearlyShift {
+    val yearAgo = today.minusYears(1).toEpochDay()
+    val before = yearlyTotal(items.map { it.copy(amount = amountOn(it, yearAgo)) }, usdSellRate)
+    val now = yearlyTotal(items, usdSellRate)
+    val difference = now.total - before.total
+    return YearlyShift(
+        before = before,
+        now = now,
+        difference = difference,
+        percent = if (before.total > 0.0) difference / before.total * 100 else 0.0,
+        // A hundredth of a hryvnia over a year is rounding, not a raise.
+        unchanged = kotlin.math.abs(difference) < 0.01
+    )
+}
+
+/** The honest yearly line, or null on a year in which nothing moved. */
+fun yearlyShiftNote(shift: YearlyShift): String? {
+    if (shift.unchanged) return null
+    return "Торік ${money(shift.before.total)} на рік, зараз ${money(shift.now.total)} " +
+        "(${signedPercent(shift.percent, 0)})"
+}
+
 data class Budget(
     val income: Double,
     val expenses: Double,
@@ -340,11 +518,19 @@ private fun amountFormat(): NumberFormat = NumberFormat.getNumberInstance(UK).ap
     minimumFractionDigits = 0
 }
 
+/**
+ * The figure alone, with no currency after it.
+ *
+ * For the left-hand side of "269 → 309 ₴", where naming the currency twice in
+ * four words is the sort of repetition that makes a short line hard to read.
+ */
+fun bareAmount(value: Double): String = amountFormat().format(value)
+
 /** "2 203,24 ₴" */
-fun money(value: Double): String = amountFormat().format(value) + " ₴"
+fun money(value: Double): String = bareAmount(value) + " ₴"
 
 /** "250 $" */
-fun dollars(value: Double): String = amountFormat().format(value) + " $"
+fun dollars(value: Double): String = bareAmount(value) + " $"
 
 /**
  * A converted figure, rounded to whole hryvnia.

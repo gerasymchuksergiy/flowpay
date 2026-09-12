@@ -215,7 +215,22 @@ data class Pay(
      * A reminder that arrives on the day a subscription renews is too late to do
      * anything about it, which is the one thing a subscription tracker is for.
      */
-    val warnDays: Int = DEFAULT_WARN_DAYS
+    val warnDays: Int = DEFAULT_WARN_DAYS,
+    /**
+     * What this has cost before now, oldest first, ending at [amount].
+     *
+     * A subscription that raises its price quietly is how a subscription earns,
+     * and an expense remembering only today's figure cannot see it happen: 269
+     * was simply overwritten by 309 and nothing was left to compare against. The
+     * same [PricePoint] a wish records its prices with, because the question is
+     * the same one and a second shape for it would need a second chart, a second
+     * mapping and a second set of bugs.
+     *
+     * Empty on every expense saved before this existed, and on one that has never
+     * been edited — nothing fetches these, so a point is written only when a
+     * person types a different number.
+     */
+    val amounts: List<PricePoint> = emptyList()
 )
 data class Order(
     val id: String,
@@ -745,9 +760,32 @@ fun wishOf(o: JSONObject): Wish {
     )
 }
 
+/**
+ * An expense's amount history, written whole.
+ *
+ * The rate a wish records beside each price has no meaning here: an expense is
+ * billed in one currency and stays in it, so only the figure and the day it took
+ * effect are stored. Reading tolerates anything that is not an object, because a
+ * half-written array must come back as a shorter history rather than as a crash
+ * that costs the whole expense.
+ */
+fun amountsJson(points: List<PricePoint>): JSONArray = JSONArray().apply {
+    points.forEach { point -> put(JSONObject().put("a", point.price).put("d", point.day)) }
+}
+
+fun amountsOf(array: JSONArray?): List<PricePoint> {
+    if (array == null) return emptyList()
+    return (0 until array.length()).mapNotNull { index ->
+        array.optJSONObject(index)?.let { PricePoint(it.optDouble("a", 0.0), it.optLong("d", 0L)) }
+    }.filter { it.price > 0.0 }
+}
+
 fun payJson(pay: Pay): JSONObject = JSONObject()
     .put("n", pay.name).put("a", pay.amount).put("d", pay.day)
     .put("cur", pay.currency).put("wd", pay.warnDays)
+    // Both of these have to travel, or the bin restores a subscription that has
+    // forgotten it was ever cheaper and a backup imports a trial as a live charge.
+    .put("am", amountsJson(pay.amounts))
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
@@ -757,7 +795,10 @@ fun payOf(o: JSONObject): Pay = Pay(
     o.optString("cur", UAH).ifBlank { UAH },
     // Entries saved before the warning existed got a day's notice from the worker
     // itself, so that is what they keep.
-    o.optInt("wd", DEFAULT_WARN_DAYS)
+    o.optInt("wd", DEFAULT_WARN_DAYS),
+    // An expense saved before any of this comes back with no history at all, which
+    // is the truth: nothing was watching what it used to cost.
+    amountsOf(o.optJSONArray("am"))
 )
 
 fun orderJson(order: Order): JSONObject = JSONObject()
@@ -3666,6 +3707,7 @@ fun PaymentsScreen(
     var editing by remember { mutableStateOf<Int?>(null) }
     // Read once, so the timeline and the strip cannot disagree about which day it is.
     val today = remember { LocalDate.now() }
+    val shift = yearlyShift(items, rate.sell, today)
     val thisMonth = monthKey(today)
     val record = monthRecord(items, paid, thisMonth, today, rate.sell)
     // Empty until a background pass has fetched the year, and empty is a working
@@ -3763,6 +3805,19 @@ fun PaymentsScreen(
                                 // A year of the same costs, because that is the scale at
                                 // which a subscription is worth arguing with.
                                 LeaderRow("Разом на рік", money(yearly.total))
+                                // And what that same year cost before the quiet
+                                // raises. Each one is a few tens of hryvnia and
+                                // reads as nothing; twelve months of all of them
+                                // is the figure that gets something cancelled.
+                                yearlyShiftNote(shift)?.let { note ->
+                                    Text(
+                                        note,
+                                        Modifier.padding(top = Space.xs),
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine
+                                    )
+                                }
                                 if (monthly.rateMissing) {
                                     // Both totals are short by this much, so it is said as
                                     // a gap rather than folded in as a smaller number.
@@ -3959,7 +4014,11 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
                         value,
                         day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
                         currency,
-                        warnDays
+                        warnDays,
+                        // The opening figure, dated. An expense whose history starts
+                        // here can later say when its old price started; one seeded
+                        // at the first edit instead can only say that it did.
+                        listOf(PricePoint(value, LocalDate.now().toEpochDay()))
                     )
                 )
             }
@@ -5178,11 +5237,13 @@ fun EditPaymentSheet(
             parseAmount(amount).takeIf { it > 0 }?.let { value ->
                 touch.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                 save(
-                    pay.copy(
+                    // The amount and the currency go through [edited] rather than
+                    // straight into the copy: this is the one moment the app can
+                    // learn that a subscription has raised its price, and writing
+                    // the new figure over the old one is how that moment was lost.
+                    edited(pay, value, currency, LocalDate.now().toEpochDay()).copy(
                         name = name.trim().ifBlank { pay.name },
-                        amount = value,
                         day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
-                        currency = currency,
                         warnDays = warnDays
                     )
                 )
@@ -5199,8 +5260,34 @@ fun EditPaymentSheet(
         )
         CurrencySegments(currency) { currency = it }
         NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
+        // The last move, directly under the field showing today's figure. This is
+        // the whole point of keeping a history: a subscription raises its price
+        // quietly, and the only defence is the old number sitting beside the new.
+        amountHistoryNote(pay)?.let { note ->
+            Text(
+                note,
+                Modifier.padding(top = Space.xs),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
         NumberField("День оплати", day) { day = it }
         WarnDaysChips(warnDays) { warnDays = it }
+        val trail = amountTrailLines(pay)
+        if (trail.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
+                Text("Історія суми", color = TextSecondary, fontSize = Type.captionSize)
+                trail.forEach { line ->
+                    Text(
+                        line,
+                        Modifier.padding(top = Space.xs),
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                }
+            }
+        }
         // Deleting used to sit on the row itself, a thumb's width from the tap
         // that opens this form, and it asked nothing before erasing.
         Spacer(Modifier.height(Space.md))

@@ -119,6 +119,7 @@ fun digest(
         problemLine(orders)?.let { add(it) }
         parcelLine(orders, today)?.let { add(it) }
         addAll(paymentLines(pays, today, holidays))
+        addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay()))
     }
     if (news.isEmpty()) return Digest("", emptyList())
@@ -196,6 +197,34 @@ private fun paymentLines(
     val moved = reminder.movedFrom?.let { " (перенесено з ${dayMonth(it)})" }.orEmpty()
     "${reminder.pay.name} $amount — ${dueLabel(reminder.daysAway)}$moved"
 }
+
+/**
+ * How long a subscription's new price stays news.
+ *
+ * Not one day, unlike a watched price. A price on a page moves on its own and the
+ * app learns it the same night; a subscription's new figure is learnt only when a
+ * person types it in, and by then they already know. What they have not yet seen
+ * is the figure beside the old one and the percentage between them, and a week is
+ * how long that takes to land on a morning they actually read the message. Longer
+ * and the summer would still be reporting a raise from the spring.
+ */
+const val AMOUNT_WINDOW_DAYS = 7
+
+/**
+ * Subscriptions whose price has moved recently, each with the figure it moved from.
+ *
+ * Falls are reported in the same shape as raises rather than being left out. They
+ * are rare, and a tracker that announces only bad news is one whose silence stops
+ * meaning anything.
+ */
+private fun amountLines(pays: List<Pay>, today: Long): List<String> =
+    pays.mapNotNull { pay ->
+        val change = lastAmountChange(pay) ?: return@mapNotNull null
+        // Day zero is an amount recorded before the app dated them, which is not
+        // a thing that happened this week.
+        if (change.day !in (today - AMOUNT_WINDOW_DAYS + 1)..today) return@mapNotNull null
+        amountChangeLine(pay, change)
+    }
 
 /**
  * What the watched prices did.
