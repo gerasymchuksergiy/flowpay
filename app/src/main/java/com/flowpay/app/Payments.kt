@@ -354,9 +354,99 @@ fun dollars(value: Double): String = amountFormat().format(value) + " $"
  */
 fun approxMoney(value: Double): String = money(kotlin.math.round(value))
 
-/** An amount shown in whichever currency it was entered in. */
-fun amountLabel(value: Double, currency: String): String =
-    if (currency == USD) dollars(value) else money(value)
+/**
+ * An amount shown in whichever currency it was entered in.
+ *
+ * The third branch is for money the app can read but cannot convert. It prints
+ * the code rather than a symbol on purpose: a figure the app has no rate for must
+ * not be dressed up to look like one it does.
+ */
+fun amountLabel(value: Double, currency: String): String = when {
+    currency == USD -> dollars(value)
+    currency.isBlank() || currency == UAH -> money(value)
+    else -> "${amountFormat().format(value)} $currency"
+}
+
+// ------------------------------------------------- a price that is not in hryvnia
+
+/**
+ * A price as a shop stated it, and what that is worth here.
+ *
+ * The whole of this exists because [Offer] used to be a bare number: a page
+ * priced `$59.99` was recorded as `59,99 ₴` and the app cheerfully announced a
+ * ninety-nine per cent drop. Both halves are kept rather than just the converted
+ * figure, so the screen can show its working — and so that a later reading can
+ * tell a real price cut apart from the hryvnia moving, which is the same
+ * reasoning [inDollars] applies to the history.
+ */
+data class PriceInUah(
+    /** Hryvnia. Zero when there is no rate to get there with. */
+    val uah: Double,
+    /** The figure the shop actually printed. */
+    val amount: Double,
+    /** The ISO code of [amount]. A page that named none is read as hryvnia. */
+    val currency: String,
+    /** Hryvnia per unit of [currency]. One for hryvnia itself, zero when unconvertible. */
+    val rate: Double,
+    /** The shop priced it in money the app has no rate for, so [uah] means nothing. */
+    val noRate: Boolean
+)
+
+/**
+ * Converts a stated price into hryvnia.
+ *
+ * A page that states no currency is read as hryvnia, because a Ukrainian shop
+ * rarely bothers to say so and guessing otherwise would break every shop that
+ * works today. A currency the app has no rate for gets no number at all: the app
+ * fetches one pair and one only, and inventing a figure for the rest would be the
+ * same lie as reading dollars as hryvnia, only harder to spot.
+ *
+ * Dollars convert at the rate the bank sells at, for the reason [monthlyTotal]
+ * uses it too — that is the side of the spread you pay when you have to find
+ * dollars for the thing.
+ */
+fun toHryvnia(price: Double, currency: String, rate: FxRate): PriceInUah {
+    val code = currency.ifBlank { UAH }
+    if (code == UAH) return PriceInUah(price, price, UAH, 1.0, noRate = false)
+    val sell = rate.sell
+    if (code == USD && sell > 0.0) {
+        return PriceInUah(price * sell, price, USD, sell, noRate = false)
+    }
+    return PriceInUah(0.0, price, code, 0.0, noRate = true)
+}
+
+/**
+ * The line under a converted price, showing its working.
+ *
+ * Null for hryvnia, which is nearly every shop: a caption saying a hryvnia price
+ * is worth that many hryvnia is noise, and a note that always appears stops being
+ * read at all.
+ */
+fun convertedPriceLine(converted: PriceInUah): String? = when {
+    converted.currency == UAH -> null
+    converted.noRate -> "Ціна в ${converted.currency} — курсу до гривні немає"
+    else -> "${amountLabel(converted.amount, converted.currency)} · " +
+        "${approxMoney(converted.uah)} за курсом ${rateFigure(converted.rate)}"
+}
+
+/**
+ * How old the rate behind a converted price is, said out loud once it matters.
+ *
+ * A converted figure is only ever as current as the rate under it, and the rate
+ * is fetched by the same background pass that reads the prices — so a phone that
+ * has been offline for a week converts this morning's dollar price at last week's
+ * hryvnia. Silent for the first couple of days, because a rate that old changes
+ * the figure by less than the rounding already does.
+ */
+fun staleRateNote(converted: PriceInUah, rateDay: Long, today: Long): String? {
+    if (converted.currency == UAH || converted.noRate) return null
+    if (rateDay <= 0L || today <= rateDay) return null
+    val age = (today - rateDay).toInt()
+    return if (age >= STALE_RATE_DAYS) "Курс оновлювався ${daysLabel(age)} тому" else null
+}
+
+/** Below this a rate is old enough to mention but not old enough to matter. */
+const val STALE_RATE_DAYS = 3
 
 /**
  * A rate, always with both decimals.

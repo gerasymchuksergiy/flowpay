@@ -93,6 +93,297 @@ sealed interface Reading {
     data object Failed : Reading
 }
 
+// ------------------------------------------------------- the shops behind a wish
+
+/**
+ * Every shop this wish is read at.
+ *
+ * The one place that knows a wish might have been saved before a wish could have
+ * more than one shop. Such a wish has its address in [Wish.url] and its state in
+ * the fields beside it, and it is exactly a one-source wish — so it is handed back
+ * as one, and nothing else in the app has to carry a branch for the old shape.
+ */
+fun wishSources(wish: Wish): List<WishSource> = wish.sources.ifEmpty {
+    if (wish.url.isBlank()) {
+        emptyList()
+    } else {
+        listOf(
+            WishSource(
+                url = wish.url,
+                price = wish.price,
+                variant = wish.variant,
+                freshness = wish.freshness,
+                checkedDay = wish.checkedDay,
+                amount = wish.price,
+                currency = UAH,
+                rate = 1.0
+            )
+        )
+    }
+}
+
+/**
+ * The shop whose price the wish is currently showing: the cheapest that answers.
+ *
+ * Null when not one of them has a price, which is the only case where the wish
+ * has nothing to stand behind.
+ */
+fun bestSource(sources: List<WishSource>): WishSource? =
+    sources.filter { it.freshness == Freshness.OK && it.price > 0.0 }.minByOrNull { it.price }
+
+/**
+ * How the states of several shops add up to one state for the wish.
+ *
+ * Ordered by how close the shop is to answering again, so that when every shop
+ * has gone quiet the wish reports the most recoverable reason rather than the
+ * worst one: a variant that is out of stock usually comes back, a page that 404s
+ * does not. [Freshness.OK] is not in the ranking because a shop only counts as OK
+ * when it has a price, and that case is settled above by [bestSource].
+ */
+private val SOURCE_RANK = listOf(
+    Freshness.MANUAL,
+    Freshness.OUT_OF_STOCK,
+    Freshness.UNREADABLE,
+    Freshness.GONE
+)
+
+fun sourceFreshness(sources: List<WishSource>): Freshness {
+    if (bestSource(sources) != null) return Freshness.OK
+    return SOURCE_RANK.firstOrNull { rank -> sources.any { it.freshness == rank } }
+        ?: Freshness.UNREADABLE
+}
+
+/**
+ * What one re-read of one shop meant for that shop's row.
+ *
+ * The same three outcomes as [Reading] and for the same reason, one level down: a
+ * shop that answered with nothing usable is a fact about that shop, while a
+ * dropped connection is a fact about the phone and must leave the row alone.
+ */
+sealed interface SourceReading {
+    /** A price was read here. [about] is what this page said about the thing. */
+    data class Priced(val source: WishSource, val about: ProductAbout = ProductAbout()) :
+        SourceReading
+
+    /** This page answered without a usable price. The row carries which kind. */
+    data class Stale(val source: WishSource) : SourceReading
+
+    /** Nothing came back from this shop. */
+    data object Failed : SourceReading
+}
+
+/**
+ * Re-reads one shop's page and follows the variant this shop was set to.
+ *
+ * The currency check happens here rather than at the wish, because it is a fact
+ * about one page: a shop that starts quoting dollars has to stop dragging the
+ * others' prices around, and a shop quoting money the app has no rate for is
+ * unreadable in exactly the sense [Freshness.UNREADABLE] already means — the page
+ * answered, and nothing usable came of it.
+ */
+fun readSource(
+    previous: WishSource,
+    html: String,
+    today: Long,
+    rate: FxRate
+): SourceReading = when (
+    val match = matchOffer(extractOffers(html), previous.variant, previous.price)
+) {
+    is OfferMatch.Found -> {
+        val converted = toHryvnia(match.offer.price, match.offer.currency, rate)
+        if (converted.noRate) {
+            SourceReading.Stale(
+                previous.copy(
+                    checkedDay = today,
+                    freshness = Freshness.UNREADABLE,
+                    // Kept even though nothing could be done with it, because it is
+                    // the only thing that explains the state: "no price on the page"
+                    // and "priced in kronor" look identical without it.
+                    amount = converted.amount,
+                    currency = converted.currency,
+                    rate = 0.0
+                )
+            )
+        } else {
+            SourceReading.Priced(
+                previous.copy(
+                    price = converted.uah,
+                    checkedDay = today,
+                    freshness = Freshness.OK,
+                    amount = converted.amount,
+                    currency = converted.currency,
+                    rate = converted.rate
+                ),
+                extractAbout(html)
+            )
+        }
+    }
+    // The checked day still moves: the page was genuinely looked at, and how long
+    // ago that was is worth saying whatever the answer turned out to be.
+    OfferMatch.Missing -> SourceReading.Stale(
+        previous.copy(checkedDay = today, freshness = Freshness.OUT_OF_STOCK)
+    )
+    OfferMatch.None -> SourceReading.Stale(
+        previous.copy(checkedDay = today, freshness = Freshness.UNREADABLE)
+    )
+}
+
+/**
+ * Folds a round of readings, one per shop, back into the wish.
+ *
+ * [readings] lines up with [wishSources] by position. The rules that matter:
+ *
+ * A shop that could not be reached keeps everything it had, including its price,
+ * so a tunnel cannot make a wish look cheaper by silently dropping the shop that
+ * was dearest. A wish where *every* shop failed that way is [Reading.Failed] and
+ * is not touched at all, which is exactly what a single-source wish did before.
+ *
+ * One shop going unreadable changes nothing about the wish while another still
+ * answers — the price simply comes from whichever is now cheapest. Only when none
+ * of them answers does the wish go stale, and then it reports the state of the
+ * shop that is closest to coming back.
+ */
+fun mergeSources(
+    previous: Wish,
+    readings: List<SourceReading>,
+    today: Long,
+    rate: FxRate
+): Reading {
+    val sources = wishSources(previous)
+    if (sources.isEmpty()) return Reading.Failed
+    if (readings.isNotEmpty() && readings.all { it == SourceReading.Failed }) return Reading.Failed
+
+    val next = sources.mapIndexed { index, before ->
+        when (val reading = readings.getOrNull(index)) {
+            is SourceReading.Priced -> reading.source
+            is SourceReading.Stale -> reading.source
+            else -> before
+        }
+    }
+    val best = bestSource(next)
+        ?: return Reading.Stale(
+            previous.copy(
+                sources = next,
+                checkedDay = today,
+                freshness = sourceFreshness(next)
+            )
+        )
+
+    // The page that produced the winning price is the one whose words belong on
+    // the screen: reading a description off Comfy while showing Rozetka's price
+    // would be two shops presented as one.
+    val about = next.indexOf(best)
+        .let { readings.getOrNull(it) as? SourceReading.Priced }
+        ?.about?.takeIf { !it.isEmpty }
+        ?: previous.about
+
+    return Reading.Priced(
+        previous.copy(
+            sources = next,
+            url = best.url,
+            price = best.price,
+            variant = best.variant,
+            history = appendPrice(previous.history, best.price, today, rate.sell, rate.source),
+            checkedDay = today,
+            freshness = Freshness.OK,
+            about = about
+        )
+    )
+}
+
+/**
+ * Adds a shop to a wish, or gives back the wish untouched when it is already there.
+ *
+ * Matched on the same normalised address [sharedLink] uses, because pasting the
+ * same link from the app and from the browser produces two strings that differ
+ * only in a scheme or a trailing slash, and a wish reading the same shop twice
+ * would halve nothing and double the fetching.
+ */
+fun hasSource(wish: Wish, url: String): Boolean =
+    wishSources(wish).any { linkKey(it.url) == linkKey(url) }
+
+fun withSource(wish: Wish, source: WishSource): Wish {
+    val sources = wishSources(wish)
+    if (hasSource(wish, source.url)) return wish
+    val next = sources + source
+    val best = bestSource(next)
+    return wish.copy(
+        sources = next,
+        url = best?.url ?: wish.url,
+        price = best?.price ?: wish.price,
+        variant = best?.variant ?: wish.variant,
+        freshness = sourceFreshness(next)
+    )
+}
+
+/**
+ * Drops a shop from a wish.
+ *
+ * The last one is not removable: a wish with nowhere to read is a name and a
+ * number that nothing will ever update again, and the way to get rid of that is
+ * to delete the wish, where the bin can give it back.
+ */
+fun withoutSource(wish: Wish, url: String): Wish {
+    val sources = wishSources(wish)
+    if (sources.size <= 1) return wish
+    val next = sources.filterNot { linkKey(it.url) == linkKey(url) }
+    if (next.size == sources.size) return wish
+    val best = bestSource(next)
+    return wish.copy(
+        sources = next,
+        url = best?.url ?: next.first().url,
+        price = best?.price ?: wish.price,
+        variant = best?.variant ?: wish.variant,
+        freshness = sourceFreshness(next)
+    )
+}
+
+/** The shop's own name for itself, which is all an address can honestly give. */
+fun sourceName(url: String): String = runCatching { java.net.URL(url.trim()).host }
+    .getOrNull().orEmpty().removePrefix("www.").ifBlank { "Магазин" }
+
+/**
+ * Why this shop has no usable price, in its own terms.
+ *
+ * Falls through to [freshnessNote] for everything except the one case that note
+ * cannot describe: a page that stated a price perfectly clearly in money the app
+ * has no rate for. "На сторінці більше немає ціни" would be simply untrue there.
+ */
+fun sourceNote(source: WishSource): String? = when {
+    source.freshness == Freshness.UNREADABLE && source.currency != UAH &&
+        source.currency.isNotBlank() && source.amount > 0.0 ->
+        "Ціна ${amountLabel(source.amount, source.currency)} — курсу до гривні немає"
+    else -> freshnessNote(source.freshness)
+}
+
+/** What one shop's row says on the right: its price, or why there is not one. */
+fun sourcePriceLabel(source: WishSource): String = when {
+    source.freshness == Freshness.OK && source.price > 0.0 -> money(source.price)
+    source.currency != UAH && source.currency.isNotBlank() && source.amount > 0.0 ->
+        amountLabel(source.amount, source.currency)
+    source.price > 0.0 -> money(source.price)
+    else -> "—"
+}
+
+/**
+ * How much watching several shops is actually saving, or null when it is not.
+ *
+ * Only said where there is a gap between the cheapest and the dearest shop that
+ * both answered. With one shop, or with the others silent, there is no comparison
+ * to report and a line claiming one would be invented.
+ */
+fun sourceSpreadNote(sources: List<WishSource>): String? {
+    val priced = sources.filter { it.freshness == Freshness.OK && it.price > 0.0 }
+    if (priced.size < 2) return null
+    val low = priced.minOf { it.price }
+    val high = priced.maxOf { it.price }
+    if (high - low < 1.0) return null
+    // Worded without a plural helper: "з 3 позиції" needs the genitive and
+    // [positionsLabel] is nominative, which is how an app comes out sounding
+    // translated. The two figures say it without needing to count anything.
+    return "Найдорожчий магазин просить на ${money(high - low)} більше"
+}
+
 enum class WishSort(val label: String) {
     ADDED("За додаванням"),
     NEWEST("Найновіші"),
@@ -523,7 +814,12 @@ sealed interface SharedLink {
 
 fun sharedLink(text: String?, existing: List<Wish>): SharedLink {
     val url = extractUrl(text) ?: return SharedLink.Missing
-    val already = existing.firstOrNull { linkKey(it.url) == linkKey(url) }
+    // Every shop, not just the one the price came from: sharing the Comfy link
+    // for a thing already watched in Comfy and Rozetka would otherwise start a
+    // second wish, splitting the very history the sources exist to keep together.
+    val already = existing.firstOrNull { wish ->
+        wishSources(wish).any { linkKey(it.url) == linkKey(url) }
+    }
     return if (already != null) SharedLink.Known(already) else SharedLink.New(url)
 }
 
@@ -557,7 +853,8 @@ fun placeholderWish(url: String, id: String, today: Long = LocalDate.now().toEpo
         addedDay = today,
         // It has no price and nothing has claimed one, which is what the state says.
         // Typing one in by hand is the way out, and the card offers it.
-        freshness = Freshness.UNREADABLE
+        freshness = Freshness.UNREADABLE,
+        sources = listOf(WishSource(url = url, freshness = Freshness.UNREADABLE))
     )
 
 data class RefreshResult(val wishes: List<Wish>, val updated: Int)

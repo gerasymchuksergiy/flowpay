@@ -229,8 +229,70 @@ private fun aboutInNode(node: Any?, found: ProductAbout, depth: Int): ProductAbo
 data class Offer(
     val price: Double,
     /** Edition, size, colour — empty when the page gave the figure no name. */
-    val label: String = ""
+    val label: String = "",
+    /**
+     * The ISO code the page put beside the figure, empty when it named none.
+     *
+     * A number with no currency is the bug this field exists to close: `$59.99`
+     * used to land as `59,99 ₴` and the app announced a ninety-nine per cent
+     * drop on an item that had not moved. Left empty rather than defaulted here,
+     * because "the page said nothing" and "the page said UAH" are different
+     * facts and only the reader downstream should decide what to do about it.
+     */
+    val currency: String = ""
 )
+
+/** Symbols shops write instead of a code, and the code each one means. */
+private val CURRENCY_SYMBOLS = mapOf(
+    "₴" to UAH, "грн" to UAH, "грн." to UAH, "uah" to UAH,
+    "$" to USD, "us$" to USD, "usd" to USD,
+    "€" to "EUR", "£" to "GBP", "zł" to "PLN"
+)
+
+/**
+ * Normalises whatever a page called its currency into an ISO code.
+ *
+ * Any three letters are accepted as they stand rather than being checked against
+ * a list of currencies the app knows: a page priced in SEK has to come back as
+ * "SEK" so that the reader can say it has no rate for it. Folding an unknown code
+ * into "nothing stated" would put it straight back into the hryvnia bucket, which
+ * is the whole failure being fixed.
+ */
+fun currencyCode(raw: String): String {
+    val text = decodeEntities(raw).trim()
+    if (text.isBlank()) return ""
+    CURRENCY_SYMBOLS[text.lowercase()]?.let { return it }
+    val letters = text.filter { it.isLetter() }
+    if (letters.length == 3) return letters.uppercase()
+    return CURRENCY_SYMBOLS[text.take(1)] ?: ""
+}
+
+// schema.org states the currency beside the price, in attributes as often as in
+// a script, and Open Graph has its own pair of spellings for it.
+private val MICRODATA_CURRENCY = listOf(
+    Regex("""itemprop=["']priceCurrency["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+    Regex("""content=["']([^"']+)["'][^>]*itemprop=["']priceCurrency["']""", RegexOption.IGNORE_CASE)
+)
+
+/**
+ * The currency the page states for its prices, page-wide.
+ *
+ * One answer for the whole page rather than one per offer, because a shop that
+ * lists three editions prices all three in the same money — no shop sells one
+ * edition in dollars and the next in hryvnia. Where JSON-LD does state a currency
+ * per offer that wins; this is the fallback for everything else.
+ */
+fun pageCurrency(html: String): String {
+    MICRODATA_CURRENCY.forEach { pattern ->
+        val found = currencyCode(pattern.find(html)?.groupValues?.get(1).orEmpty())
+        if (found.isNotBlank()) return found
+    }
+    listOf("product:price:currency", "og:price:currency").forEach { property ->
+        val found = currencyCode(metaContent(html, property))
+        if (found.isNotBlank()) return found
+    }
+    return ""
+}
 
 /** Any space a shop might put inside a number, including the ones that are not spaces. */
 private const val PRICE_SPACES = " \u00a0\u202f\u2009"
@@ -269,14 +331,17 @@ private val MICRODATA_PRICE = listOf(
  */
 fun extractOffers(html: String): List<Offer> {
     val found = LinkedHashMap<Long, Offer>()
+    // Read once and used for every offer that did not name its own, so a page
+    // whose currency lives in microdata still labels prices found in attributes.
+    val stated = pageCurrency(html)
 
-    fun add(price: Double?, label: String) {
+    fun add(price: Double?, label: String, currency: String = "") {
         val value = price ?: return
         val key = Math.round(value * 100)
-        if (!found.containsKey(key)) found[key] = Offer(value, label)
+        if (!found.containsKey(key)) found[key] = Offer(value, label, currency.ifBlank { stated })
     }
 
-    jsonLdOffers(html).forEach { add(it.price, it.label) }
+    jsonLdOffers(html).forEach { add(it.price, it.label, it.currency) }
     MICRODATA_PRICE.forEach { pattern ->
         pattern.findAll(html).forEach { add(priceNumber(it.groupValues[1]), "") }
     }
@@ -376,18 +441,41 @@ fun wishFromOffer(
     offer: Offer,
     today: Long = 0L,
     rate: FxRate = FxRate()
-): Wish =
-    Wish(
+): Wish {
+    val converted = toHryvnia(offer.price, offer.currency, rate)
+    return Wish(
         id = id,
         name = cleanProductTitle(metaContent(html, "og:title")).ifBlank { "Новий товар" },
         url = url,
         image = decodeEntities(metaContent(html, "og:image")),
-        price = offer.price,
-        history = listOf(PricePoint(offer.price, today, rate.sell, rate.source)),
+        price = converted.uah,
+        // A price nobody can convert is not a price to start a history with. The
+        // wish is still worth keeping — the link is the part that cannot be typed
+        // again — so it comes back the way an unreadable page does, and the card
+        // offers the same way out of it.
+        history = if (converted.noRate) {
+            emptyList()
+        } else {
+            listOf(PricePoint(converted.uah, today, rate.sell, rate.source))
+        },
+        freshness = if (converted.noRate) Freshness.UNREADABLE else Freshness.OK,
         variant = offer.label,
         addedDay = today,
-        about = extractAbout(html)
+        about = extractAbout(html),
+        sources = listOf(
+            WishSource(
+                url = url,
+                price = converted.uah,
+                variant = offer.label,
+                freshness = if (converted.noRate) Freshness.UNREADABLE else Freshness.OK,
+                checkedDay = today,
+                amount = converted.amount,
+                currency = converted.currency,
+                rate = converted.rate
+            )
+        )
     )
+}
 
 /**
  * How to name an offer in a list of them.
@@ -542,26 +630,35 @@ private fun collectOffers(raw: String, into: MutableList<Offer>, depth: Int) {
         raw.startsWith("{") -> org.json.JSONObject(raw)
         else -> return
     }
-    offersInNode(root, into, depth, label = "")
+    offersInNode(root, into, depth, label = "", currency = "")
 }
 
-private fun offersInNode(node: Any?, into: MutableList<Offer>, depth: Int, label: String) {
+private fun offersInNode(
+    node: Any?,
+    into: MutableList<Offer>,
+    depth: Int,
+    label: String,
+    currency: String
+) {
     if (depth > 6) return
     when (node) {
         is JSONArray -> (0 until node.length()).forEach {
-            offersInNode(node.opt(it), into, depth + 1, label)
+            offersInNode(node.opt(it), into, depth + 1, label, currency)
         }
         is org.json.JSONObject -> {
             // A node names itself, and that name belongs to any price directly on it.
             val own = node.optString("name").ifBlank { node.optString("sku") }.ifBlank { label }
+            // Inherited the same way, because the currency is usually stated once on
+            // the Product and the prices hang off the offers nested inside it.
+            val money = currencyCode(node.optString("priceCurrency")).ifBlank { currency }
             listOf("price", "lowPrice", "highPrice").forEach { key ->
                 if (node.has(key)) {
-                    priceNumber(node.opt(key).toString())?.let { into.add(Offer(it, own)) }
+                    priceNumber(node.opt(key).toString())?.let { into.add(Offer(it, own, money)) }
                 }
             }
             node.keys().forEach { key ->
                 if (key !in setOf("price", "lowPrice", "highPrice")) {
-                    offersInNode(node.opt(key), into, depth + 1, own)
+                    offersInNode(node.opt(key), into, depth + 1, own, money)
                 }
             }
         }

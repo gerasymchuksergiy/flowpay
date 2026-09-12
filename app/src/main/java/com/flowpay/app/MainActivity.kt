@@ -87,9 +87,54 @@ import java.text.NumberFormat
 import java.time.LocalDate
 import java.util.Locale
 
+/**
+ * One shop a wish is watched at.
+ *
+ * The same headphones sit in Rozetka, Comfy and Allo, and as three separate
+ * wishes they were three separate histories that only a person comparing them by
+ * eye could put together. A source is a place to read, with everything that is
+ * true of that place and not of the others: its own followed variant, its own
+ * freshness, its own money.
+ *
+ * [price] is always hryvnia, converted where the shop priced it in something
+ * else, so the wish can pick a cheapest without comparing dollars against
+ * hryvnia. [amount] and [currency] keep what the shop actually printed, because
+ * once converted a figure cannot say whether it moved or the rate did.
+ */
+data class WishSource(
+    val url: String,
+    /** Hryvnia, converted where needed. Zero when this shop has no readable price. */
+    val price: Double = 0.0,
+    /** Which of this page's prices is followed here. Pages differ, so this is per shop. */
+    val variant: String = "",
+    /**
+     * How much this one shop's figure is worth believing.
+     *
+     * Per shop rather than per wish, which is the point of the whole change: one
+     * shop dropping the page must not put a warning on a wish that two others are
+     * still answering for.
+     */
+    val freshness: Freshness = Freshness.OK,
+    /** Epoch day this shop was last read. Zero means never. */
+    val checkedDay: Long = 0L,
+    /** The figure the shop printed, in its own money. */
+    val amount: Double = 0.0,
+    /** ISO code of [amount]. Hryvnia unless the page said otherwise. */
+    val currency: String = UAH,
+    /** Hryvnia per unit of [currency] when [price] was worked out. One for hryvnia. */
+    val rate: Double = 0.0
+)
+
 data class Wish(
     val id: String,
     val name: String,
+    /**
+     * The shop the price standing now came from.
+     *
+     * Kept alongside [sources] rather than replaced by it: this is what "До
+     * магазину" opens and what a shared link is matched against, and on a wish
+     * watched in three shops the answer is the one that is currently cheapest.
+     */
     val url: String,
     val image: String,
     val price: Double,
@@ -141,7 +186,21 @@ data class Wish(
      * A wishlist's job is to put distance between the urge and the decision, and
      * the list alone does not do that — this is the app using time as the tool.
      */
-    val holdUntil: Long = 0L
+    val holdUntil: Long = 0L,
+    /**
+     * Every shop this thing is watched in, cheapest wins.
+     *
+     * Empty on a wish saved before a wish could have more than one shop, and on
+     * one built in code from a single address. [wishSources] is what everything
+     * reads, and it makes that single address look like the one source it always
+     * was, so nothing downstream has to know which kind it is holding.
+     *
+     * The price history stays one series whatever this holds: it records the best
+     * price on each day, because [priceInsight], the thirty-day reference window
+     * and the chart all assume a single line, and three lines would leave the
+     * verdict measuring nothing in particular.
+     */
+    val sources: List<WishSource> = emptyList()
 )
 
 data class Pay(
@@ -545,6 +604,39 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     .put("np", wish.notifiedPrice).put("v", wish.variant)
     .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil)
     .put("ab", aboutJson(wish.about))
+    // Written exactly as held, empty included, so that what comes back out of the
+    // bin is what went in. A wish that predates the list is not filled in here:
+    // [wishSources] is what turns its single address into the one source it always
+    // was, and doing it there means one rule rather than two that can drift.
+    .put(
+        "src",
+        JSONArray().apply { wish.sources.forEach { put(sourceJson(it)) } }
+    )
+
+/**
+ * One shop, stored.
+ *
+ * A nested object rather than parallel arrays of urls and prices: a wish whose
+ * shops and prices got out of step by one would compare Rozetka's price under
+ * Comfy's name, and nothing on screen would look wrong.
+ */
+fun sourceJson(source: WishSource): JSONObject = JSONObject()
+    .put("u", source.url).put("p", source.price).put("v", source.variant)
+    .put("fr", source.freshness.name).put("cd", source.checkedDay)
+    .put("a", source.amount).put("cur", source.currency).put("r", source.rate)
+
+fun sourceOf(o: JSONObject): WishSource = WishSource(
+    url = o.optString("u"),
+    price = o.optDouble("p", 0.0),
+    variant = o.optString("v"),
+    freshness = freshnessFrom(o.optString("fr")),
+    checkedDay = o.optLong("cd", 0L),
+    amount = o.optDouble("a", 0.0),
+    // A price stored before currencies existed is hryvnia, which is what every
+    // shop the app could read at the time was pricing in.
+    currency = o.optString("cur", UAH).ifBlank { UAH },
+    rate = o.optDouble("r", 0.0)
+)
 
 /**
  * The page's own words, stored beside the wish.
@@ -581,6 +673,7 @@ fun aboutOf(o: JSONObject?): ProductAbout {
 
 fun wishOf(o: JSONObject): Wish {
     val recorded = o.optJSONArray("h") ?: JSONArray()
+    val stored = o.optJSONArray("src") ?: JSONArray()
     return Wish(
         id = o.optString("id", System.currentTimeMillis().toString()),
         name = cleanProductTitle(o.optString("n", "Товар")).ifBlank { "Товар" },
@@ -613,7 +706,13 @@ fun wishOf(o: JSONObject): Wish {
         freshness = freshnessFrom(o.optString("fr")),
         addedDay = o.optLong("ad", 0L),
         holdUntil = o.optLong("hu", 0L),
-        about = aboutOf(o.optJSONObject("ab"))
+        about = aboutOf(o.optJSONObject("ab")),
+        // A wish saved with only `u` has no array here at all, and stays empty
+        // rather than being filled in on the way past: [wishSources] is the one
+        // place that turns that single address into the one source it always was.
+        sources = (0 until stored.length()).mapNotNull { index ->
+            stored.optJSONObject(index)?.let(::sourceOf)
+        }.filter { it.url.isNotBlank() }
     )
 }
 
@@ -716,7 +815,11 @@ fun refreshedWish(
         price = current.price,
         history = appendPrice(previous.history, current.price, today, rate.sell, rate.source),
         checkedDay = today,
-        freshness = if (current.price > 0.0) Freshness.OK else previous.freshness
+        freshness = if (current.price > 0.0) Freshness.OK else previous.freshness,
+        // The freshly read page knows what money it was priced in and what that
+        // converted to; the placeholder this is filling in knows only the address.
+        // Anything the new reading did not bring keeps what was there before.
+        sources = wishSources(current).ifEmpty { wishSources(previous) }
     )
 
 /**
@@ -734,26 +837,15 @@ fun readWish(
     html: String,
     today: Long = LocalDate.now().toEpochDay(),
     rate: FxRate = FxRate()
-): Reading = when (val match = matchOffer(extractOffers(html), previous.variant, previous.price)) {
-    is OfferMatch.Found -> Reading.Priced(
-        previous.copy(
-            price = match.offer.price,
-            history = appendPrice(previous.history, match.offer.price, today, rate.sell, rate.source),
-            checkedDay = today,
-            freshness = Freshness.OK,
-            // Refreshed with the price, but never replaced by nothing: a shop that
-            // drops a field between two reads should not erase what it said before.
-            about = extractAbout(html).takeIf { !it.isEmpty } ?: previous.about
-        )
-    )
-    // The checked day still moves: the page was genuinely looked at, and the item
-    // screen says how long ago that was whatever the answer turned out to be.
-    OfferMatch.Missing -> Reading.Stale(
-        previous.copy(checkedDay = today, freshness = Freshness.OUT_OF_STOCK)
-    )
-    OfferMatch.None -> Reading.Stale(
-        previous.copy(checkedDay = today, freshness = Freshness.UNREADABLE)
-    )
+): Reading {
+    val sources = wishSources(previous)
+    if (sources.isEmpty()) return Reading.Failed
+    // Everything but the first shop is left exactly as it was, which is what a
+    // page that was never fetched deserves. One page can only answer for itself.
+    val readings = sources.mapIndexed { index, source ->
+        if (index == 0) readSource(source, html, today, rate) else SourceReading.Failed
+    }
+    return mergeSources(previous, readings, today, rate)
 }
 
 /**
@@ -804,14 +896,25 @@ suspend fun product(link: String, rate: FxRate = FxRate()): Wish {
  * reaches the card; anything else that fails is the network's, and changes nothing.
  */
 suspend fun refreshed(previous: Wish, today: Long, rate: FxRate): Reading {
-    val html = try {
-        pageHtml(previous.url)
-    } catch (gone: PageGone) {
-        return Reading.Stale(previous.copy(checkedDay = today, freshness = Freshness.GONE))
-    } catch (failure: Exception) {
-        return Reading.Failed
+    val sources = wishSources(previous)
+    // One at a time rather than in parallel: the pass already walks the whole
+    // wishlist this way, and three shops answering at once is a burst of requests
+    // at one shop's neighbours for no gain a background job can feel.
+    val readings = sources.map { source ->
+        val html = try {
+            pageHtml(source.url)
+        } catch (gone: PageGone) {
+            // This shop dropped the page. That is news about this shop and nothing
+            // at all about the others, which is why it lands on the row.
+            return@map SourceReading.Stale(
+                source.copy(checkedDay = today, freshness = Freshness.GONE)
+            )
+        } catch (failure: Exception) {
+            return@map SourceReading.Failed
+        }
+        readSource(source, html, today, rate)
     }
-    return readWish(previous, html, today, rate)
+    return mergeSources(previous, readings, today, rate)
 }
 
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
@@ -1922,8 +2025,16 @@ fun AddWishSheet(
                 runCatching { pageHtml(link) }
                     .onSuccess { html ->
                         val found = extractOffers(html)
+                        // A page priced in money the app has no rate for cannot be
+                        // tracked at all, and saying so now is kinder than adding a
+                        // wish that will never show a price. Judged on the first
+                        // offer because a page prices every edition in one currency.
+                        val money = found.firstOrNull()
+                            ?.let { toHryvnia(it.price, it.currency, rate) }
                         when {
                             found.isEmpty() -> error = "Не вдалося знайти ціну на сторінці"
+                            money != null && money.noRate ->
+                                error = "Ціна в ${money.currency} — FlowPay знає курс лише долара"
                             // One price is not a question worth asking.
                             found.size == 1 -> { page = html; finish(found.first()) }
                             else -> { page = html; offers = found }
@@ -1962,7 +2073,12 @@ fun AddWishSheet(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Text(money(offer.price), fontWeight = Type.strong)
+                        // In the shop's own money, because that is what is printed
+                        // on the page the person is choosing from.
+                        Text(
+                            amountLabel(offer.price, offer.currency.ifBlank { UAH }),
+                            fontWeight = Type.strong
+                        )
                     }
                 }
             }
@@ -2036,6 +2152,185 @@ fun EditWishSheet(
     }
 }
 
+/**
+ * One shop behind a wish: what it is asking, and whether it is still answering.
+ *
+ * The cheapest is marked rather than sorted to the top, so the rows keep the order
+ * they were added in and a shop does not jump about the card every time a sale
+ * starts somewhere else.
+ */
+@Composable
+fun SourceRow(
+    source: WishSource,
+    cheapest: Boolean,
+    removable: Boolean,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit
+) {
+    val dead = isStale(source.freshness)
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        sourceName(source.url),
+                        color = if (dead) TextSecondary else TextPrimary,
+                        fontSize = Type.bodySize,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (cheapest) {
+                        Spacer(Modifier.width(Space.sm))
+                        Text(
+                            "найдешевше",
+                            color = Accent,
+                            fontSize = Type.overlineSize,
+                            fontWeight = Type.strong,
+                            letterSpacing = Type.overlineTracking
+                        )
+                    }
+                }
+            }
+            Text(
+                sourcePriceLabel(source),
+                color = when {
+                    dead -> TextDisabled
+                    cheapest -> Accent
+                    else -> TextPrimary
+                },
+                fontSize = Type.bodySize,
+                fontWeight = Type.strong
+            )
+            if (removable) {
+                IconButton(onRemove, Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Close,
+                        "Прибрати магазин",
+                        tint = TextDisabled,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+        // Why this row reads the way it does: a dead page, or money the app has no
+        // rate for. Silent on the ordinary case, which is most rows most of the time.
+        sourceNote(source).takeIf { dead }?.let { note ->
+            Text(
+                note,
+                color = Negative,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
+        // The working behind a converted figure, so "2 480 ₴" can be checked
+        // against what the shop actually printed.
+        if (!dead) {
+            convertedPriceLine(
+                PriceInUah(
+                    uah = source.price,
+                    amount = source.amount,
+                    currency = source.currency,
+                    rate = source.rate,
+                    noRate = false
+                )
+            )?.let { line ->
+                Text(
+                    line,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.xs)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Adds a second shop for the same thing.
+ *
+ * The page is read before the shop is kept, because a source that cannot produce
+ * a price is not a source — it is a link, and the wish already has one of those
+ * that works. Better to say so here than to add a row that sits empty for ever.
+ */
+@Composable
+fun AddSourceSheet(
+    wish: Wish,
+    rate: FxRate,
+    close: () -> Unit,
+    add: (WishSource) -> Unit
+) {
+    var link by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val today = remember { LocalDate.now().toEpochDay() }
+
+    FormSheet(
+        title = "Ще один магазин",
+        confirmLabel = if (loading) "Зчитую…" else "Додати",
+        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        onConfirm = {
+            scope.launch {
+                loading = true
+                error = null
+                if (hasSource(wish, link)) {
+                    error = "Цей магазин уже в списку"
+                } else {
+                    runCatching { pageHtml(link) }
+                        .onSuccess { html ->
+                            val offer = extractOffers(html).firstOrNull()
+                            val converted = offer?.let { toHryvnia(it.price, it.currency, rate) }
+                            when {
+                                offer == null || converted == null ->
+                                    error = "Не вдалося знайти ціну на сторінці"
+                                converted.noRate ->
+                                    error = "Ціна в ${converted.currency} — курсу до гривні немає"
+                                else -> add(
+                                    WishSource(
+                                        url = link.trim(),
+                                        price = converted.uah,
+                                        variant = offer.label,
+                                        freshness = Freshness.OK,
+                                        checkedDay = today,
+                                        amount = converted.amount,
+                                        currency = converted.currency,
+                                        rate = converted.rate
+                                    )
+                                )
+                            }
+                        }
+                        .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                }
+                loading = false
+            }
+        },
+        onDismiss = close
+    ) {
+        Text(
+            "Те саме у другому магазині. FlowPay читатиме обидві сторінки й " +
+                "показуватиме ту ціну, що зараз нижча.",
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
+        OutlinedTextField(
+            link,
+            { link = it },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Посилання на товар") }
+        )
+        error?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+        }
+    }
+}
+
 /** A heading that sits closer to its own content than to whatever came before. */
 @Composable
 fun SectionTitle(text: String) {
@@ -2098,6 +2393,7 @@ fun SharedTransitionScope.WishDetailScreen(
     var byDate by remember(wish.id) { mutableStateOf(wish.deadline > 0L) }
     var pickingDate by remember { mutableStateOf(false) }
     var pickingHold by remember { mutableStateOf(false) }
+    var addingSource by remember { mutableStateOf(false) }
     var buying by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -2108,6 +2404,13 @@ fun SharedTransitionScope.WishDetailScreen(
     val store = remember(context) { Store(context) }
 
     val today = remember { LocalDate.now() }
+    // The day the stored rate was fetched, so a converted price can say how old
+    // the rate behind it is. Zero until a rate has ever been loaded.
+    val rateDay = remember {
+        store.fxRate().second.takeIf { it > 0L }
+            ?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toEpochDay() }
+            ?: 0L
+    }
     val goal = wishGoal(wish)
     val deadlineDate = if (deadlineDay > 0L) LocalDate.ofEpochDay(deadlineDay) else null
     val monthsLeft = deadlineDate?.let { monthsUntil(today, it) } ?: 0
@@ -2218,6 +2521,40 @@ fun SharedTransitionScope.WishDetailScreen(
                         )
                     }
                 }
+                // What the shop actually printed, when the figure above had to be
+                // converted to get there. Without it a hryvnia figure and a
+                // converted one look identical, and only one of them moves when
+                // the currency does.
+                bestSource(wishSources(wish))?.let { source ->
+                    val converted = PriceInUah(
+                        uah = source.price,
+                        amount = source.amount,
+                        currency = source.currency,
+                        rate = source.rate,
+                        noRate = false
+                    )
+                    convertedPriceLine(converted)?.let { line ->
+                        Text(
+                            line,
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine,
+                            modifier = Modifier.padding(top = Space.sm)
+                        )
+                    }
+                    // A converted price is only as current as the rate under it,
+                    // and the rate is fetched by the same pass that reads prices —
+                    // so a phone that has been offline converts today's dollars at
+                    // last week's hryvnia.
+                    staleRateNote(converted, rateDay, today.toEpochDay())?.let { note ->
+                        Text(
+                            note,
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            modifier = Modifier.padding(top = Space.xs)
+                        )
+                    }
+                }
                 // Why the figure above is the colour it is, in one sentence. The
                 // card can only carry a two-word badge; this is where it is explained.
                 freshnessNote(wish.freshness)?.let { note ->
@@ -2248,6 +2585,52 @@ fun SharedTransitionScope.WishDetailScreen(
                 onPick = { pickingHold = true },
                 onRelease = { onChange(wish.copy(holdUntil = 0L)) }
             )
+
+            // Where the price comes from. Shown even for one shop, because that is
+            // where the button to add a second one lives — and because a wish with
+            // one shop that has stopped answering needs somewhere to say so that is
+            // not the price itself.
+            SectionTitle("Де стежимо")
+            Column(Modifier.padding(horizontal = Space.screen)) {
+                Card(
+                    Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    shape = Radius.md
+                ) {
+                    Column(Modifier.padding(Space.lg)) {
+                        val sources = wishSources(wish)
+                        val cheapest = bestSource(sources)
+                        sources.forEachIndexed { index, source ->
+                            if (index > 0) Spacer(Modifier.height(Space.md))
+                            SourceRow(
+                                source = source,
+                                cheapest = cheapest != null && source.url == cheapest.url &&
+                                    sources.size > 1,
+                                removable = sources.size > 1,
+                                onOpen = {
+                                    context.startActivity(
+                                        Intent(Intent.ACTION_VIEW, source.url.toUri())
+                                    )
+                                },
+                                onRemove = { onChange(withoutSource(wish, source.url)) }
+                            )
+                        }
+                        sourceSpreadNote(sources)?.let { spread ->
+                            Text(
+                                spread,
+                                color = Accent,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.md)
+                            )
+                        }
+                        TextButton(
+                            { addingSource = true },
+                            Modifier.padding(top = Space.sm)
+                        ) { Text("Додати магазин") }
+                    }
+                }
+            }
 
             SectionTitle("План накопичення")
             Column(Modifier.padding(horizontal = Space.screen)) {
@@ -2660,6 +3043,13 @@ fun SharedTransitionScope.WishDetailScreen(
                     )
                 }
             }
+        }
+    }
+
+    if (addingSource) {
+        AddSourceSheet(wish, store.fxRate().first, { addingSource = false }) { source ->
+            addingSource = false
+            onChange(withSource(wish, source))
         }
     }
 
