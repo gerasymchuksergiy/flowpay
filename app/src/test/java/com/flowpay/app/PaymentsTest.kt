@@ -366,9 +366,11 @@ class PaymentsTest {
 
     @Test
     fun `a week of warning is what lets a subscription be cancelled in time`() {
-        val subscription = Pay("Підписка", 400.0, day = 19, warnDays = 7)
+        val subscription = Pay("Підписка", 400.0, day = 18, warnDays = 7)
 
-        val due = remindersDue(listOf(subscription), today)
+        // Both the 11th and the 18th of September 2026 are Fridays, so nothing is
+        // shifted here and the week of notice is a plain week.
+        val due = remindersDue(listOf(subscription), LocalDate.of(2026, 9, 11))
 
         assertEquals(1, due.size)
         assertEquals(7, due.single().daysAway)
@@ -376,11 +378,11 @@ class PaymentsTest {
 
     @Test
     fun `the window opens and then stays open until the charge`() {
-        val subscription = Pay("Підписка", 400.0, day = 19, warnDays = 3)
+        val subscription = Pay("Підписка", 400.0, day = 17, warnDays = 3)
 
-        assertTrue(remindersDue(listOf(subscription), LocalDate.of(2026, 9, 15)).isEmpty())
-        assertEquals(3, remindersDue(listOf(subscription), LocalDate.of(2026, 9, 16)).single().daysAway)
-        assertEquals(0, remindersDue(listOf(subscription), LocalDate.of(2026, 9, 19)).single().daysAway)
+        assertTrue(remindersDue(listOf(subscription), LocalDate.of(2026, 9, 13)).isEmpty())
+        assertEquals(3, remindersDue(listOf(subscription), LocalDate.of(2026, 9, 14)).single().daysAway)
+        assertEquals(0, remindersDue(listOf(subscription), LocalDate.of(2026, 9, 17)).single().daysAway)
     }
 
     @Test
@@ -388,17 +390,23 @@ class PaymentsTest {
         // Nothing wrote this field before, and reading the absence as nought would
         // have moved every existing expense to a reminder that arrives too late.
         assertEquals(1, Pay("Інтернет", 300.0, day = 13).warnDays)
-        assertEquals(1, remindersDue(listOf(Pay("Інтернет", 300.0, day = 13)), today).single().daysAway)
+        assertEquals(
+            1,
+            remindersDue(listOf(Pay("Інтернет", 300.0, day = 16)), LocalDate.of(2026, 9, 15))
+                .single().daysAway
+        )
     }
 
     @Test
     fun `a day past the end of a short month warns from its real charge date`() {
         val end = listOf(Pay("Хостинг", 200.0, day = 31, warnDays = 3))
 
-        // February 2027 ends on the 28th, so the window opens on the 25th.
-        assertTrue(remindersDue(end, LocalDate.of(2027, 2, 24)).isEmpty())
-        assertEquals(3, remindersDue(end, LocalDate.of(2027, 2, 25)).single().daysAway)
-        assertEquals(0, remindersDue(end, LocalDate.of(2027, 2, 28)).single().daysAway)
+        // February 2027 ends on the 28th, and that Sunday is not a day money moves,
+        // so the charge has to be dealt with by Friday the 26th and the window opens
+        // three days before that.
+        assertTrue(remindersDue(end, LocalDate.of(2027, 2, 22)).isEmpty())
+        assertEquals(3, remindersDue(end, LocalDate.of(2027, 2, 23)).single().daysAway)
+        assertEquals(0, remindersDue(end, LocalDate.of(2027, 2, 26)).single().daysAway)
     }
 
     @Test
@@ -421,7 +429,10 @@ class PaymentsTest {
 
     @Test
     fun `one expense says when it is due in the title and only its amount below`() {
-        val due = remindersDue(listOf(Pay("Інтернет", 300.0, day = 13, warnDays = 1)), today)
+        // A Tuesday charged on the Wednesday, so the wording is about the notice
+        // period rather than about the weekend.
+        val tuesday = LocalDate.of(2026, 9, 15)
+        val due = remindersDue(listOf(Pay("Інтернет", 300.0, day = 16, warnDays = 1)), tuesday)
 
         assertEquals("Оплата завтра", reminderTitle(due))
         assertEquals("Інтернет 300 ₴", shown(reminderText(due)))
@@ -429,25 +440,27 @@ class PaymentsTest {
 
     @Test
     fun `several on the same day share one heading`() {
+        val tuesday = LocalDate.of(2026, 9, 15)
         val items = listOf(
-            Pay("Інтернет", 300.0, day = 13, warnDays = 1),
-            Pay("Мобільний", 200.0, day = 13, warnDays = 1)
+            Pay("Інтернет", 300.0, day = 16, warnDays = 1),
+            Pay("Мобільний", 200.0, day = 16, warnDays = 1)
         )
 
-        assertEquals("2 платежі завтра", reminderTitle(remindersDue(items, today)))
+        assertEquals("2 платежі завтра", reminderTitle(remindersDue(items, tuesday)))
         assertEquals(
             "Інтернет 300 ₴, Мобільний 200 ₴",
-            shown(reminderText(remindersDue(items, today)))
+            shown(reminderText(remindersDue(items, tuesday)))
         )
     }
 
     @Test
     fun `different days are said against each name, or a week of notice reads as today`() {
+        val tuesday = LocalDate.of(2026, 9, 15)
         val items = listOf(
-            Pay("Інтернет", 300.0, day = 13, warnDays = 1),
-            Pay("Підписка", 400.0, day = 19, warnDays = 7)
+            Pay("Інтернет", 300.0, day = 16, warnDays = 1),
+            Pay("Підписка", 400.0, day = 22, warnDays = 7)
         )
-        val due = remindersDue(items, today)
+        val due = remindersDue(items, tuesday)
 
         assertEquals("Найближчі платежі", reminderTitle(due))
         assertEquals(
