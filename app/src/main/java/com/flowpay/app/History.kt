@@ -1,5 +1,7 @@
 package com.flowpay.app
 
+import java.time.LocalDate
+
 /**
  * Price history, and the one judgement a price tracker exists to make.
  *
@@ -507,4 +509,81 @@ fun rateRangeNote(history: List<PricePoint>): String? {
     val high = prices.max()
     if (high <= low) return null
     return "${rateFigure(low)} – ${rateFigure(high)}"
+}
+
+// ------------------------------------------------------- a rate worth watching
+
+/**
+ * A rate the user asked to be told about, and which side it has to come from.
+ *
+ * The direction is settled once, when the number is set, instead of being worked
+ * out afresh every morning. Someone who writes 42 while the dollar sits at 41,30
+ * is asking about a rise; the same 42 written while it sits at 42,60 is asking
+ * about a fall. Deciding it later, from wherever the rate happens to be that
+ * morning, would let a rate that wanders back over the number quietly reverse the
+ * question — and then answer the reversed one.
+ */
+data class RateTarget(
+    val rate: Double,
+    /** The rate has to rise to it. False when it has to fall to it. */
+    val above: Boolean,
+    /** Epoch day it was reached and said out loud. Zero while it is still waiting. */
+    val hitDay: Long = 0L
+)
+
+/**
+ * Arms a target at [value], reading the direction off [current].
+ *
+ * Null without a rate on the phone, because there is then no side to watch from
+ * and a guessed direction is a coin toss the user never sees being tossed.
+ */
+fun armRateTarget(value: Double, current: Double): RateTarget? {
+    if (value <= 0.0 || current <= 0.0) return null
+    // A number set to the rate it already is counts as a rise, and so reads as
+    // reached rather than waiting for ever on a rise that has already happened.
+    return RateTarget(value, above = value >= current)
+}
+
+/** Whether a target that is still waiting has been reached by [rate]. */
+fun rateTargetReached(target: RateTarget?, rate: Double): Boolean {
+    if (target == null || target.hitDay > 0L || target.rate <= 0.0 || rate <= 0.0) return false
+    return if (target.above) rate >= target.rate else rate <= target.rate
+}
+
+/**
+ * The same target, stamped with the day it was announced.
+ *
+ * The number is kept rather than cleared. A target that vanishes the morning it
+ * fires leaves no way to tell one that was met from one that was never finished
+ * being set, and the user would have to remember which.
+ */
+fun disarmRateTarget(target: RateTarget, today: Long): RateTarget = target.copy(hitDay = today)
+
+/**
+ * The digest line for a rate that has crossed the number it was watched for.
+ *
+ * Null while it is still waiting and null once it has been said, which is the
+ * whole of "once": by the morning after, the same rate is no longer news about
+ * anything, and a line that repeats daily is how a digest stops being read.
+ */
+fun rateTargetLine(target: RateTarget?, rate: Double): String? {
+    if (target == null || !rateTargetReached(target, rate)) return null
+    return "Долар ${rateFigure(rate)} ₴ — курс перетнув ${rateFigure(target.rate)}"
+}
+
+/**
+ * What the rate screen says about the target, under the chart.
+ *
+ * A target that has been reached but not yet announced says so, because the
+ * alternative is a screen showing the rate past the number while the phone has
+ * said nothing, which reads as the feature being broken rather than as a message
+ * that is due at nine.
+ */
+fun rateTargetNote(target: RateTarget?, rate: Double): String = when {
+    target == null -> "Скажу один раз, коли курс дійде до вашого числа"
+    target.hitDay > 0L ->
+        "${rateFigure(target.rate)} — досягнуто ${formatDate(LocalDate.ofEpochDay(target.hitDay))}"
+    rateTargetReached(target, rate) -> "${rateFigure(target.rate)} — уже досягнуто, скажу вранці"
+    target.above -> "Скажу, коли курс підніметься до ${rateFigure(target.rate)}"
+    else -> "Скажу, коли курс опуститься до ${rateFigure(target.rate)}"
 }

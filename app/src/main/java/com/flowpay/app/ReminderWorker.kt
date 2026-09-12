@@ -47,18 +47,28 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // so the last digested day is recorded and the same day is never repeated.
         if (store.lastReminderDay() == today.toEpochDay()) return Result.success()
 
+        val rate = store.fxRate().first.sell
+        val rateTarget = store.rateTarget()
         val summary = digest(
             wishes = store.wishes(),
             pays = store.pays(),
             orders = store.orders(),
             today = today,
-            usdSellRate = store.fxRate().first.sell,
+            usdSellRate = rate,
             income = store.income(),
-            holidays = store.holidays(today.year)
+            holidays = store.holidays(today.year),
+            rateTarget = rateTarget
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
         if (!summary.empty) notify(summary.title, summary.body)
+
+        // Disarmed after the message rather than before it, and only when the same
+        // rate the digest was built from still says so, because the two reading the
+        // store separately is how a crossing gets stamped as told and never said.
+        if (rateTarget != null && rateTargetReached(rateTarget, rate)) {
+            store.saveRateTarget(disarmRateTarget(rateTarget, today.toEpochDay()))
+        }
 
         store.saveLastReminderDay(today.toEpochDay())
         store.saveLastRunAt(WORK_DIGEST, System.currentTimeMillis())

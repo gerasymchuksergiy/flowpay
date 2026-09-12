@@ -532,6 +532,35 @@ class Store(context: Context) {
     })
 
     /**
+     * The rate the user asked to be told about, or null when none is set.
+     *
+     * A preference rather than part of [exportJson], alongside the income and the
+     * digest hour. It is a standing instruction to this phone about what the rate
+     * is doing now, and a year-old file restoring a threshold that was met last
+     * March would announce a crossing that is no longer happening.
+     */
+    fun rateTarget(): RateTarget? {
+        val value = prefs.getFloat("fxt", 0f).toDouble()
+        if (value <= 0.0) return null
+        return RateTarget(value, prefs.getBoolean("fxt_up", true), prefs.getLong("fxt_hit", 0L))
+    }
+
+    fun saveRateTarget(target: RateTarget?) = prefs.edit {
+        if (target == null) {
+            // Cleared rather than zeroed: a stored nought and an absent key would
+            // both have to read as "no target", and two spellings of one state is
+            // how the direction ends up remembered for a target nobody set.
+            remove("fxt")
+            remove("fxt_up")
+            remove("fxt_hit")
+        } else {
+            putFloat("fxt", target.rate.toFloat())
+            putBoolean("fxt_up", target.above)
+            putLong("fxt_hit", target.hitDay)
+        }
+    }
+
+    /**
      * Everything worth losing, as one file.
      *
      * Version 2 adds the paid record and the bin. The number is not read back on
@@ -3318,6 +3347,9 @@ fun CalculatorScreen(store: Store) {
     var loading by remember { mutableStateOf(false) }
     var rateError by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf(store.rateHistory()) }
+    var rateTarget by remember { mutableStateOf(store.rateTarget()) }
+    var targetInput by remember { mutableStateOf("") }
+    var askingTarget by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     fun refresh() {
@@ -3481,6 +3513,39 @@ fun CalculatorScreen(store: Store) {
                                 Spacer(Modifier.height(Space.sm))
                                 LeaderRow("Від і до", it)
                             }
+                            HorizontalDivider(
+                                color = HairLine,
+                                modifier = Modifier.padding(top = Space.md)
+                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = Space.sm),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    rateTargetNote(rateTarget, rate.sell),
+                                    Modifier.weight(1f),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                                Spacer(Modifier.width(Space.sm))
+                                OutlinedButton(
+                                    onClick = {
+                                        // Prefilled with whatever is being watched, so
+                                        // nudging a threshold is a keystroke rather than
+                                        // remembering the number and typing it again.
+                                        targetInput = amountText(rateTarget?.rate ?: 0.0)
+                                        askingTarget = true
+                                    },
+                                    shape = Radius.sm,
+                                    border = BorderStroke(1.dp, HairLine),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = TextPrimary
+                                    )
+                                ) {
+                                    Text(if (rateTarget == null) "Стежити" else "Змінити")
+                                }
+                            }
                         }
                     }
 
@@ -3520,6 +3585,61 @@ fun CalculatorScreen(store: Store) {
             }
         }
         CollapsingTitle("Курс і суми", listState)
+    }
+    if (askingTarget) {
+        AlertDialog(
+            onDismissRequest = { askingTarget = false },
+            title = { Text("Поріг по курсу") },
+            text = {
+                Column {
+                    Text(
+                        "Скажу один раз у ранковому зведенні, коли курс дійде до цього " +
+                            "числа. Далі поріг перестає нагадувати про себе.",
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                    Spacer(Modifier.height(Space.md))
+                    NumberField("Курс", targetInput) { targetInput = it }
+                    if (rate.sell <= 0) {
+                        Text(
+                            "Спершу має завантажитись курс — без нього не видно, " +
+                                "з якого боку чекати",
+                            color = Negative,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine,
+                            modifier = Modifier.padding(top = Space.sm)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        armRateTarget(parseAmount(targetInput), rate.sell)?.let {
+                            rateTarget = it
+                            store.saveRateTarget(it)
+                        }
+                        askingTarget = false
+                    },
+                    enabled = rate.sell > 0
+                ) { Text("Стежити") }
+            },
+            dismissButton = {
+                // Removing a threshold lives here rather than beside the caption:
+                // it is the rarer action of the two and does not deserve a button
+                // on the screen that the eye has to step over every time.
+                if (rateTarget != null) {
+                    TextButton({
+                        rateTarget = null
+                        store.saveRateTarget(null)
+                        askingTarget = false
+                    }) { Text("Прибрати", color = Negative) }
+                } else {
+                    TextButton({ askingTarget = false }) { Text("Скасувати") }
+                }
+            }
+        )
     }
 }
 

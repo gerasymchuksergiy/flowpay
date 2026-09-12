@@ -91,9 +91,22 @@ fun digest(
     today: LocalDate,
     usdSellRate: Double,
     income: Double,
-    holidays: Set<Long> = emptySet()
+    holidays: Set<Long> = emptySet(),
+    rateTarget: RateTarget? = null
 ): Digest {
     val news = buildList {
+        // Leads, because it is the only line here the user asked for by name. The
+        // rest is the app deciding something was worth saying.
+        //
+        // It is said here rather than the moment the rate crosses, which is the
+        // other thing it could have been. The two alerts that still interrupt are
+        // windows that close — a shop's target price, a restock that can go again
+        // by morning — and a rate is not one: a dollar that crossed 42 tonight is
+        // still about 42 at nine. It is also unactionable at the hour the pass
+        // would ring, since the rate is read twice a day and the exchange is shut
+        // at three in the morning. So the crossing is worth exactly one line in
+        // the message that arrives when something could be done about it.
+        rateTargetLine(rateTarget, usdSellRate)?.let { add(it) }
         // Above the waiting parcel: one that is going back to the sender has a
         // deadline you cannot see and an outcome you have to act to change.
         problemLine(orders)?.let { add(it) }
