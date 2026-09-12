@@ -1411,10 +1411,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     val barTravel = with(density) { Space.navBar.toPx() } +
         WindowInsets.navigationBars.getBottom(density)
     val barDown = remember { mutableStateOf(false) }
-    val barHidden by animateFloatAsState(
-        if (barDown.value) barTravel else 0f,
-        label = "bottom bar"
-    )
     val barScroll = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
@@ -1440,9 +1436,37 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                 store.saveRecapSeen(deck.month)
                 recapSeen = deck.month
                 recapOpen = false
+                // Coming back from a screen that took over the whole phone is
+                // arriving somewhere, not continuing a scroll. Without this the
+                // chrome returns in whatever state the last flick left it in, and
+                // the deck closes onto a screen with no navigation bar and no
+                // action button until you happen to scroll upward.
+                barDown.value = false
             }
             return@FlowPayTheme
         }
+        // The bar is computed below the deck's early return, so while the deck is
+        // up this animation is not in the composition at all. Coming back, it is
+        // composed afresh and animateFloatAsState starts at its target, so the bar
+        // is simply there rather than sliding in behind a screen that just closed.
+        // Inside the theme, not above it: LocalReducedMotion is provided by
+        // FlowPayTheme, and read one line higher it would quietly be the default
+        // rather than the phone's answer — which is the failure this whole audit is
+        // about, arrived at by accident.
+        //
+        // On a phone asked to stop animating, the bar simply stays. Snapping it in
+        // and out on every change of scroll direction would be worse than either
+        // answer: a navigation bar and a button that blink out of existence when you
+        // flick, and back when you flick the other way. The hiding exists only as a
+        // movement — chrome getting out of the way of content — so with the movement
+        // gone there is nothing left worth keeping, and the honest answer is to
+        // leave the chrome where it is.
+        val barGone = barDown.value && !LocalReducedMotion.current
+        val barHidden by animateFloatAsState(
+            if (barGone) barTravel else 0f,
+            Motion.spatial(),
+            label = "bottom bar"
+        )
         Scaffold(
             modifier = Modifier.nestedScroll(barScroll),
             // Transparent, not AppBackground: the theme has already painted the
@@ -1458,7 +1482,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     // separate times; the label is needed once, not always.
                     ExtendedFloatingActionButton(
                         onClick = { adding = true },
-                        expanded = !barDown.value,
+                        expanded = !barGone,
                         containerColor = Accent,
                         contentColor = AccentInk,
                         shape = Radius.pill,
@@ -1825,7 +1849,7 @@ fun WishlistScreen(
                         enabled = !refreshing && items.isNotEmpty()
                     ) {
                         if (refreshing) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                            BusyMark()
                         } else {
                             Icon(Icons.Default.Refresh, "Оновити ціни", tint = TextSecondary)
                         }
@@ -3281,7 +3305,7 @@ fun SharedTransitionScope.WishDetailScreen(
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
                     ) {
                         if (refreshing) {
-                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                            BusyMark()
                         } else {
                             Icon(Icons.Default.Refresh, null)
                         }
@@ -3717,7 +3741,7 @@ fun CalculatorScreen(store: Store) {
                                     }
                                 }
                                 IconButton({ refresh(asked = true) }) {
-                                    if (loading) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                                    if (loading) BusyMark()
                                     else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
                                 }
                             }
@@ -4665,7 +4689,7 @@ fun OrdersScreen(
     val checkAction: @Composable () -> Unit = {
         IconButton(onClick = { checkAll() }, enabled = !checking && trackable > 0) {
             if (checking) {
-                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = Accent)
+                BusyMark()
             } else {
                 Icon(Icons.Default.Sync, "Перевірити статуси", tint = TextSecondary)
             }
@@ -5621,7 +5645,7 @@ fun SettingsScreen(
                             },
                             enabled = !checking
                         ) {
-                            if (checking) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                            if (checking) BusyMark()
                             else Text("Перевірити")
                         }
                     }
@@ -5672,11 +5696,7 @@ fun SettingsScreen(
                                     enabled = !backingUp
                                 ) {
                                     if (backingUp) {
-                                        CircularProgressIndicator(
-                                            Modifier.size(18.dp),
-                                            strokeWidth = 2.dp,
-                                            color = Accent
-                                        )
+                                        BusyMark()
                                     } else {
                                         Icon(Icons.Default.Sync, "Створити копію зараз", tint = Accent)
                                     }
@@ -5734,11 +5754,7 @@ fun SettingsScreen(
                             enabled = backup == BackupState.READY && !exportingCsv
                         ) {
                             if (exportingCsv) {
-                                CircularProgressIndicator(
-                                    Modifier.size(18.dp),
-                                    strokeWidth = 2.dp,
-                                    color = Accent
-                                )
+                                BusyMark()
                             } else {
                                 Icon(Icons.Default.ChevronRight, "Зберегти таблицю")
                             }

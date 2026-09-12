@@ -1,6 +1,10 @@
 package com.flowpay.app
 
+import android.content.Context
+import android.database.ContentObserver
 import android.graphics.Bitmap
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.snap
@@ -16,7 +20,11 @@ import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -480,20 +488,48 @@ val LocalReducedMotion = staticCompositionLocalOf { false }
  * settings and developer options both write to. Anything unreadable counts as
  * motion allowed, because refusing to animate on a phone that never asked would
  * be its own kind of wrong.
+ *
+ * Watched rather than read once. Compose observes this same setting live for its
+ * own animations, so a value sampled at startup would drift from it the moment the
+ * switch is thrown with the app already open — and the app would spend the rest of
+ * that session in the exact half-honoured state this whole arrangement exists to
+ * prevent: [Motion] still handing out springs that Compose then flattens to
+ * nothing, and anything the app decides for itself on the strength of the flag
+ * deciding it the wrong way. It is read once per *composition*, which is what
+ * matters; it just also notices.
  */
 @Composable
 private fun systemReducedMotion(): Boolean {
     val context = LocalContext.current
-    return remember(context) {
+    var reduced by remember(context) { mutableStateOf(animationsSwitchedOff(context)) }
+    DisposableEffect(context) {
+        val resolver = context.contentResolver
+        val observer = object : ContentObserver(Handler(Looper.getMainLooper())) {
+            override fun onChange(selfChange: Boolean) {
+                reduced = animationsSwitchedOff(context)
+            }
+        }
+        // A phone that refuses to be watched keeps whatever was read at the start,
+        // which is still a real answer rather than a crash on a settings screen.
         runCatching {
-            Settings.Global.getFloat(
-                context.contentResolver,
-                Settings.Global.ANIMATOR_DURATION_SCALE,
-                1f
-            ) == 0f
-        }.getOrDefault(false)
+            resolver.registerContentObserver(
+                Settings.Global.getUriFor(Settings.Global.ANIMATOR_DURATION_SCALE),
+                false,
+                observer
+            )
+        }
+        onDispose { runCatching { resolver.unregisterContentObserver(observer) } }
     }
+    return reduced
 }
+
+private fun animationsSwitchedOff(context: Context): Boolean = runCatching {
+    Settings.Global.getFloat(
+        context.contentResolver,
+        Settings.Global.ANIMATOR_DURATION_SCALE,
+        1f
+    ) == 0f
+}.getOrDefault(false)
 
 /**
  * The springs the app animates with, already answering the reduced-motion setting.

@@ -8,8 +8,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -51,6 +49,7 @@ import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
@@ -1564,8 +1563,16 @@ private fun CollapsingTitleBar(
     AnimatedVisibility(
         visible = collapsed,
         modifier = modifier,
-        enter = slideInVertically { -it } + fadeIn(),
-        exit = slideOutVertically { -it } + fadeOut()
+        // A dissolve, not a slide. This bar hands over on almost every scroll of
+        // almost every screen, which makes it the highest-frequency motion in the
+        // app — and it used to slide down from the top while the list it belongs to
+        // was travelling up underneath it, two movements crossing during a gesture
+        // the finger is still making. The title appearing is the whole message; it
+        // does not also need to arrive from somewhere. On the effects spring it is
+        // over in about a tenth of a second, and it snaps when the phone asks for
+        // no motion.
+        enter = fadeIn(Motion.effects()),
+        exit = fadeOut(Motion.effects())
     ) {
         Column(Modifier.fillMaxWidth().background(SurfaceLow.copy(alpha = 0.92f))) {
             Row(
@@ -1605,6 +1612,35 @@ fun navClearance(): Dp =
     Space.navBar + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
 
 /**
+ * "Working on it", including when the phone has been told to stop animating.
+ *
+ * This is the one genuine reduced-motion leak in the app, and it is the shape the
+ * complaint threads describe: an indeterminate [CircularProgressIndicator] is
+ * driven by an `infiniteRepeatable`, and Compose answers a zero animator duration
+ * scale by skipping every animation to its end and suspending. So the spinner does
+ * not slow down and does not stop — it *freezes*, mid-arc, and stays there for as
+ * long as the work runs. A frozen spinner is not a quieter spinner; it is the
+ * universal sign that an app has hung, shown at exactly the moment the person is
+ * waiting on something and most likely to believe it.
+ *
+ * The rule for these is that meaningful motion gets replaced rather than deleted,
+ * and what this motion means is only "still going". So it becomes a lime dot: the
+ * same footprint, in the same place, in the colour the app spends on the thing it
+ * wants you to look at, sitting in a button that is disabled while the work runs.
+ * It says the same thing with a colour instead of a rotation.
+ */
+@Composable
+fun BusyMark(modifier: Modifier = Modifier, tint: Color = Accent) {
+    if (LocalReducedMotion.current) {
+        Box(modifier.size(18.dp), contentAlignment = Alignment.Center) {
+            Box(Modifier.size(10.dp).background(tint, CircleShape))
+        }
+    } else {
+        CircularProgressIndicator(modifier.size(18.dp), strokeWidth = 2.dp, color = tint)
+    }
+}
+
+/**
  * One control with two halves and a lime indicator that slides between them.
  *
  * Two separate chips made the choice look like two independent switches, either or
@@ -1627,7 +1663,12 @@ fun SegmentedControl(
             .background(SurfaceHigh, Radius.pill)
     ) {
         val slot = maxWidth / options.size
-        val travel by animateDpAsState(slot * active, label = "segment")
+        // On the app's own spring rather than the platform default. The default is
+        // stiffer and does not overshoot, so this one control was arriving on a
+        // curve nothing else in the app uses — and under reduced motion it has to
+        // snap along with everything else, which is Motion's job rather than this
+        // control's.
+        val travel by animateDpAsState(slot * active, Motion.spatial(), label = "segment")
         Box(
             Modifier
                 // The lambda overload, so the sliding indicator relayouts rather
