@@ -514,6 +514,18 @@ class Store(context: Context) {
         )
     }
 
+    /**
+     * The last month whose recap was actually opened. Blank means none ever was.
+     *
+     * A preference rather than part of [exportJson], for the same reason the rate
+     * target is: it says what this phone has already shown its owner, and
+     * restoring a year-old file should not make five months of recaps queue up
+     * again. Only one is ever waiting anyway — the month that has just ended.
+     */
+    fun recapSeen(): String = prefs.getString("recap", "").orEmpty()
+
+    fun saveRecapSeen(month: String) = prefs.edit { putString("recap", month) }
+
     /** Which figure the Quick Settings tile is currently showing. */
     fun tileFace(): String = prefs.getString("tile", TILE_RATE) ?: TILE_RATE
 
@@ -1357,6 +1369,32 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // the system is holding a job change with the battery and the network.
     var health by remember { mutableStateOf<WorkHealth?>(null) }
     var healthOpen by remember { mutableStateOf(false) }
+
+    /**
+     * The recap for the month that has ended, built silently and left waiting.
+     *
+     * No notification and no dialog on launch. It is assembled here because this
+     * is the one place that holds all four lists at once, and it sits on the
+     * overview until it is tapped — an artefact, not an announcement.
+     */
+    var recapSeen by remember { mutableStateOf(store.recapSeen()) }
+    var recapOpen by remember { mutableStateOf(false) }
+    val recap = remember(recapSeen, wishes, pays, orders, paid) {
+        recapDue(recapSeen, today)?.let { month ->
+            monthlyRecap(
+                wishes = wishes,
+                pays = pays,
+                orders = orders,
+                marks = paid,
+                month = month,
+                today = today,
+                income = monthBudget.income,
+                usdSellRate = usdSell
+            )
+            // A month with too little in it produces no ceremony at all, the same
+            // way a morning with no news sends no digest.
+        }?.takeUnless { it.empty }
+    }
     var digestHour by remember { mutableIntStateOf(store.digestHour()) }
     LaunchedEffect(tab) {
         if (tab != TAB_OVERVIEW) return@LaunchedEffect
@@ -1541,6 +1579,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             WorkHealthStrip(health?.let { healthLine(it) }) { healthOpen = true }
                             Box(Modifier.weight(1f)) {
                                 SettingsScreen(
+                                    recap = recap,
+                                    onOpenRecap = { recapOpen = true },
                                     summary = overview(
                                         wishes,
                                         pays,
@@ -1569,6 +1609,18 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                 )
                             }
                         }
+                    }
+                }
+            }
+            // Marked seen on opening rather than on being shown. A deck that
+            // vanished because you scrolled past it once would be a month's worth
+            // of the app's only ceremony, lost to a flick.
+            if (recapOpen) {
+                recap?.let { deck ->
+                    RecapDeck(deck) {
+                        store.saveRecapSeen(deck.month)
+                        recapSeen = deck.month
+                        recapOpen = false
                     }
                 }
             }
@@ -4880,6 +4932,9 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
 
 @Composable
 fun SettingsScreen(
+    /** The month that has ended, already built. Null when there is none worth showing. */
+    recap: Recap?,
+    onOpenRecap: () -> Unit,
     summary: Overview,
     store: Store,
     /** Newest first, as far back as the record goes. */
@@ -4959,6 +5014,19 @@ fun SettingsScreen(
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
             // Item zero is the header alone: that is the block the compact bar watches.
             item { ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається") }
+            // Waiting, not interrupting. It sits above the figures because it is
+            // the one thing on this screen that is only here this month.
+            recap?.let { deck ->
+                item(key = "recap-${deck.month}") {
+                    RecapInvite(
+                        deck,
+                        Modifier
+                            .padding(horizontal = Space.screen)
+                            .padding(bottom = Space.lg),
+                        onOpen = onOpenRecap
+                    )
+                }
+            }
             item {
                 Column(Modifier.padding(horizontal = Space.screen)) {
                     // The one loud block on this screen, with the ring reading the same
