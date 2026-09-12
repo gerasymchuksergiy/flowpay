@@ -192,6 +192,10 @@ class MainActivity : ComponentActivity() {
         }
         PriceWorker.schedule(this)
         ReminderWorker.schedule(this)
+        // Enqueued whether or not a folder has been chosen: the worker checks, and
+        // scheduling only once a folder exists would mean a folder chosen while the
+        // app was already running never got a job at all.
+        BackupWorker.schedule(this)
         setContent { FlowPayApp(this, command) { command = null } }
     }
 
@@ -217,98 +221,112 @@ class MainActivity : ComponentActivity() {
 class Store(context: Context) {
     private val prefs = context.getSharedPreferences("flowpay", Context.MODE_PRIVATE)
 
-    fun wishes(): List<Wish> = jsonList("w") { o ->
-        val recorded = o.optJSONArray("h") ?: JSONArray()
-        Wish(
-            id = o.optString("id", System.currentTimeMillis().toString()),
-            name = cleanProductTitle(o.optString("n", "Товар")).ifBlank { "Товар" },
-            url = o.optString("u"),
-            image = o.optString("i"),
-            price = o.optDouble("p", 0.0),
-            targetPrice = o.optDouble("t", 0.0),
-            category = o.optString("c", "Інше"),
-            // Histories written before dates existed are bare numbers. They are read
-            // as points with an unknown day rather than being thrown away, and the
-            // same goes for points written before the rate travelled with them.
-            history = (0 until recorded.length()).mapNotNull { index ->
-                recorded.optJSONObject(index)?.let { point ->
-                    PricePoint(
-                        point.optDouble("p", 0.0),
-                        point.optLong("d", 0L),
-                        point.optDouble("r", 0.0),
-                        point.optString("rs")
-                    )
-                } ?: recorded.optDouble(index, 0.0).takeIf { it > 0 }?.let { PricePoint(it, 0L) }
-            }.filter { it.price > 0 },
-            checkedDay = o.optLong("cd", 0L),
-            notifiedPrice = o.optDouble("np", 0.0),
-            variant = o.optString("v"),
-            saved = o.optDouble("s", 0.0),
-            monthlyPlan = o.optDouble("m", 0.0),
-            deadline = o.optLong("dl", 0L),
-            // Anything saved before freshness existed was last seen being read from
-            // a page, so that is the honest default rather than a fresh doubt.
-            freshness = freshnessFrom(o.optString("fr")),
-            addedDay = o.optLong("ad", 0L),
-            holdUntil = o.optLong("hu", 0L)
-        )
-    }
+    fun wishes(): List<Wish> = jsonList("w", ::wishOf)
 
-    fun saveWishes(items: List<Wish>) = save("w", items.map {
-        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("i", it.image)
-            .put("p", it.price).put("t", it.targetPrice).put("c", it.category)
-            .put(
-                "h",
-                JSONArray().apply {
-                    it.history.forEach { point ->
-                        put(
-                            JSONObject().put("p", point.price).put("d", point.day)
-                                .put("r", point.rate).put("rs", point.rateSource)
-                        )
-                    }
-                }
+    fun saveWishes(items: List<Wish>) = save("w", items.map(::wishJson))
+
+    fun pays(): List<Pay> = jsonList("pay", ::payOf)
+
+    fun savePays(items: List<Pay>) = save("pay", items.map(::payJson))
+
+    fun orders(): List<Order> = jsonList("orders", ::orderOf)
+
+    fun saveOrders(items: List<Order>) = save("orders", items.map(::orderJson))
+
+    /**
+     * What has actually been paid, month by month.
+     *
+     * Pruned on the way out rather than on a schedule: nothing else runs often
+     * enough to be trusted with it, and reading is the only moment the list is
+     * certain to be looked at.
+     */
+    fun paidMarks(today: LocalDate = LocalDate.now()): List<PaidMark> =
+        prunePaidMarks(
+            jsonList("paid") {
+                PaidMark(
+                    it.optString("n"),
+                    it.optString("m"),
+                    it.optDouble("a", 0.0),
+                    it.optString("cur", UAH).ifBlank { UAH }
+                )
+            },
+            today
+        )
+
+    fun savePaidMarks(items: List<PaidMark>, today: LocalDate = LocalDate.now()) =
+        save("paid", prunePaidMarks(items, today).map {
+            JSONObject().put("n", it.name).put("m", it.month)
+                .put("a", it.amount).put("cur", it.currency)
+        })
+
+    /** Deleted items, with anything past its thirty days already dropped. */
+    fun bin(today: Long = LocalDate.now().toEpochDay()): List<BinEntry> = pruneBin(
+        jsonList("bin") {
+            BinEntry(
+                id = it.optString("id"),
+                kind = it.optString("k"),
+                title = it.optString("t"),
+                detail = it.optString("d"),
+                payload = it.optString("p"),
+                day = it.optLong("day", 0L)
             )
-            .put("cd", it.checkedDay)
-            .put("s", it.saved).put("m", it.monthlyPlan).put("dl", it.deadline)
-            .put("np", it.notifiedPrice).put("v", it.variant)
-            .put("fr", it.freshness.name).put("ad", it.addedDay).put("hu", it.holdUntil)
-    })
+        },
+        today
+    )
 
-    fun pays(): List<Pay> = jsonList("pay") {
-        Pay(
-            it.optString("n"),
-            it.optDouble("a"),
-            it.optInt("d", 1),
-            // Entries saved before currencies existed were all hryvnia.
-            it.optString("cur", UAH).ifBlank { UAH },
-            // Entries saved before the warning existed got a day's notice from the
-            // worker itself, so that is what they keep.
-            it.optInt("wd", DEFAULT_WARN_DAYS)
-        )
+    fun saveBin(items: List<BinEntry>, today: Long = LocalDate.now().toEpochDay()) =
+        save("bin", pruneBin(items, today).map {
+            JSONObject().put("id", it.id).put("k", it.kind).put("t", it.title)
+                .put("d", it.detail).put("p", it.payload).put("day", it.day)
+        })
+
+    /**
+     * Puts a deleted item in the bin and returns what the bin now holds.
+     *
+     * The payload is the item in the very shape [saveWishes] and its siblings
+     * write, so restoring is a move rather than a reconstruction.
+     */
+    fun recycle(entry: BinEntry): List<BinEntry> {
+        val next = pruneBin(bin() + entry, entry.day)
+        saveBin(next, entry.day)
+        return next
     }
 
-    fun savePays(items: List<Pay>) = save("pay", items.map {
-        JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day).put("cur", it.currency)
-            .put("wd", it.warnDays)
-    })
-
-    fun orders(): List<Order> = jsonList("orders") {
-        Order(
-            it.optString("id"), it.optString("n"), it.optString("u"),
-            it.optString("s", ORDERED), it.optString("t"),
-            it.optString("i"), it.optDouble("p", 0.0),
-            it.optString("sd"), it.optLong("ca", 0L),
-            it.optBoolean("pr", false), it.optLong("ps", 0L),
-            it.optLong("sdl", 0L), it.optDouble("atp", 0.0)
-        )
+    /**
+     * Puts one entry back where it came from.
+     *
+     * Appends rather than restoring a position, because the position a wish had in
+     * a list sorted by price is not a property of the wish. The item itself comes
+     * back whole, which is the part that cannot be typed again.
+     */
+    fun restoreFromBin(id: String) {
+        val entry = bin().firstOrNull { it.id == id } ?: return
+        runCatching {
+            val json = JSONObject(entry.payload)
+            when (entry.kind) {
+                BIN_WISH -> saveWishes(wishes() + wishOf(json))
+                BIN_PAY -> savePays(pays() + payOf(json))
+                BIN_ORDER -> saveOrders(orders() + orderOf(json))
+                // An entry of a kind this version does not know is left in the bin
+                // rather than dropped: a newer build may be able to restore it.
+                else -> return
+            }
+        }.onSuccess { dropFromBin(id) }
     }
-    fun saveOrders(items: List<Order>) = save("orders", items.map {
-        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url)
-            .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
-            .put("sd", it.statusDetail).put("ca", it.checkedAt)
-            .put("pr", it.problem).put("ps", it.paidStorageFrom)
-            .put("sdl", it.scheduledDelivery).put("atp", it.amountToPay)
-    })
+
+    fun dropFromBin(id: String) = saveBin(bin().filterNot { it.id == id })
+
+    fun emptyBin() = saveBin(emptyList())
+
+    /** The folder the weekly copy is written into, as a tree uri. Blank means none. */
+    fun backupFolder(): String = prefs.getString("bk_dir", "").orEmpty()
+
+    fun saveBackupFolder(uri: String) = prefs.edit { putString("bk_dir", uri) }
+
+    /** When the last automatic or on-demand copy was written. Zero means never. */
+    fun lastBackupAt(): Long = prefs.getLong("bk_at", 0L)
+
+    fun saveLastBackupAt(millis: Long) = prefs.edit { putLong("bk_at", millis) }
 
     /** Epoch day the payment reminder last ran, so a day is never repeated. */
     fun lastReminderDay(): Long = prefs.getLong("reminded", 0L)
@@ -366,11 +384,20 @@ class Store(context: Context) {
         JSONObject().put("p", it.price).put("d", it.day)
     })
 
+    /**
+     * Everything worth losing, as one file.
+     *
+     * Version 2 adds the paid record and the bin. The number is not read back on
+     * import — an older file simply lacks those keys and an older build simply
+     * ignores them — so it is here to say what a file is rather than to gate it.
+     */
     fun exportJson(): String = JSONObject()
-        .put("version", 1)
+        .put("version", 2)
         .put("wishes", JSONArray(prefs.getString("w", "[]")))
         .put("payments", JSONArray(prefs.getString("pay", "[]")))
         .put("orders", JSONArray(prefs.getString("orders", "[]")))
+        .put("paid", JSONArray(prefs.getString("paid", "[]")))
+        .put("bin", JSONArray(prefs.getString("bin", "[]")))
         .toString(2)
 
     fun importJson(text: String) {
@@ -378,10 +405,18 @@ class Store(context: Context) {
         val wishes = root.getJSONArray("wishes")
         val payments = root.optJSONArray("payments") ?: JSONArray()
         val orders = root.optJSONArray("orders") ?: JSONArray()
+        // A backup written before these existed carries no opinion about them, so
+        // it leaves what is on the phone alone. Reading a missing key as an empty
+        // list would let restoring a year-old file silently destroy a year of
+        // payment records that the file never claimed to replace.
+        val paid = root.optJSONArray("paid")
+        val bin = root.optJSONArray("bin")
         prefs.edit {
             putString("w", wishes.toString())
             putString("pay", payments.toString())
             putString("orders", orders.toString())
+            paid?.let { putString("paid", it.toString()) }
+            bin?.let { putString("bin", it.toString()) }
         }
     }
 
@@ -394,6 +429,139 @@ class Store(context: Context) {
         prefs.edit { putString(key, JSONArray(values).toString()) }
     }
 }
+
+/**
+ * The stored shape of each kind of item, written once.
+ *
+ * These were inline in [Store] until the bin needed them too. A second copy of the
+ * mapping is how a restored wish comes back without its history: the two spellings
+ * of "h" drift apart and nothing fails loudly enough to notice.
+ */
+
+fun wishJson(wish: Wish): JSONObject = JSONObject()
+    .put("id", wish.id).put("n", wish.name).put("u", wish.url).put("i", wish.image)
+    .put("p", wish.price).put("t", wish.targetPrice).put("c", wish.category)
+    .put(
+        "h",
+        JSONArray().apply {
+            wish.history.forEach { point ->
+                put(
+                    JSONObject().put("p", point.price).put("d", point.day)
+                        .put("r", point.rate).put("rs", point.rateSource)
+                )
+            }
+        }
+    )
+    .put("cd", wish.checkedDay)
+    .put("s", wish.saved).put("m", wish.monthlyPlan).put("dl", wish.deadline)
+    .put("np", wish.notifiedPrice).put("v", wish.variant)
+    .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil)
+
+fun wishOf(o: JSONObject): Wish {
+    val recorded = o.optJSONArray("h") ?: JSONArray()
+    return Wish(
+        id = o.optString("id", System.currentTimeMillis().toString()),
+        name = cleanProductTitle(o.optString("n", "Товар")).ifBlank { "Товар" },
+        url = o.optString("u"),
+        image = o.optString("i"),
+        price = o.optDouble("p", 0.0),
+        targetPrice = o.optDouble("t", 0.0),
+        category = o.optString("c", "Інше"),
+        // Histories written before dates existed are bare numbers. They are read
+        // as points with an unknown day rather than being thrown away, and the
+        // same goes for points written before the rate travelled with them.
+        history = (0 until recorded.length()).mapNotNull { index ->
+            recorded.optJSONObject(index)?.let { point ->
+                PricePoint(
+                    point.optDouble("p", 0.0),
+                    point.optLong("d", 0L),
+                    point.optDouble("r", 0.0),
+                    point.optString("rs")
+                )
+            } ?: recorded.optDouble(index, 0.0).takeIf { it > 0 }?.let { PricePoint(it, 0L) }
+        }.filter { it.price > 0 },
+        checkedDay = o.optLong("cd", 0L),
+        notifiedPrice = o.optDouble("np", 0.0),
+        variant = o.optString("v"),
+        saved = o.optDouble("s", 0.0),
+        monthlyPlan = o.optDouble("m", 0.0),
+        deadline = o.optLong("dl", 0L),
+        // Anything saved before freshness existed was last seen being read from a
+        // page, so that is the honest default rather than a fresh doubt.
+        freshness = freshnessFrom(o.optString("fr")),
+        addedDay = o.optLong("ad", 0L),
+        holdUntil = o.optLong("hu", 0L)
+    )
+}
+
+fun payJson(pay: Pay): JSONObject = JSONObject()
+    .put("n", pay.name).put("a", pay.amount).put("d", pay.day)
+    .put("cur", pay.currency).put("wd", pay.warnDays)
+
+fun payOf(o: JSONObject): Pay = Pay(
+    o.optString("n"),
+    o.optDouble("a"),
+    o.optInt("d", 1),
+    // Entries saved before currencies existed were all hryvnia.
+    o.optString("cur", UAH).ifBlank { UAH },
+    // Entries saved before the warning existed got a day's notice from the worker
+    // itself, so that is what they keep.
+    o.optInt("wd", DEFAULT_WARN_DAYS)
+)
+
+fun orderJson(order: Order): JSONObject = JSONObject()
+    .put("id", order.id).put("n", order.name).put("u", order.url)
+    .put("s", order.status).put("t", order.tracking).put("i", order.image)
+    .put("p", order.price).put("sd", order.statusDetail).put("ca", order.checkedAt)
+    .put("pr", order.problem).put("ps", order.paidStorageFrom)
+    .put("sdl", order.scheduledDelivery).put("atp", order.amountToPay)
+
+fun orderOf(o: JSONObject): Order = Order(
+    o.optString("id"), o.optString("n"), o.optString("u"),
+    o.optString("s", ORDERED), o.optString("t"),
+    o.optString("i"), o.optDouble("p", 0.0),
+    o.optString("sd"), o.optLong("ca", 0L),
+    o.optBoolean("pr", false), o.optLong("ps", 0L),
+    o.optLong("sdl", 0L), o.optDouble("atp", 0.0)
+)
+
+/** A wish on its way to the bin, with enough on the row to recognise it by. */
+fun binEntryOf(wish: Wish, today: Long): BinEntry = BinEntry(
+    id = wish.id,
+    kind = BIN_WISH,
+    title = wish.name,
+    // The history is the part that cannot be fetched back, so the row says how
+    // much of it is at stake rather than restating the price.
+    detail = listOfNotNull(
+        money(wish.price).takeIf { wish.price > 0 },
+        changesLabel(wish.history.size).takeIf { wish.history.isNotEmpty() }
+    ).joinToString(" · "),
+    payload = wishJson(wish).toString(),
+    day = today
+)
+
+fun binEntryOf(pay: Pay, today: Long): BinEntry = BinEntry(
+    // A Pay has no id of its own, so the bin gives it one. Name and day alone
+    // would collide with a second copy of the same expense deleted later.
+    id = "pay-$today-${System.nanoTime()}",
+    kind = BIN_PAY,
+    title = pay.name,
+    detail = "${amountLabel(pay.amount, pay.currency)} · ${pay.day} числа",
+    payload = payJson(pay).toString(),
+    day = today
+)
+
+fun binEntryOf(order: Order, today: Long): BinEntry = BinEntry(
+    id = order.id,
+    kind = BIN_ORDER,
+    title = order.name,
+    detail = listOfNotNull(
+        order.status.takeIf { it.isNotBlank() },
+        order.tracking.takeIf { it.isNotBlank() }
+    ).joinToString(" · "),
+    payload = orderJson(order).toString(),
+    day = today
+)
 
 fun isSupportedWebUrl(value: String): Boolean = runCatching {
     val url = URL(value.trim())
@@ -657,6 +825,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     var orders by remember { mutableStateOf(store.orders()) }
     var adding by remember { mutableStateOf(false) }
     var openedWish by remember { mutableStateOf<String?>(null) }
+    // Both read pruned: a month that fell out of the year, or an entry past its
+    // thirty days, is dropped on the way out of the store rather than lingering
+    // in memory until something happens to write the list back.
+    var paid by remember { mutableStateOf(store.paidMarks()) }
+    var bin by remember { mutableStateOf(store.bin()) }
 
     // Both belong to whichever tab is showing, so leaving a tab clears them.
     LaunchedEffect(tab) {
@@ -759,6 +932,76 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // Suppressed on an item page for the same reason as the action button: that
     // page is one thing at a time, and the pill would be a second one.
     val note = if (openedWish == null) statusNote(orders, pays, wishes, today, usdSell) else null
+
+    /**
+     * A deletion, with both ways back out of it.
+     *
+     * The bar covers the mistake noticed at once and the bin covers the one
+     * noticed a week later, and both go through here so that what the bar puts
+     * back is exactly what the bin would have: the stored item, whole.
+     */
+    fun recycle(entry: BinEntry, restore: () -> Unit) {
+        bin = store.recycle(entry)
+        noticeScope.launch {
+            notices.currentSnackbarData?.dismiss()
+            val answer = notices.showSnackbar(
+                message = binUndoMessage(entry),
+                actionLabel = "Повернути",
+                duration = SnackbarDuration.Long
+            )
+            if (answer == SnackbarResult.ActionPerformed) {
+                store.dropFromBin(entry.id)
+                bin = store.bin()
+                restore()
+            }
+        }
+    }
+
+    fun deleteWish(wish: Wish) {
+        val next = wishes.filterNot { it.id == wish.id }
+        wishes = next
+        store.saveWishes(next)
+        // Appended on the way back rather than slotted into its old index: the
+        // grid's order is the user's sort, not a property of the wish.
+        recycle(binEntryOf(wish, today.toEpochDay())) {
+            val back = wishes + wish
+            wishes = back
+            store.saveWishes(back)
+        }
+    }
+
+    /** By position, because two identical expenses are equal as values. */
+    fun deletePay(index: Int) {
+        val pay = pays.getOrNull(index) ?: return
+        val next = pays.filterIndexed { at, _ -> at != index }
+        pays = next
+        store.savePays(next)
+        recycle(binEntryOf(pay, today.toEpochDay())) {
+            val back = pays + pay
+            pays = back
+            store.savePays(back)
+        }
+    }
+
+    fun deleteOrder(order: Order) {
+        val next = orders.filterNot { it.id == order.id }
+        orders = next
+        store.saveOrders(next)
+        recycle(binEntryOf(order, today.toEpochDay())) {
+            val back = orders + order
+            orders = back
+            store.saveOrders(back)
+        }
+    }
+
+    /** Everything a restore can touch, re-read at once. */
+    fun reload() {
+        wishes = store.wishes()
+        pays = store.pays()
+        orders = store.orders()
+        paid = store.paidMarks()
+        bin = store.bin()
+    }
 
     // The bar is chrome, and chrome should yield to content. It moves all the
     // way or not at all: following the finger left it resting half off screen,
@@ -883,6 +1126,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             // so the move is visible rather than something to go
                             // looking for.
                             freeCash = monthBudget.free,
+                            onDelete = { deleteWish(it) },
                             onBought = { order ->
                                 val next = orders + order
                                 orders = next
@@ -891,16 +1135,41 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             }
                         )
                         TAB_RATE -> CalculatorScreen(store)
-                        TAB_PAYMENTS -> PaymentsScreen(pays, { pays = it; store.savePays(it) }, store, adding) { adding = it }
-                        TAB_ORDERS -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context, adding) { adding = it }
+                        TAB_PAYMENTS -> PaymentsScreen(
+                            items = pays,
+                            save = { pays = it; store.savePays(it) },
+                            store = store,
+                            adding = adding,
+                            setAdding = { adding = it },
+                            paid = paid,
+                            setPaid = { marks -> paid = marks; store.savePaidMarks(marks) },
+                            onDelete = { deletePay(it) }
+                        )
+                        TAB_ORDERS -> OrdersScreen(
+                            items = orders,
+                            save = { orders = it; store.saveOrders(it) },
+                            context = context,
+                            adding = adding,
+                            setAdding = { adding = it },
+                            onDelete = { deleteOrder(it) }
+                        )
                         else -> SettingsScreen(
                             summary = overview(wishes, pays, orders, monthBudget.income, usdSell),
-                            store = store
-                        ) {
-                            wishes = store.wishes()
-                            pays = store.pays()
-                            orders = store.orders()
-                        }
+                            store = store,
+                            months = monthRecords(pays, paid, today, usdSell),
+                            pays = pays,
+                            paid = paid,
+                            onTogglePaid = { pay, month ->
+                                val marks = togglePaid(paid, pay, month)
+                                paid = marks
+                                store.savePaidMarks(marks)
+                            },
+                            bin = bin,
+                            onRestore = { id -> store.restoreFromBin(id); reload() },
+                            onDropFromBin = { id -> store.dropFromBin(id); bin = store.bin() },
+                            onEmptyBin = { store.emptyBin(); bin = store.bin() },
+                            onImported = { reload() }
+                        )
                     }
                 }
             }
@@ -976,6 +1245,8 @@ fun WishlistScreen(
     opened: String?,
     setOpened: (String?) -> Unit,
     freeCash: Double,
+    /** Deleting is the app's one irreversible act, so it is owned above this screen. */
+    onDelete: (Wish) -> Unit,
     onBought: (Order) -> Unit
 ) {
     var editing by remember { mutableStateOf<Wish?>(null) }
@@ -1001,7 +1272,7 @@ fun WishlistScreen(
                     onBack = { setOpened(null) },
                     onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
                     onEdit = { editing = shown },
-                    onDelete = { save(items - shown); setOpened(null) },
+                    onDelete = { onDelete(shown); setOpened(null) },
                     freeCash = freeCash,
                     onBought = { trackingNumber ->
                         onBought(
@@ -2381,7 +2652,11 @@ fun PaymentsScreen(
     save: (List<Pay>) -> Unit,
     store: Store,
     adding: Boolean,
-    setAdding: (Boolean) -> Unit
+    setAdding: (Boolean) -> Unit,
+    /** What has been marked paid, across every month still kept. */
+    paid: List<PaidMark>,
+    setPaid: (List<PaidMark>) -> Unit,
+    onDelete: (Int) -> Unit
 ) {
     // The rate the exchange screen already fetched and cached. Dollar entries are
     // converted at the sell rate, since that is what buying dollars costs.
@@ -2394,6 +2669,8 @@ fun PaymentsScreen(
     var editing by remember { mutableStateOf<Int?>(null) }
     // Read once, so the timeline and the strip cannot disagree about which day it is.
     val today = remember { LocalDate.now() }
+    val thisMonth = monthKey(today)
+    val record = monthRecord(items, paid, thisMonth, today, rate.sell)
     val listState = rememberLazyListState()
     Box {
         LazyColumn(
@@ -2479,6 +2756,10 @@ fun PaymentsScreen(
                             if (items.isNotEmpty()) {
                                 Spacer(Modifier.height(Space.sm))
                                 LeaderRow("Разом на місяць", money(monthly.total))
+                                // What the month actually cost, beside what it was
+                                // meant to. Until this row existed the screen could
+                                // only ever state the plan.
+                                LeaderRow("Сплачено цього місяця", totalLabel(record.paid))
                                 // A year of the same costs, because that is the scale at
                                 // which a subscription is worth arguing with.
                                 LeaderRow("Разом на рік", money(yearly.total))
@@ -2577,6 +2858,26 @@ fun PaymentsScreen(
                                             )
                                         }
                                     }
+                                    // One tap, on the row you are already looking at.
+                                    // Anywhere else and the record would be a screen
+                                    // you have to remember to visit, which is the same
+                                    // as not having one.
+                                    val done = isPaid(paid, pay.name, thisMonth)
+                                    IconButton({ setPaid(togglePaid(paid, pay, thisMonth)) }) {
+                                        Icon(
+                                            if (done) {
+                                                Icons.Default.CheckCircle
+                                            } else {
+                                                Icons.Default.RadioButtonUnchecked
+                                            },
+                                            if (done) {
+                                                "Скасувати позначку про оплату"
+                                            } else {
+                                                "Позначити оплаченим"
+                                            },
+                                            tint = if (done) Accent else TextDisabled
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -2603,7 +2904,7 @@ fun PaymentsScreen(
                 pay,
                 close = { editing = null },
                 delete = {
-                    save(items.filterIndexed { i, _ -> i != index })
+                    onDelete(index)
                     editing = null
                 }
             ) { changed ->
@@ -2678,7 +2979,9 @@ fun OrdersScreen(
     save: (List<Order>) -> Unit,
     context: Context,
     adding: Boolean,
-    setAdding: (Boolean) -> Unit
+    setAdding: (Boolean) -> Unit,
+    /** Owned above this screen, which is where the undo and the bin live. */
+    onDelete: (Order) -> Unit
 ) {
     var tracking by remember { mutableStateOf<Order?>(null) }
     var checking by remember { mutableStateOf(false) }
@@ -2914,7 +3217,7 @@ fun OrdersScreen(
                             },
                             enabled = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
                         ) { Icon(Icons.Default.Sync, "Перевірити статус") }
-                        IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                        IconButton({ onDelete(order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
                         Spacer(Modifier.weight(1f))
                     }
                 }
@@ -2980,12 +3283,67 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
 }
 
 @Composable
-fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
+fun SettingsScreen(
+    summary: Overview,
+    store: Store,
+    /** Newest first, as far back as the record goes. */
+    months: List<MonthRecord>,
+    /** The standing expenses, so a month that was missed can still be filled in. */
+    pays: List<Pay>,
+    paid: List<PaidMark>,
+    onTogglePaid: (Pay, String) -> Unit,
+    bin: List<BinEntry>,
+    onRestore: (String) -> Unit,
+    onDropFromBin: (String) -> Unit,
+    onEmptyBin: () -> Unit,
+    onImported: () -> Unit
+) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
     var available by remember { mutableStateOf<UpdateInfo?>(null) }
     val scope = rememberCoroutineScope()
+    val today = remember { LocalDate.now().toEpochDay() }
+    // Which month is open for correction. One at a time, because the point is to
+    // fix the month you noticed, not to audit the year.
+    var openMonth by remember { mutableStateOf<String?>(null) }
+
+    // The folder and the timestamp are read into state so that picking a folder or
+    // running a copy updates the row, rather than leaving it describing the state
+    // the screen opened in.
+    var backupFolder by remember { mutableStateOf(store.backupFolder()) }
+    var lastBackup by remember { mutableLongStateOf(store.lastBackupAt()) }
+    var backingUp by remember { mutableStateOf(false) }
+    val backupPermitted = remember(backupFolder, lastBackup) {
+        holdsBackupPermission(context, backupFolder)
+    }
+    val backup = backupState(backupFolder, backupPermitted)
+    val pickFolder = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            // Without the persistable grant the folder works until the phone is
+            // restarted and then silently stops, which is worse than refusing it.
+            if (takeBackupFolder(context, uri)) {
+                store.saveBackupFolder(uri.toString())
+                backupFolder = uri.toString()
+                scope.launch {
+                    backingUp = true
+                    // The first copy is written straight away: a backup you have to
+                    // wait a week to see is a backup you do not believe in.
+                    message = if (backupNow(context, store)) {
+                        lastBackup = store.lastBackupAt()
+                        "Копію створено"
+                    } else {
+                        "Тека вибрана, але записати не вдалося"
+                    }
+                    backingUp = false
+                }
+            } else {
+                message = "Android не дав постійний доступ до цієї теки"
+            }
+        }
+    }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) runCatching {
             context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportJson()) }
@@ -3226,6 +3584,203 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
                     }
                 }
 
+                // What was planned is everywhere in this app; what was paid was
+                // nowhere. The months read back newest first, because the question
+                // is almost always about the one that just ended.
+                SectionTitle("Що вже сплачено")
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    // Said once, while there is nothing to read yet. The months
+                    // below still draw, because the current one showing nought
+                    // paid out of what is due is the thing being explained.
+                    if (months.all { it.paidCount == 0 }) {
+                        EmptyInvite(
+                            "Ще нічого не позначено",
+                            "Позначайте платежі оплаченими на вкладці «Платежі» — тут буде " +
+                                "видно, скільки насправді пішло щомісяця."
+                        )
+                        Spacer(Modifier.height(Space.md))
+                    }
+                    months.forEach { record ->
+                        val open = openMonth == record.month
+                        Card(
+                            Modifier.fillMaxWidth().padding(bottom = Space.sm),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Column(
+                                Modifier
+                                    // A month reported as unpaid with no way to correct
+                                    // it is an accusation you cannot answer. Opening the
+                                    // row is how a month you forgot to mark gets marked.
+                                    .clickable(enabled = pays.isNotEmpty()) {
+                                        openMonth = if (open) null else record.month
+                                    }
+                                    .padding(Space.lg)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        record.title,
+                                        fontSize = Type.cardTitleSize,
+                                        fontWeight = Type.medium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (pays.isNotEmpty()) {
+                                        Icon(
+                                            if (open) {
+                                                Icons.Default.ExpandLess
+                                            } else {
+                                                Icons.Default.ExpandMore
+                                            },
+                                            if (open) "Згорнути місяць" else "Позначити платежі",
+                                            tint = TextSecondary
+                                        )
+                                    }
+                                }
+                                Text(
+                                    monthRecordLine(record),
+                                    // A month that ended with nothing marked is not a
+                                    // month with nothing to pay, and the difference is
+                                    // worth a colour rather than only a wording.
+                                    color = when (record.state) {
+                                        MonthState.UNRECORDED -> Negative
+                                        MonthState.NOTHING_DUE -> TextDisabled
+                                        else -> TextPrimary
+                                    },
+                                    fontSize = Type.bodySize,
+                                    lineHeight = Type.bodyLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                                monthRecordDetail(record).takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        it,
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine
+                                    )
+                                }
+                                if (record.gap > 0.0 && record.state != MonthState.NOTHING_DUE) {
+                                    Spacer(Modifier.height(Space.sm))
+                                    LeaderRow(
+                                        "Різниця з планом",
+                                        money(record.gap),
+                                        alarm = record.state != MonthState.RUNNING
+                                    )
+                                }
+                                if (open) {
+                                    HorizontalDivider(
+                                        color = HairLine,
+                                        modifier = Modifier.padding(vertical = Space.md)
+                                    )
+                                    pays.forEach { pay ->
+                                        val done = isPaid(paid, pay.name, record.month)
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clickable { onTogglePaid(pay, record.month) }
+                                                .padding(vertical = Space.xs),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (done) {
+                                                    Icons.Default.CheckCircle
+                                                } else {
+                                                    Icons.Default.RadioButtonUnchecked
+                                                },
+                                                if (done) {
+                                                    "Скасувати позначку про оплату"
+                                                } else {
+                                                    "Позначити оплаченим"
+                                                },
+                                                tint = if (done) Accent else TextDisabled
+                                            )
+                                            Spacer(Modifier.width(Space.md))
+                                            Text(
+                                                pay.name,
+                                                Modifier.weight(1f).padding(end = Space.sm),
+                                                color = if (done) TextPrimary else TextSecondary,
+                                                fontSize = Type.bodySize,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                amountLabel(pay.amount, pay.currency),
+                                                color = if (done) TextPrimary else TextSecondary,
+                                                fontSize = Type.bodySize,
+                                                fontWeight = Type.medium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SectionTitle("Кошик")
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Text(
+                        binSummary(bin),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(bottom = Space.sm)
+                    )
+                    sortedBin(bin).forEach { entry ->
+                        Card(
+                            Modifier.fillMaxWidth().padding(bottom = Space.sm),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Row(
+                                Modifier.padding(Space.lg),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                    Text(
+                                        binKindLabel(entry.kind).uppercase(),
+                                        color = Accent,
+                                        fontSize = Type.overlineSize,
+                                        fontWeight = Type.strong,
+                                        letterSpacing = Type.overlineTracking
+                                    )
+                                    Spacer(Modifier.height(Space.xs))
+                                    Text(
+                                        entry.title,
+                                        fontSize = Type.cardTitleSize,
+                                        fontWeight = Type.medium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    listOfNotNull(
+                                        entry.detail.takeIf { it.isNotBlank() },
+                                        binLeftLabel(entry, today)
+                                    ).joinToString(" · ").let {
+                                        Text(
+                                            it,
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize,
+                                            lineHeight = Type.captionLine
+                                        )
+                                    }
+                                }
+                                TextButton({ onRestore(entry.id) }) { Text("Повернути") }
+                                IconButton({ onDropFromBin(entry.id) }) {
+                                    Icon(
+                                        Icons.Default.DeleteForever,
+                                        "Видалити назавжди",
+                                        tint = TextSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (bin.isNotEmpty()) {
+                        TextButton({ onEmptyBin() }) {
+                            Text("Очистити кошик", color = Negative)
+                        }
+                    }
+                }
+
                 SectionTitle("Налаштування")
                 // Filled list items painted a large lighter block across the screen and
                 // left a hard seam under the header. They sit on the page instead.
@@ -3268,6 +3823,74 @@ fun SettingsScreen(summary: Overview, store: Store, onImported: () -> Unit) {
                         ) {
                             if (checking) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                             else Text("Перевірити")
+                        }
+                    }
+                )
+                // The manual export below only helps the person who remembers to
+                // press it. The loss this guards against is a phone left in a taxi,
+                // and nobody exports on the morning of that.
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            Icons.Default.FolderOpen,
+                            null,
+                            tint = if (backup == BackupState.FOLDER_LOST) Negative else Accent
+                        )
+                    },
+                    headlineContent = { Text("Автоматична копія", fontWeight = FontWeight.Bold) },
+                    supportingContent = {
+                        Column {
+                            Text(
+                                backupStatusLine(backup, lastBackup),
+                                color = if (backup == BackupState.FOLDER_LOST) {
+                                    Negative
+                                } else {
+                                    TextSecondary
+                                }
+                            )
+                            if (backup == BackupState.READY) {
+                                Text(backupKeepLine(), color = TextDisabled)
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (backup == BackupState.READY) {
+                                IconButton(
+                                    onClick = {
+                                        scope.launch {
+                                            backingUp = true
+                                            message = if (backupNow(context, store)) {
+                                                lastBackup = store.lastBackupAt()
+                                                "Копію створено"
+                                            } else {
+                                                "Не вдалося записати у теку"
+                                            }
+                                            backingUp = false
+                                        }
+                                    },
+                                    enabled = !backingUp
+                                ) {
+                                    if (backingUp) {
+                                        CircularProgressIndicator(
+                                            Modifier.size(18.dp),
+                                            strokeWidth = 2.dp,
+                                            color = Accent
+                                        )
+                                    } else {
+                                        Icon(Icons.Default.Sync, "Створити копію зараз", tint = Accent)
+                                    }
+                                }
+                            }
+                            OutlinedButton(
+                                shape = Radius.sm,
+                                border = BorderStroke(1.dp, HairLine),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                onClick = { pickFolder.launch(null) },
+                                enabled = !backingUp
+                            ) {
+                                Text(if (backup == BackupState.OFF) "Вибрати теку" else "Змінити")
+                            }
                         }
                     }
                 )

@@ -378,3 +378,223 @@ fun freeCashLine(month: Budget): String = when {
     month.overspent -> "Бракує ${money(-month.free)}"
     else -> "Вільно ${money(month.free)}"
 }
+
+// --------------------------------------------------------- what was actually paid
+
+/**
+ * Everything above is a plan. Nothing here was ever a record of what happened, so
+ * "скільки пішло в серпні" had no answer at all — the app could only say what
+ * August was supposed to cost, which is a different number the moment one bill is
+ * skipped, paid late, or paid twice.
+ */
+
+/**
+ * A month as a sortable key, "2026-08".
+ *
+ * A month rather than a date, because paying the rent on the 3rd and the internet
+ * on the 28th are both August. Zero-padded so sorting the keys as text sorts them
+ * as time, which is the whole of the ordering the overview needs.
+ */
+fun monthKey(date: LocalDate): String = "%04d-%02d".format(date.year, date.monthValue)
+
+/** The first day of the month a key names, or null when the string is not a key. */
+fun monthKeyDate(key: String): LocalDate? = runCatching {
+    val year = key.substringBefore('-').toInt()
+    val month = key.substringAfter('-').toInt()
+    LocalDate.of(year, month, 1)
+}.getOrNull()
+
+/**
+ * Month names in the nominative.
+ *
+ * [formatDate] carries a genitive set for use inside a sentence — "10 серпня". A
+ * heading is not inside a sentence, and "Серпня 2026" as a title is wrong in the
+ * way that makes an app read as translated.
+ */
+private val MONTHS_NOMINATIVE = listOf(
+    "Січень", "Лютий", "Березень", "Квітень", "Травень", "Червень",
+    "Липень", "Серпень", "Вересень", "Жовтень", "Листопад", "Грудень"
+)
+
+/** "Серпень 2026", the form a month takes as a heading. */
+fun monthTitle(key: String): String {
+    val date = monthKeyDate(key) ?: return key
+    return "${MONTHS_NOMINATIVE[date.monthValue - 1]} ${date.year}"
+}
+
+/**
+ * One standing expense, marked as paid for one month.
+ *
+ * The amount is copied in rather than read back off the expense, because the
+ * record has to stay true after the rent goes up: what August cost is not what
+ * September costs, and an expense edited in October must not rewrite August.
+ *
+ * Identified by name, since that is all a [Pay] carries. Two expenses sharing a
+ * name are therefore one row here — rare enough to accept, and the alternative is
+ * an id on every existing expense that nothing on the phone would have.
+ */
+data class PaidMark(
+    val name: String,
+    /** "2026-08". */
+    val month: String,
+    val amount: Double,
+    val currency: String = UAH
+)
+
+/** Months of marks kept: this one and the twelve before it. */
+const val PAID_HISTORY_MONTHS = 13
+
+/** Whether this expense already has a mark against it for [month]. */
+fun isPaid(marks: List<PaidMark>, name: String, month: String): Boolean =
+    marks.any { it.name == name && it.month == month }
+
+/**
+ * Marks an expense paid, or takes the mark back off it.
+ *
+ * One action rather than two, because the mistake being recovered from is always
+ * the same one: the wrong row was tapped, and the fix is to tap it again.
+ */
+fun togglePaid(marks: List<PaidMark>, pay: Pay, month: String): List<PaidMark> =
+    if (isPaid(marks, pay.name, month)) {
+        marks.filterNot { it.name == pay.name && it.month == month }
+    } else {
+        marks + PaidMark(pay.name, month, pay.amount, pay.currency)
+    }
+
+/**
+ * Drops marks older than the window, and any month that has not happened yet.
+ *
+ * A future month can only come from a clock that was wrong when the mark was made,
+ * and leaving one in would put a month above the current one on the overview.
+ */
+fun prunePaidMarks(marks: List<PaidMark>, today: LocalDate): List<PaidMark> {
+    val first = today.withDayOfMonth(1)
+    val oldest = monthKey(first.minusMonths((PAID_HISTORY_MONTHS - 1).toLong()))
+    val newest = monthKey(first)
+    return marks.filter { it.month in oldest..newest }
+}
+
+/** How a month turned out, once it is known what was planned and what was marked. */
+enum class MonthState {
+    /** There were no standing expenses and nothing was marked: nothing was owed. */
+    NOTHING_DUE,
+
+    /** Every standing expense has a mark against it. */
+    SETTLED,
+
+    /** The month is still running, so what is unmarked is not yet late. */
+    RUNNING,
+
+    /** The month is over and not one payment was marked. */
+    UNRECORDED,
+
+    /** The month is over and some of it was marked. */
+    PARTIAL
+}
+
+data class MonthRecord(
+    /** "2026-08". */
+    val month: String,
+    /** "Серпень 2026". */
+    val title: String,
+    /** What the marks for this month add up to. */
+    val paid: MonthlyTotal,
+    /** What the standing expenses ask for. */
+    val planned: MonthlyTotal,
+    /** Planned minus paid, never below nought. */
+    val gap: Double,
+    val paidCount: Int,
+    val plannedCount: Int,
+    val state: MonthState
+)
+
+/**
+ * One month, read back.
+ *
+ * [planned] can only be the expenses standing *now*: nothing on the phone records
+ * what the list looked like in August. That is honest for the months this feature
+ * has been running and is the reason [monthRecords] refuses to go back further
+ * than the first mark.
+ */
+fun monthRecord(
+    pays: List<Pay>,
+    marks: List<PaidMark>,
+    month: String,
+    today: LocalDate,
+    usdSellRate: Double
+): MonthRecord {
+    val forMonth = marks.filter { it.month == month }
+    // Marks are totalled through the same function as expenses, so a dollar rent
+    // paid with no rate loaded stays visible as dollars instead of reading as nought.
+    val paid = monthlyTotal(
+        forMonth.map { Pay(it.name, it.amount, currency = it.currency) },
+        usdSellRate
+    )
+    val planned = monthlyTotal(pays, usdSellRate)
+    val settled = pays.all { isPaid(marks, it.name, month) }
+    return MonthRecord(
+        month = month,
+        title = monthTitle(month),
+        paid = paid,
+        planned = planned,
+        gap = (planned.total - paid.total).coerceAtLeast(0.0),
+        paidCount = forMonth.size,
+        plannedCount = pays.size,
+        state = when {
+            pays.isEmpty() && forMonth.isEmpty() -> MonthState.NOTHING_DUE
+            settled -> MonthState.SETTLED
+            month >= monthKey(today) -> MonthState.RUNNING
+            forMonth.isEmpty() -> MonthState.UNRECORDED
+            else -> MonthState.PARTIAL
+        }
+    )
+}
+
+/**
+ * The months worth showing, newest first.
+ *
+ * Runs back from this month only as far as the earliest mark. Before that the app
+ * was not keeping a record, and a row per month saying "не позначено жодного
+ * платежу" for a year that was in fact paid would be an accusation rather than a
+ * report.
+ */
+fun monthRecords(
+    pays: List<Pay>,
+    marks: List<PaidMark>,
+    today: LocalDate,
+    usdSellRate: Double,
+    maxMonths: Int = PAID_HISTORY_MONTHS
+): List<MonthRecord> {
+    val current = monthKey(today)
+    val first = today.withDayOfMonth(1)
+    val earliest = marks.map { it.month }.filter { it <= current }.minOrNull() ?: current
+    return (0 until maxMonths.coerceAtLeast(1))
+        .map { monthKey(first.minusMonths(it.toLong())) }
+        .takeWhile { it >= earliest }
+        .map { monthRecord(pays, marks, it, today, usdSellRate) }
+}
+
+/** A month in one line, which is all a row on the overview has room for. */
+fun monthRecordLine(record: MonthRecord): String = when (record.state) {
+    MonthState.NOTHING_DUE -> "Нічого не було до сплати"
+    MonthState.UNRECORDED -> "Не позначено жодного платежу"
+    MonthState.SETTLED -> "Сплачено все · ${totalLabel(record.paid)}"
+    MonthState.RUNNING -> "Сплачено ${totalLabel(record.paid)} з ${totalLabel(record.planned)}"
+    MonthState.PARTIAL -> "Сплачено ${totalLabel(record.paid)}, лишилось ${money(record.gap)}"
+}
+
+/**
+ * The second line: how many of the month's expenses are accounted for.
+ *
+ * Empty where the figure above already said it, because a row that repeats itself
+ * in smaller grey type is how a list stops being read.
+ */
+fun monthRecordDetail(record: MonthRecord): String = when (record.state) {
+    MonthState.NOTHING_DUE -> ""
+    MonthState.UNRECORDED -> "Місяць минув · ${paymentsLabel(record.plannedCount)} у списку"
+    MonthState.SETTLED -> paymentsLabel(record.paidCount)
+    // Bare figures rather than "1 з 2 платежі": "з" governs the genitive, and
+    // building that phrase from a nominative plural helper is how an app comes out
+    // sounding translated.
+    else -> "Позначено ${record.paidCount} з ${record.plannedCount}"
+}
