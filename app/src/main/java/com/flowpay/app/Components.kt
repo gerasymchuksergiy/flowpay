@@ -440,7 +440,12 @@ fun PriceChart(
     modifier: Modifier = Modifier,
     kind: ChartLine = ChartLine.STEP,
     format: (Double) -> String = ::money,
-    caption: String? = null,
+    /**
+     * Added after the axis figures. Where a chart is drawn on its own scale —
+     * which is every chart here — the size of the move has to be stated in text,
+     * because that is the only thing making two of them comparable.
+     */
+    note: String? = null,
     height: Dp = 132.dp
 ) {
     val drawn = remember(points) { points.filter { it.price > 0.0 } }
@@ -567,7 +572,7 @@ fun PriceChart(
         Spacer(Modifier.height(Space.sm))
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                caption ?: axisNote(axis, format),
+                listOfNotNull(axisNote(axis, format), note).joinToString(" · "),
                 color = TextDisabled,
                 fontSize = Type.overlineSize,
                 maxLines = 1,

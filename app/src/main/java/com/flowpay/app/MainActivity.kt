@@ -2969,7 +2969,17 @@ fun SharedTransitionScope.WishDetailScreen(
                             else -> PriceChart(
                                 remember(wish.history, wish.price, wish.checkedDay) {
                                     chartSeries(wish.history, wish.price, wish.checkedDay)
-                                }
+                                },
+                                // Every chart here is drawn on its own scale, so two
+                                // of them side by side cannot be compared by eye.
+                                // This figure is what makes them comparable, and it
+                                // is the price of being allowed a per-item scale at
+                                // all. It measures from the left edge of the chart,
+                                // which is the first price ever recorded. Withheld
+                                // while the reading is doubtful, like everything else
+                                // on this card that depends on the price being real.
+                                note = "від першої ціни ${signedPercent(change)}"
+                                    .takeIf { wish.history.isNotEmpty() && !stale }
                             )
                         }
                         if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
