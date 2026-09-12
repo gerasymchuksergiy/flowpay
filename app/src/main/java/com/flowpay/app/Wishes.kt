@@ -238,6 +238,191 @@ fun holdLabel(wish: Wish, today: Long): String? = when {
 fun partitionByHold(items: List<Wish>, today: Long): Pair<List<Wish>, List<Wish>> =
     items.partition { !onHold(it, today) }
 
+// --------------------------------------------------------- the finished purchase
+
+/**
+ * What waiting turned out to be worth, once the thing is in your hands.
+ *
+ * Everything else in this app is a forecast. This is the only judgement made after
+ * the fact, and it is the one that says whether tracking a price was worth the
+ * bother at all. So it has to be able to say no.
+ */
+enum class PurchaseVerdict {
+    /** Paid the lowest price the tracker ever saw, or beat it. Waiting paid off. */
+    PATIENT,
+
+    /** There was a cheaper moment on record and it went by. */
+    HASTY,
+
+    /** Nothing was watched long enough to compare against. No opinion is honest. */
+    UNJUDGED
+}
+
+data class PurchaseReview(
+    val paid: Double,
+    /** The lowest price ever recorded for this thing. Zero when nothing was tracked. */
+    val lowestSeen: Double,
+    val verdict: PurchaseVerdict,
+    /** What the hurry cost. Zero unless the verdict is [PurchaseVerdict.HASTY]. */
+    val overpaid: Double,
+    val overpaidPercent: Double,
+    val uses: Int,
+    /**
+     * Price divided by actual uses, or null while nothing has been counted.
+     *
+     * The figure that comparing purchase prices cannot give you: a cheap thing
+     * used twice is dearer than an expensive one used weekly.
+     */
+    val perUse: Double?
+)
+
+/**
+ * How far above the best price still counts as having waited.
+ *
+ * Announcing "ти поспішив, переплата 3 ₴" on a thirty-thousand purchase is
+ * literally true and completely useless, and a verdict that nitpicks stops being
+ * read. Anything inside one per cent of the best price seen is the same price.
+ */
+private const val HURRY_SHARE = 0.01
+
+/**
+ * The verdict on a finished purchase.
+ *
+ * [lowestSeen] of zero means there was no history to judge against, which is a
+ * different answer from "you did badly" and is reported as its own outcome.
+ */
+fun purchaseReview(paid: Double, lowestSeen: Double, uses: Int = 0): PurchaseReview {
+    val counted = uses.coerceAtLeast(0)
+    val perUse = if (paid > 0.0 && counted > 0) paid / counted else null
+    if (paid <= 0.0 || lowestSeen <= 0.0) {
+        return PurchaseReview(
+            paid = paid.coerceAtLeast(0.0),
+            lowestSeen = lowestSeen.coerceAtLeast(0.0),
+            verdict = PurchaseVerdict.UNJUDGED,
+            overpaid = 0.0,
+            overpaidPercent = 0.0,
+            uses = counted,
+            perUse = perUse
+        )
+    }
+    val over = paid - lowestSeen
+    val hurried = over > lowestSeen * HURRY_SHARE
+    return PurchaseReview(
+        paid = paid,
+        lowestSeen = lowestSeen,
+        verdict = if (hurried) PurchaseVerdict.HASTY else PurchaseVerdict.PATIENT,
+        overpaid = if (hurried) over else 0.0,
+        overpaidPercent = if (hurried) over / lowestSeen * 100 else 0.0,
+        uses = counted,
+        perUse = perUse
+    )
+}
+
+/**
+ * The lowest price this wish was ever seen at, or zero when there is no basis.
+ *
+ * Held to the same bar as [priceInsight]: fewer than two recorded changes is not a
+ * price history, it is the one number the shop happened to show on the day the
+ * link was pasted, and calling that "the lowest ever" would flatter every purchase.
+ *
+ * A hand-typed price ends the matter outright. [Freshness.MANUAL] says the figure
+ * standing now was entered by a person, and because a typed price is appended to
+ * the history like any other, nothing downstream can tell which of the recorded
+ * points were read from a shop and which were not. Judging a purchase against a
+ * number the buyer typed grades them against themselves, so there is no verdict
+ * rather than a flattering or a scolding one.
+ *
+ * A stale wish — [Freshness.UNREADABLE], [Freshness.OUT_OF_STOCK],
+ * [Freshness.GONE] — keeps its benchmark. Those states stop the price being
+ * updated; they do not put a wrong number into the history, and a page that 404s
+ * after six months of readings is exactly when the record is worth most. A hold
+ * changes nothing here either: it only stops the app asking about the thing, and
+ * a minimum over prices that were genuinely observed is still that minimum.
+ */
+fun lowestTracked(wish: Wish): Double {
+    if (wish.freshness == Freshness.MANUAL) return 0.0
+    if (wish.history.size < 2) return 0.0
+    return (wish.history.map { it.price } + wish.price).filter { it > 0.0 }.minOrNull() ?: 0.0
+}
+
+fun purchaseVerdictLabel(verdict: PurchaseVerdict): String = when (verdict) {
+    PurchaseVerdict.PATIENT -> "Чекати було варто"
+    PurchaseVerdict.HASTY -> "Ти поспішив"
+    PurchaseVerdict.UNJUDGED -> "Немає з чим порівняти"
+}
+
+fun purchaseVerdictDetail(review: PurchaseReview): String = when (review.verdict) {
+    PurchaseVerdict.PATIENT ->
+        if (review.paid < review.lowestSeen) {
+            "Заплачено ${money(review.paid)} — дешевше за все, що бачив трекер"
+        } else {
+            "Заплачено ${money(review.paid)} — найнижча ціна за весь час спостережень"
+        }
+
+    PurchaseVerdict.HASTY ->
+        "Заплачено ${money(review.paid)}, а найнижча була ${money(review.lowestSeen)}. " +
+            "Переплата ${money(review.overpaid)} — це ${"%.0f".format(review.overpaidPercent)}%"
+
+    PurchaseVerdict.UNJUDGED ->
+        if (review.paid <= 0.0) {
+            "Не вказано, скільки заплачено"
+        } else {
+            "Ціну не встигли відстежити, тож порівнювати нема з чим"
+        }
+}
+
+/** Ukrainian plural for how many times a thing has been used. */
+fun usesLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "разів"
+        last == 1 -> "раз"
+        last in 2..4 -> "рази"
+        else -> "разів"
+    }
+    return "$count $word"
+}
+
+/** "480 ₴ за раз · 25 разів", or null while no use has been counted. */
+fun costPerUseLine(review: PurchaseReview): String? {
+    val perUse = review.perUse ?: return null
+    return "${money(perUse)} за раз · ${usesLabel(review.uses)}"
+}
+
+/** How the tracker has done across everything already bought and received. */
+data class PurchaseTally(
+    /** Purchases there was actually a price history to judge. */
+    val judged: Int,
+    val patient: Int,
+    val hasty: Int,
+    /** Everything the hurried purchases cost above the best price on record. */
+    val overpaid: Double
+)
+
+fun purchaseTally(reviews: List<PurchaseReview>): PurchaseTally {
+    val judged = reviews.filter { it.verdict != PurchaseVerdict.UNJUDGED }
+    return PurchaseTally(
+        judged = judged.size,
+        patient = judged.count { it.verdict == PurchaseVerdict.PATIENT },
+        hasty = judged.count { it.verdict == PurchaseVerdict.HASTY },
+        overpaid = judged.sumOf { it.overpaid }
+    )
+}
+
+/**
+ * The one line that says whether the tracker earns its keep.
+ *
+ * Worded as "$patient з $judged" rather than with a plural helper on purpose: no
+ * Ukrainian numeral form fits both halves of a ratio, and "усі 1 позиція" is the
+ * sort of wrong a phone reads out loud.
+ */
+fun purchaseTallyLine(tally: PurchaseTally): String {
+    if (tally.judged == 0) return "Порівнювати ще нема з чим"
+    val base = "Куплено вчасно: ${tally.patient} з ${tally.judged}"
+    return if (tally.overpaid > 0.0) "$base · переплата ${money(tally.overpaid)}" else base
+}
+
 /** Ukrainian plural for how many wishes are being watched. */
 fun positionsLabel(count: Int): String {
     val lastTwo = count % 100

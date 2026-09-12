@@ -1,6 +1,7 @@
 package com.flowpay.app
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -495,6 +496,33 @@ fun StageRail(
                     .padding(vertical = Space.sm),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                // A parcel moving a stage is news, and news that simply appears is
+                // missed. The dot swells into place on a bouncy spring so the eye
+                // is drawn to which stop is live now; the colours settle without
+                // overshooting, because a half-lime dot would be a third state.
+                val dot by animateDpAsState(
+                    if (here) 14.dp else 9.dp,
+                    Motion.fastSpatial(),
+                    label = "stage dot"
+                )
+                val dotColor by animateColorAsState(
+                    when {
+                        here -> Accent
+                        passed -> TextDisabled
+                        else -> HairLine
+                    },
+                    Motion.effects(),
+                    label = "stage dot colour"
+                )
+                val labelColor by animateColorAsState(
+                    when {
+                        here -> Accent
+                        passed -> TextSecondary
+                        else -> TextDisabled
+                    },
+                    Motion.effects(),
+                    label = "stage label colour"
+                )
                 Row(
                     Modifier.fillMaxWidth().height(14.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -502,18 +530,7 @@ fun StageRail(
                     // Half a connector on each side, so the stops read as one route
                     // and the ends of the row stay open.
                     RailSegment(Modifier.weight(1f), drawn = position > 0, passed = passed || here)
-                    Box(
-                        Modifier
-                            .size(if (here) 14.dp else 9.dp)
-                            .background(
-                                when {
-                                    here -> Accent
-                                    passed -> TextDisabled
-                                    else -> HairLine
-                                },
-                                CircleShape
-                            )
-                    )
+                    Box(Modifier.size(dot).background(dotColor, CircleShape))
                     RailSegment(
                         Modifier.weight(1f),
                         drawn = position < stages.lastIndex,
@@ -523,11 +540,7 @@ fun StageRail(
                 Spacer(Modifier.height(Space.sm))
                 Text(
                     stage,
-                    color = when {
-                        here -> Accent
-                        passed -> TextSecondary
-                        else -> TextDisabled
-                    },
+                    color = labelColor,
                     fontSize = Type.overlineSize,
                     lineHeight = Type.captionLine,
                     textAlign = TextAlign.Center,
@@ -540,17 +553,18 @@ fun StageRail(
 
 @Composable
 private fun RailSegment(modifier: Modifier, drawn: Boolean, passed: Boolean) {
-    Box(
-        modifier
-            .height(1.dp)
-            .background(
-                when {
-                    !drawn -> Color.Transparent
-                    passed -> TextDisabled
-                    else -> HairLine
-                }
-            )
+    // The line fills in behind the dot rather than with it, which is what makes a
+    // stage change read as travel along a route instead of two lamps swapping.
+    val colour by animateColorAsState(
+        when {
+            !drawn -> Color.Transparent
+            passed -> TextDisabled
+            else -> HairLine
+        },
+        Motion.effects(),
+        label = "rail segment"
     )
+    Box(modifier.height(1.dp).background(colour))
 }
 
 /**
@@ -695,19 +709,78 @@ fun PlaceholderRows(fields: List<Pair<String, String>>, modifier: Modifier = Mod
  * underneath: a translucent dark capsule with a lime icon and a short line. It
  * keeps the image whole and still reads at a glance.
  */
+/**
+ * The corners a verdict wears, one radius per corner.
+ *
+ * A verdict changing is one of the three things in this app that actually happens
+ * rather than merely being displayed, and a cross-fade between two capsules is
+ * indistinguishable from a redraw — you look up and the words are different, with
+ * nothing to say when. A shape that springs from a capsule into a leaf is legible
+ * out of the corner of an eye, and stays legible at 120 Hz where a 200ms fade is
+ * over before it has been noticed.
+ *
+ * Four radii rather than one because a uniform radius only ever reads as "rounder"
+ * or "squarer". Opposite corners pulled in opposite directions changes the outline,
+ * which is what the eye catches.
+ */
+data class VerdictCorners(val topStart: Dp, val topEnd: Dp, val bottomEnd: Dp, val bottomStart: Dp) {
+    companion object {
+        /** The resting shape: a plain capsule, used wherever nothing is being judged. */
+        val pill = VerdictCorners(17.dp, 17.dp, 17.dp, 17.dp)
+    }
+}
+
+/** Open and round for a good moment, cut across for a bad one, small while unsure. */
+fun buyVerdictCorners(verdict: BuyVerdict): VerdictCorners = when (verdict) {
+    BuyVerdict.GOOD -> VerdictCorners.pill
+    BuyVerdict.FAIR -> VerdictCorners(11.dp, 11.dp, 11.dp, 11.dp)
+    BuyVerdict.POOR -> VerdictCorners(17.dp, 4.dp, 17.dp, 4.dp)
+    BuyVerdict.UNKNOWN -> VerdictCorners(6.dp, 6.dp, 6.dp, 6.dp)
+}
+
+/** The same three shapes for the verdict on a purchase that is already over. */
+fun purchaseVerdictCorners(verdict: PurchaseVerdict): VerdictCorners = when (verdict) {
+    PurchaseVerdict.PATIENT -> VerdictCorners.pill
+    PurchaseVerdict.HASTY -> VerdictCorners(17.dp, 4.dp, 17.dp, 4.dp)
+    PurchaseVerdict.UNJUDGED -> VerdictCorners(6.dp, 6.dp, 6.dp, 6.dp)
+}
+
+/**
+ * A verdict in a capsule that morphs into its next shape rather than being replaced.
+ *
+ * The outline moves on a spatial spring and the colour on an effects spring, which
+ * is why the two do not arrive together: the shape overshoots slightly and settles,
+ * the colour does not. Under the system's reduced-motion setting both snap, and the
+ * verdict is still correct — [Motion] handles that, not this.
+ */
 @Composable
-fun PhotoChip(text: String, modifier: Modifier = Modifier, icon: ImageVector? = null, tint: Color = Accent) {
+fun VerdictChip(
+    text: String,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    tint: Color = Accent,
+    corners: VerdictCorners = VerdictCorners.pill
+) {
+    val shapeSpec = Motion.spatial<Dp>()
+    val topStart by animateDpAsState(corners.topStart, shapeSpec, label = "verdict top start")
+    val topEnd by animateDpAsState(corners.topEnd, shapeSpec, label = "verdict top end")
+    val bottomEnd by animateDpAsState(corners.bottomEnd, shapeSpec, label = "verdict bottom end")
+    val bottomStart by animateDpAsState(corners.bottomStart, shapeSpec, label = "verdict bottom start")
+    val ink by animateColorAsState(tint, Motion.effects(), label = "verdict tint")
     Row(
         modifier
-            .background(AppBackground.copy(alpha = 0.72f), Radius.pill)
+            .background(
+                AppBackground.copy(alpha = 0.72f),
+                RoundedCornerShape(topStart, topEnd, bottomEnd, bottomStart)
+            )
             .padding(horizontal = Space.md, vertical = Space.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
         icon?.let {
-            Icon(it, null, modifier = Modifier.size(14.dp), tint = tint)
+            Icon(it, null, modifier = Modifier.size(14.dp), tint = ink)
             Spacer(Modifier.width(Space.xs))
         }
-        Text(text, color = tint, fontSize = Type.captionSize, fontWeight = Type.medium)
+        Text(text, color = ink, fontSize = Type.captionSize, fontWeight = Type.medium)
     }
 }
 
@@ -733,6 +806,8 @@ fun PhotoHeader(
     chip: String? = null,
     chipIcon: ImageVector? = null,
     chipColor: Color = Accent,
+    /** The shape the chip springs to. Left as a capsule where nothing is judged. */
+    chipCorners: VerdictCorners = VerdictCorners.pill,
     content: @Composable (Modifier) -> Unit
 ) {
     Box(modifier.fillMaxWidth().height(height)) {
@@ -757,11 +832,12 @@ fun PhotoHeader(
             )
         }
         chip?.let {
-            PhotoChip(
+            VerdictChip(
                 it,
                 Modifier.align(Alignment.BottomStart).padding(Space.md),
                 chipIcon,
-                chipColor
+                chipColor,
+                chipCorners
             )
         }
     }
@@ -785,8 +861,12 @@ fun StatusPill(note: StatusNote?, modifier: Modifier = Modifier, onOpen: (Int) -
     AnimatedVisibility(
         visible = note != null,
         modifier = modifier,
-        enter = expandVertically() + fadeIn(),
-        exit = shrinkVertically() + fadeOut()
+        // A target being reached is one of the app's three real moments, and this
+        // bar is where it surfaces. The height springs open so the screen below is
+        // seen to be pushed down by something arriving; the contents fade on the
+        // critically damped spec, because text that overshoots is just a wobble.
+        enter = expandVertically(Motion.spatial()) + fadeIn(Motion.effects()),
+        exit = shrinkVertically(Motion.spatial()) + fadeOut(Motion.effects())
     ) {
         // Null only while the pill is closing, when there is nothing left to draw.
         note?.let { shown ->

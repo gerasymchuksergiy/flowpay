@@ -166,7 +166,27 @@ data class Order(
     /** Epoch day the carrier expects to deliver. Zero means unknown. */
     val scheduledDelivery: Long = 0L,
     /** Cash on delivery still owed. */
-    val amountToPay: Double = 0.0
+    val amountToPay: Double = 0.0,
+    /**
+     * What was actually handed over, which is not always [price].
+     *
+     * The shop's listed price is what the tracker watched; a promo code, a sale
+     * that never reached the page, or a different shop entirely is what you paid.
+     * Judging the wait against the listed price instead of this one would grade
+     * the tracker on its own homework. Zero means it has not been recorded.
+     */
+    val paid: Double = 0.0,
+    /**
+     * The lowest price ever recorded for this thing while it was still a wish.
+     *
+     * Copied across at the moment of purchase, because the wish is deleted then
+     * and its history goes with it. Zero means there was no history to judge.
+     */
+    val lowestSeen: Double = 0.0,
+    /** How many times the thing has actually been used. Zero means uncounted. */
+    val uses: Int = 0,
+    /** Epoch day the purchase was closed and filed. Zero means it is still open. */
+    val archivedDay: Long = 0L
 )
 
 class MainActivity : ComponentActivity() {
@@ -327,7 +347,6 @@ class Store(context: Context) {
     fun lastBackupAt(): Long = prefs.getLong("bk_at", 0L)
 
     fun saveLastBackupAt(millis: Long) = prefs.edit { putLong("bk_at", millis) }
-
     /** Epoch day the payment reminder last ran, so a day is never repeated. */
     fun lastReminderDay(): Long = prefs.getLong("reminded", 0L)
 
@@ -515,6 +534,12 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("p", order.price).put("sd", order.statusDetail).put("ca", order.checkedAt)
     .put("pr", order.problem).put("ps", order.paidStorageFrom)
     .put("sdl", order.scheduledDelivery).put("atp", order.amountToPay)
+    // The record of the purchase itself travels with the parcel, which is what
+    // lets a binned purchase come back still knowing what it cost and how the
+    // wait turned out. Left out here, a restore would return an empty parcel and
+    // nothing on screen would say the verdict had been thrown away.
+    .put("pd", order.paid).put("lw", order.lowestSeen)
+    .put("us", order.uses).put("ar", order.archivedDay)
 
 fun orderOf(o: JSONObject): Order = Order(
     o.optString("id"), o.optString("n"), o.optString("u"),
@@ -522,7 +547,15 @@ fun orderOf(o: JSONObject): Order = Order(
     o.optString("i"), o.optDouble("p", 0.0),
     o.optString("sd"), o.optLong("ca", 0L),
     o.optBoolean("pr", false), o.optLong("ps", 0L),
-    o.optLong("sdl", 0L), o.optDouble("atp", 0.0)
+    o.optLong("sdl", 0L), o.optDouble("atp", 0.0),
+    // Parcels saved before a purchase could be closed have none of this. Zero
+    // throughout reads as "not recorded", which is exactly what it is, so an old
+    // backup imports into an open parcel rather than one that claims to have been
+    // bought for nothing.
+    paid = o.optDouble("pd", 0.0),
+    lowestSeen = o.optDouble("lw", 0.0),
+    uses = o.optInt("us", 0),
+    archivedDay = o.optLong("ar", 0L)
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -1127,10 +1160,22 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             // looking for.
                             freeCash = monthBudget.free,
                             onDelete = { deleteWish(it) },
-                            onBought = { order ->
+                            onBought = { order, wish ->
                                 val next = orders + order
                                 orders = next
                                 store.saveOrders(next)
+                                val left = wishes.filterNot { it.id == wish.id }
+                                wishes = left
+                                store.saveWishes(left)
+                                // Binned, but without the undo bar: buying is a move
+                                // rather than a mistake, and "Видалено «…» Повернути"
+                                // over a tab that has just switched to Покупки would
+                                // be the app contradicting itself. The entry is still
+                                // there for thirty days, because a purchase recorded
+                                // by accident should not cost months of price history
+                                // — the parcel only carries the one figure the
+                                // verdict needs, not the whole series.
+                                bin = store.recycle(binEntryOf(wish, today.toEpochDay()))
                                 tab = TAB_ORDERS
                             }
                         )
@@ -1247,7 +1292,11 @@ fun WishlistScreen(
     freeCash: Double,
     /** Deleting is the app's one irreversible act, so it is owned above this screen. */
     onDelete: (Wish) -> Unit,
-    onBought: (Order) -> Unit
+    /**
+     * The wish travels with the parcel it became, because removing it from the
+     * list is a deletion like any other and belongs above this screen with the bin.
+     */
+    onBought: (Order, Wish) -> Unit
 ) {
     var editing by remember { mutableStateOf<Wish?>(null) }
     var sort by remember { mutableStateOf(store.wishSort()) }
@@ -1274,19 +1323,24 @@ fun WishlistScreen(
                     onEdit = { editing = shown },
                     onDelete = { onDelete(shown); setOpened(null) },
                     freeCash = freeCash,
-                    onBought = { trackingNumber ->
+                    onBought = { trackingNumber, paid ->
                         onBought(
                             Order(
                                 id = shown.id,
                                 name = shown.name,
                                 url = shown.url,
-                                status = "Замовлено",
+                                status = ORDERED,
                                 tracking = trackingNumber,
                                 image = shown.image,
-                                price = shown.price
-                            )
+                                price = shown.price,
+                                paid = paid,
+                                // The wish leaves the list on the next line, so the
+                                // one number the verdict needs has to be carried
+                                // across now or it is gone for good.
+                                lowestSeen = lowestTracked(shown)
+                            ),
+                            shown
                         )
-                        save(items - shown)
                         setOpened(null)
                     }
                 )
@@ -1657,7 +1711,7 @@ fun SharedTransitionScope.WishDetailScreen(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     freeCash: Double,
-    onBought: (String) -> Unit
+    onBought: (tracking: String, paid: Double) -> Unit
 ) {
     // Keyed on the item, so opening a different one does not inherit these boxes.
     var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
@@ -1741,7 +1795,11 @@ fun SharedTransitionScope.WishDetailScreen(
                         verdict == BuyVerdict.GOOD -> Accent
                         verdict == BuyVerdict.POOR -> Negative
                         else -> TextPrimary
-                    }
+                    },
+                    // The verdict flipping is the moment this whole screen exists
+                    // for, so the chip changes outline rather than swapping words
+                    // under a cross-fade.
+                    chipCorners = buyVerdictCorners(insight.verdict)
                 ) { imageModifier ->
                     AsyncImage(
                         wish.image, wish.name,
@@ -2177,9 +2235,9 @@ fun SharedTransitionScope.WishDetailScreen(
     }
 
     if (buying) {
-        BoughtDialog(wish, { buying = false }) { trackingNumber ->
+        BoughtSheet(wish, { buying = false }) { trackingNumber, paid ->
             buying = false
-            onBought(trackingNumber)
+            onBought(trackingNumber, paid)
         }
     }
 
@@ -2984,10 +3042,15 @@ fun OrdersScreen(
     onDelete: (Order) -> Unit
 ) {
     var tracking by remember { mutableStateOf<Order?>(null) }
+    var closing by remember { mutableStateOf<Order?>(null) }
     var checking by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    val trackable = items.count { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
+    // A closed purchase is history, not a parcel: it is not asked about again, and
+    // it does not sit in the list of things still on their way.
+    val open = items.filter { it.archivedDay == 0L }
+    val archived = items.filter { it.archivedDay > 0L }.sortedByDescending { it.archivedDay }
+    val trackable = open.count { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
 
     fun checkAll() {
         scope.launch {
@@ -2996,6 +3059,7 @@ fun OrdersScreen(
             var moved = 0
             val now = System.currentTimeMillis()
             val fresh = items.map { order ->
+                if (order.archivedDay > 0L) return@map order
                 if (detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA) return@map order
                 val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
                     ?: return@map order
@@ -3046,7 +3110,7 @@ fun OrdersScreen(
                     )
                 }
             }
-            if (items.isEmpty()) {
+            if (open.isEmpty() && archived.isEmpty()) {
                 item {
                     Column(Modifier.padding(horizontal = Space.screen)) {
                         EmptyInvite(
@@ -3057,7 +3121,7 @@ fun OrdersScreen(
                     }
                 }
             }
-            items(items, key = { it.id }) { order ->
+            items(open, key = { it.id }) { order ->
                 Card(
                     Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
                     shape = Radius.md
@@ -3188,6 +3252,27 @@ fun OrdersScreen(
                     ) { status ->
                         save(items.map { if (it.id == order.id) it.copy(status = status) else it })
                     }
+                    // The parcel is in your hands, so the only thing left to do with
+                    // it is close it. Offered here rather than on a menu, because a
+                    // purchase nobody closes is a purchase nobody can learn from.
+                    if (order.status == RECEIVED) {
+                        // Outlined, not filled: the lime on this screen is already
+                        // spent on the action button, and two lime surfaces on one
+                        // screen means neither is the subject.
+                        OutlinedButton(
+                            { closing = order },
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space.lg)
+                                .padding(top = Space.sm),
+                            shape = Radius.sm,
+                            border = BorderStroke(1.dp, Accent),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
+                        ) {
+                            Icon(Icons.Default.TaskAlt, null)
+                            Text("  Завершити покупку")
+                        }
+                    }
                     // Left aligned for the same reason as the wish card: the floating
                     // action button sits over the bottom right corner.
                     Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
@@ -3222,8 +3307,43 @@ fun OrdersScreen(
                     }
                 }
             }
+            if (archived.isNotEmpty()) {
+                item {
+                    SectionTitle("Архів покупок")
+                    Text(
+                        // The only line in the app that answers whether watching
+                        // prices was worth doing, so it goes above the evidence.
+                        purchaseTallyLine(
+                            purchaseTally(
+                                archived.map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
+                            )
+                        ),
+                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                }
+                items(archived, key = { "archived-${it.id}" }) { order ->
+                    ArchivedPurchase(
+                        order = order,
+                        onEdit = { closing = order },
+                        // Through the bin like every other deletion: a finished
+                        // purchase is the one record in the app that cannot be
+                        // rebuilt, because the price it is judged against was only
+                        // ever observed while the thing was still a wish.
+                        onDelete = { onDelete(order) }
+                    )
+                }
+            }
         }
         CollapsingTitle("Мої покупки", listState, trailing = checkAction)
+    }
+    closing?.let { selected ->
+        CloseOrderSheet(selected, { closing = null }) { closed ->
+            save(items.map { if (it.id == closed.id) closed else it })
+            closing = null
+        }
     }
     if (adding) AddOrderSheet({ setAdding(false) }) {
         save(items + it)
@@ -3233,6 +3353,77 @@ fun OrdersScreen(
         TrackingDialog(selected, { tracking = null }) { number ->
             save(items.map { if (it.id == selected.id) it.copy(tracking = number) else it })
             tracking = null
+        }
+    }
+}
+
+/**
+ * A finished purchase, with the one thing it can still teach.
+ *
+ * No photograph and no stage rail: this thing is not going anywhere, and the card
+ * exists for the verdict rather than for the object. The chip carries the verdict
+ * in the same shapes the wishlist uses for its buy advice, so a purchase filed as
+ * "ти поспішив" looks like the "дорого зараз" it was bought at.
+ */
+@Composable
+fun ArchivedPurchase(order: Order, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val review = purchaseReview(order.paid, order.lowestSeen, order.uses)
+    Card(
+        Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+        shape = Radius.md
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    order.name,
+                    Modifier.weight(1f),
+                    fontSize = Type.cardTitleSize,
+                    lineHeight = Type.cardTitleLine,
+                    fontWeight = Type.medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(Space.md))
+                VerdictChip(
+                    purchaseVerdictLabel(review.verdict),
+                    icon = Icons.Default.TaskAlt,
+                    tint = verdictInk(review.verdict),
+                    corners = purchaseVerdictCorners(review.verdict)
+                )
+            }
+            Text(
+                purchaseVerdictDetail(review),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+            costPerUseLine(review)?.let {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = Space.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Виходить", color = TextSecondary, fontSize = Type.captionSize)
+                    Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
+                        DottedLeader(Modifier.fillMaxWidth())
+                    }
+                    Text(it, color = TextPrimary, fontSize = Type.captionSize, fontWeight = Type.strong)
+                }
+            }
+            Text(
+                "у архіві з ${formatDate(LocalDate.ofEpochDay(order.archivedDay))}",
+                color = TextDisabled,
+                fontSize = Type.captionSize,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+            Row(Modifier.padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onEdit) {
+                    Text(if (order.uses > 0) "Оновити користування" else "Порахувати користування")
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити з архіву") }
+            }
         }
     }
 }
@@ -4027,36 +4218,127 @@ fun EditPaymentSheet(
  * filled in from that card afterwards.
  */
 @Composable
-fun BoughtDialog(wish: Wish, close: () -> Unit, confirm: (String) -> Unit) {
+fun BoughtSheet(wish: Wish, close: () -> Unit, confirm: (tracking: String, paid: Double) -> Unit) {
     var trackingNumber by remember { mutableStateOf("") }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Купив це") },
-        text = {
-            Column {
-                Text(wish.name, fontSize = Type.captionSize, color = TextSecondary)
-                Text(
-                    "Товар переїде в Покупки зі статусом «Замовлено». Трек-номер можна " +
-                        "додати зараз або пізніше.",
-                    fontSize = Type.captionSize,
-                    lineHeight = Type.captionLine,
-                    color = TextSecondary,
-                    modifier = Modifier.padding(top = Space.sm)
+    // Prefilled with the watched price, because most of the time that is what was
+    // paid, and an empty field here is the one that gets skipped — which would
+    // leave the purchase unjudgeable for ever.
+    var paidText by remember { mutableStateOf(amountText(wish.price)) }
+    FormSheet(
+        title = "Купив це",
+        confirmLabel = "Перенести в покупки",
+        confirmEnabled = true,
+        onConfirm = { confirm(trackingNumber.trim(), parseAmount(paidText)) },
+        onDismiss = close
+    ) {
+        Text(wish.name, fontSize = Type.captionSize, color = TextSecondary)
+        Text(
+            "Товар переїде в Покупки зі статусом «Замовлено». Сума потрібна, щоб " +
+                "потім чесно сказати, чи варто було чекати.",
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine,
+            color = TextSecondary,
+            modifier = Modifier.padding(top = Space.sm)
+        )
+        NumberField("Скільки заплатили, ₴", paidText) { paidText = it }
+        OutlinedTextField(
+            trackingNumber,
+            { trackingNumber = it },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Трек-номер, якщо вже є") },
+            singleLine = true
+        )
+    }
+}
+
+/**
+ * The last step of a purchase: what it cost, how much it gets used, and done.
+ *
+ * Opened when the parcel is in your hands, and again later whenever the use count
+ * has moved. Correcting the sum is allowed for the same reason it is asked for at
+ * all — a verdict computed from a figure nobody could fix would be decoration.
+ */
+@Composable
+fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
+    var paidText by remember(order.id) {
+        mutableStateOf(amountText(if (order.paid > 0) order.paid else order.price))
+    }
+    var usesText by remember(order.id) {
+        mutableStateOf(if (order.uses > 0) order.uses.toString() else "")
+    }
+    val paid = parseAmount(paidText)
+    val uses = usesText.trim().toIntOrNull() ?: 0
+    FormSheet(
+        title = if (order.archivedDay > 0L) "Покупка в архіві" else "Завершити покупку",
+        confirmLabel = if (order.archivedDay > 0L) "Зберегти" else "В архів",
+        confirmEnabled = paid > 0.0,
+        onConfirm = {
+            save(
+                order.copy(
+                    paid = paid,
+                    uses = uses.coerceAtLeast(0),
+                    status = RECEIVED,
+                    // Filed on the day it was closed, and never re-dated by a later
+                    // correction to the use count.
+                    archivedDay = order.archivedDay.takeIf { it > 0L }
+                        ?: LocalDate.now().toEpochDay()
                 )
-                OutlinedTextField(
-                    trackingNumber,
-                    { trackingNumber = it },
-                    Modifier.fillMaxWidth().padding(top = Space.md),
-                    label = { Text("Трек-номер, якщо вже є") },
-                    singleLine = true
+            )
+        },
+        onDismiss = close
+    ) {
+        Text(order.name, fontSize = Type.captionSize, color = TextSecondary)
+        NumberField("Скільки заплатили, ₴", paidText) { paidText = it }
+        OutlinedTextField(
+            usesText,
+            { usesText = it.filter(Char::isDigit).take(5) },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Скільки разів скористались") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+        Text(
+            // Porting the point across without lecturing: the number is optional,
+            // and this says what it buys you.
+            "Необов'язково. Ціна за одне користування каже про річ більше, ніж її цінник.",
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine,
+            modifier = Modifier.padding(top = Space.sm)
+        )
+        if (paid > 0.0) {
+            val review = purchaseReview(paid, order.lowestSeen, uses)
+            Text(
+                purchaseVerdictLabel(review.verdict),
+                color = verdictInk(review.verdict),
+                fontSize = Type.cardTitleSize,
+                fontWeight = Type.medium,
+                modifier = Modifier.padding(top = Space.lg)
+            )
+            Text(
+                purchaseVerdictDetail(review),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+            costPerUseLine(review)?.let {
+                Text(
+                    it,
+                    color = TextPrimary,
+                    fontSize = Type.captionSize,
+                    modifier = Modifier.padding(top = Space.xs)
                 )
             }
-        },
-        confirmButton = {
-            Button({ confirm(trackingNumber.trim()) }) { Text("Перенести в покупки") }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
+        }
+    }
+}
+
+/** One colour per verdict, so the archive and the sheet cannot disagree. */
+fun verdictInk(verdict: PurchaseVerdict): Color = when (verdict) {
+    PurchaseVerdict.PATIENT -> Accent
+    PurchaseVerdict.HASTY -> Negative
+    PurchaseVerdict.UNJUDGED -> TextSecondary
 }
 
 /**
