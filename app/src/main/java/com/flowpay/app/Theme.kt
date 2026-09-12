@@ -59,7 +59,35 @@ val TextPrimary = Color(0xfff1f3ec)
 val TextSecondary = Color(0xff9b9d96)
 val TextDisabled = Color(0xff5c5f56)
 
-// One accent, one tinted container for anything secondary, one alarm colour.
+/**
+ * One accent, one tinted container for anything secondary, one alarm colour.
+ *
+ * **On halation, since the numbers invite the question.** [Accent] is 17.3:1
+ * against [AppBackground] at 61% saturation and a maxed green channel, and light
+ * text that bright on a ground that dark glows for readers with astigmatism —
+ * the letters bloom into their own spacing and reading gets slow. The usual
+ * mitigations are to desaturate the colour where it carries large text, and to
+ * keep the thinnest weights off the darkest surfaces.
+ *
+ * Neither is applied here, on the evidence rather than by omission:
+ *
+ * Every piece of lime *text* in the app is 11sp or 13sp — overline kickers, short
+ * labels, a percentage. There is no large lime text area to desaturate. Where the
+ * lime is large it is a fill with [AccentInk] on top of it — the hero panel, the
+ * action button, a selected chip — and that is dark-on-light, the inverse case,
+ * which does not halate at all. Splitting the accent into a reading lime and a
+ * filling lime to serve a handful of captions would put two nearly identical
+ * greens in a palette whose whole argument is that nearly identical values read
+ * as carelessness rather than as a decision.
+ *
+ * The weight mitigation is already structural: [Type] offers three weights and
+ * the lightest is Normal. Nothing thinner exists to misuse. That got better
+ * rather than worse with [Inter] — until the app had a typeface of its own, what
+ * "Normal" actually weighed was whatever the phone decided, and the system font
+ * on this one is noticeably lighter than Inter's Regular.
+ *
+ * Revisit this if lime ever carries a sentence at [Type.bodySize] or above.
+ */
 val Accent = Color(0xffd7ff63)
 val AccentInk = Color(0xff0a0b09)
 val AccentSoft = Color(0xff2a3318)
