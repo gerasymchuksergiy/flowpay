@@ -479,3 +479,183 @@ class PaymentsTest {
         assertEquals("За 7 днів", warnLabel(7))
     }
 }
+
+/**
+ * The record of what was actually paid.
+ *
+ * The failure that matters most is the quiet one: a month that was in fact paid
+ * being reported as a month nobody paid, or the other way round. The app can only
+ * know what was marked, so every state it reports has to be distinguishable from
+ * the states it cannot tell apart — which is why "nothing was due" and "nothing
+ * was marked" are two answers and not one.
+ */
+class PaidRecordTest {
+
+    private val today = LocalDate.of(2026, 9, 12)
+    private val august = "2026-08"
+    private val september = "2026-09"
+
+    private val rent = Pay("Оренда квартири", 11_000.0, day = 5)
+    private val internet = Pay("Інтернет", 300.0, day = 1)
+    private val standing = listOf(rent, internet)
+
+    private fun mark(pay: Pay, month: String) = PaidMark(pay.name, month, pay.amount, pay.currency)
+
+    /** Thousands are grouped with a non-breaking space in this locale. */
+    private fun shown(text: String) = text.replace(' ', ' ')
+
+    @Test
+    fun `a month key sorts as time and reads as a heading`() {
+        assertEquals("2026-09", monthKey(today))
+        // Zero padding is the whole point: without it "2026-9" sorts after "2026-10".
+        assertTrue(monthKey(LocalDate.of(2026, 9, 1)) > monthKey(LocalDate.of(2026, 8, 31)))
+        assertEquals("Серпень 2026", monthTitle(august))
+        assertEquals(LocalDate.of(2026, 8, 1), monthKeyDate(august))
+        assertNull(monthKeyDate("серпень"))
+    }
+
+    @Test
+    fun `a month with nothing due is not a month nobody paid`() {
+        val record = monthRecord(emptyList(), emptyList(), august, today, usdSellRate = 0.0)
+
+        assertEquals(MonthState.NOTHING_DUE, record.state)
+        assertEquals(0.0, record.planned.total, 0.001)
+        assertEquals(0.0, record.gap, 0.001)
+        assertEquals("Нічого не було до сплати", monthRecordLine(record))
+
+        // The same month with expenses standing and nothing marked is the other
+        // answer, and the two must never share a wording.
+        val unrecorded = monthRecord(standing, emptyList(), august, today, usdSellRate = 0.0)
+        assertEquals(MonthState.UNRECORDED, unrecorded.state)
+        assertEquals("Не позначено жодного платежу", monthRecordLine(unrecorded))
+        assertEquals(11_300.0, unrecorded.gap, 0.001)
+    }
+
+    @Test
+    fun `a past month with some of it marked is partly paid`() {
+        val record = monthRecord(
+            standing,
+            listOf(mark(internet, august)),
+            august,
+            today,
+            usdSellRate = 0.0
+        )
+
+        assertEquals(MonthState.PARTIAL, record.state)
+        assertEquals(300.0, record.paid.total, 0.001)
+        assertEquals(11_300.0, record.planned.total, 0.001)
+        assertEquals(11_000.0, record.gap, 0.001)
+        assertEquals(1, record.paidCount)
+        assertEquals(2, record.plannedCount)
+        assertEquals("Сплачено 300 ₴, лишилось 11 000 ₴", shown(monthRecordLine(record)))
+        assertEquals("Позначено 1 з 2", monthRecordDetail(record))
+    }
+
+    @Test
+    fun `the month still running is not late merely because it is unfinished`() {
+        val record = monthRecord(
+            standing,
+            listOf(mark(internet, september)),
+            september,
+            today,
+            usdSellRate = 0.0
+        )
+
+        assertEquals(MonthState.RUNNING, record.state)
+        assertEquals(11_000.0, record.gap, 0.001)
+    }
+
+    @Test
+    fun `everything marked settles the month, whether it is over or not`() {
+        val marks = standing.map { mark(it, august) }
+        val record = monthRecord(standing, marks, august, today, usdSellRate = 0.0)
+
+        assertEquals(MonthState.SETTLED, record.state)
+        assertEquals(11_300.0, record.paid.total, 0.001)
+        assertEquals(0.0, record.gap, 0.001)
+        assertEquals("Сплачено все · 11 300 ₴", shown(monthRecordLine(record)))
+    }
+
+    @Test
+    fun `a mark keeps the amount that was paid, not the amount charged later`() {
+        val marks = listOf(mark(rent, august))
+        // The rent goes up in September. August must not be rewritten by it.
+        val dearer = listOf(rent.copy(amount = 12_500.0), internet)
+        val record = monthRecord(dearer, marks, august, today, usdSellRate = 0.0)
+
+        assertEquals(11_000.0, record.paid.total, 0.001)
+        assertEquals(12_800.0, record.planned.total, 0.001)
+    }
+
+    @Test
+    fun `dollars paid with no rate stay visible instead of reading as nothing`() {
+        val dollarRent = Pay("Оренда квартири", 250.0, day = 5, currency = USD)
+        val record = monthRecord(
+            listOf(dollarRent),
+            listOf(mark(dollarRent, august)),
+            august,
+            today,
+            usdSellRate = 0.0
+        )
+
+        assertEquals(250.0, record.paid.usd, 0.001)
+        assertTrue(record.paid.rateMissing)
+        assertTrue(monthRecordLine(record).contains("250 $"))
+    }
+
+    @Test
+    fun `marking is a toggle, so the wrong row is undone by tapping it again`() {
+        val once = togglePaid(emptyList(), rent, august)
+        assertTrue(isPaid(once, rent.name, august))
+        assertEquals(11_000.0, once.single().amount, 0.001)
+
+        val twice = togglePaid(once, rent, august)
+        assertFalse(isPaid(twice, rent.name, august))
+        assertTrue(twice.isEmpty())
+
+        // Marking one month says nothing about another.
+        val septemberOnly = togglePaid(emptyList(), rent, september)
+        assertFalse(isPaid(septemberOnly, rent.name, august))
+    }
+
+    @Test
+    fun `at least a year is kept and anything older is dropped`() {
+        val marks = (0L until 18L).map {
+            mark(rent, monthKey(today.withDayOfMonth(1).minusMonths(it)))
+        }
+        val kept = prunePaidMarks(marks, today)
+
+        assertEquals(PAID_HISTORY_MONTHS, kept.size)
+        assertTrue(kept.size >= 12)
+        // Twelve months back survives; thirteen does not.
+        assertTrue(kept.any { it.month == monthKey(today.minusMonths(12)) })
+        assertFalse(kept.any { it.month == monthKey(today.minusMonths(13)) })
+    }
+
+    @Test
+    fun `a month that has not happened yet is never kept`() {
+        val kept = prunePaidMarks(listOf(mark(rent, "2027-01")), today)
+
+        assertTrue(kept.isEmpty())
+    }
+
+    @Test
+    fun `the overview goes back only as far as the record does`() {
+        // Nothing marked at all: one row, this month, and no year of accusations.
+        val fresh = monthRecords(standing, emptyList(), today, usdSellRate = 0.0)
+        assertEquals(1, fresh.size)
+        assertEquals(september, fresh.single().month)
+
+        val records = monthRecords(
+            standing,
+            listOf(mark(rent, "2026-07")),
+            today,
+            usdSellRate = 0.0
+        )
+        assertEquals(listOf("2026-09", "2026-08", "2026-07"), records.map { it.month })
+        // Newest first: the question is nearly always about the month that just ended.
+        assertEquals("Вересень 2026", records.first().title)
+        assertEquals(MonthState.UNRECORDED, records[1].state)
+        assertEquals(MonthState.PARTIAL, records[2].state)
+    }
+}
