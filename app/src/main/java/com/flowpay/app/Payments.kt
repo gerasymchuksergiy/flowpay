@@ -263,6 +263,23 @@ fun annualElsewhere(items: List<Pay>, today: LocalDate): List<Pay> =
     items.filter { isAnnual(it) && daysUntilDue(it, today) > TIMELINE_DAYS }
         .sortedBy { daysUntilDue(it, today) }
 
+/** "14 березня" — the date an annual charge falls on, with no year attached to it. */
+fun annualChargeDay(pay: Pay): String {
+    val first = LocalDate.of(2001, pay.billingMonth.coerceIn(1, MONTHS_IN_YEAR), 1)
+    return dayMonth(first.withDayOfMonth(effectivePaymentDay(pay.day, first.lengthOfMonth())))
+}
+
+/**
+ * The rhythm in a note's worth of words, for the places that have no room for a row.
+ *
+ * The bin and the spreadsheet both used to write "щомісяця" onto every expense
+ * because every expense was monthly. Left as it was, a restored annual fee would
+ * have said it was charged twelve times a year in the one place a person goes to
+ * check what they are about to get back.
+ */
+fun rhythmNote(pay: Pay): String =
+    if (isAnnual(pay)) "раз на рік, ${annualChargeDay(pay)}" else "щомісяця, ${pay.day} числа"
+
 /** "14 березня · 1 200 ₴" — one dormant annual charge, said in a row's worth of line. */
 fun annualDueLine(pay: Pay, today: LocalDate): String =
     "${dayMonth(nextDateFor(pay, today))} · ${amountLabel(pay.amount, pay.currency)}"

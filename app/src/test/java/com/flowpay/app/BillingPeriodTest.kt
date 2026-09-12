@@ -214,6 +214,20 @@ class BillingPeriodTest {
     }
 
     @Test
+    fun `the rhythm is said in words wherever there is no room for a row`() {
+        assertEquals("раз на рік, 14 березня", rhythmNote(domain))
+        assertEquals("щомісяця, 1 числа", rhythmNote(internet))
+    }
+
+    @Test
+    fun `a binned annual fee says it is annual, so restoring it is not a guess`() {
+        val entry = binEntryOf(domain, today.toEpochDay())
+
+        assertTrue(entry.detail.contains("раз на рік"))
+        assertEquals(domain, payOf(org.json.JSONObject(entry.payload)))
+    }
+
+    @Test
     fun `the billing month survives being written and read back`() {
         val restored = payOf(payJson(domain))
 

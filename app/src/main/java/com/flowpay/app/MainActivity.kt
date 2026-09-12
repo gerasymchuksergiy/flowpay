@@ -897,7 +897,7 @@ fun binEntryOf(pay: Pay, today: Long): BinEntry = BinEntry(
     id = "pay-$today-${System.nanoTime()}",
     kind = BIN_PAY,
     title = pay.name,
-    detail = "${amountLabel(pay.amount, pay.currency)} · ${pay.day} числа",
+    detail = "${amountLabel(pay.amount, pay.currency)} · ${rhythmNote(pay)}",
     payload = payJson(pay).toString(),
     day = today
 )

@@ -142,7 +142,7 @@ fun expenseRows(
                 csvAmount(yearlyCost(pay)),
                 pay.currency,
                 csvInHryvnia(yearlyCost(pay), pay.currency, usdSellRate),
-                "щомісяця ${csvAmount(pay.amount)}, ${pay.day} числа"
+                "${rhythmNote(pay)}, ${csvAmount(pay.amount)} за раз"
             )
         )
     }

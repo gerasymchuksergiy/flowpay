@@ -162,7 +162,7 @@ class CsvTest {
         assertEquals(listOf("Сплачено", "Інтернет", "2026-08", "250,00", UAH, "250,00", ""), rows[0])
         // Twelve months of it, which is the figure that changes minds.
         assertEquals(
-            listOf("Підписка", "Netflix", "", "3588,00", UAH, "3588,00", "щомісяця 299,00, 15 числа"),
+            listOf("Підписка", "Netflix", "", "3588,00", UAH, "3588,00", "щомісяця, 15 числа, 299,00 за раз"),
             rows[1]
         )
         // An ISO date, which sorts as text in the order it sorts as time.
