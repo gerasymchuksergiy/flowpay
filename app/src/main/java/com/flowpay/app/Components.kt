@@ -1378,6 +1378,8 @@ fun PhotoHeader(
     height: Dp = 132.dp,
     overlayNumber: String? = null,
     overlayNumberColor: Color = Accent,
+    /** The figure the overlay number is a percentage of, e.g. "було 5 300 ₴". */
+    overlayNote: String? = null,
     chip: String? = null,
     chipIcon: ImageVector? = null,
     chipColor: Color = Accent,
@@ -1387,25 +1389,40 @@ fun PhotoHeader(
 ) {
     Box(modifier.fillMaxWidth().height(height)) {
         content(Modifier.fillMaxWidth().height(height))
-        // Shops photograph on white, which in a dark app is a lit panel rather
-        // than a picture. A thin wash of the page colour settles it down without
-        // hiding what the thing looks like.
-        Box(
-            Modifier
-                .matchParentSize()
-                .background(AppBackground.copy(alpha = 0.14f))
-        )
+        // No wash over the picture. There used to be one — a thin coat of the page
+        // colour to settle the white backgrounds shops photograph on — but it
+        // covered the whole frame to protect two corners, and the thing you opened
+        // the screen to look at came out darker than its own thumbnail. Each
+        // overlay carries its own plate instead, the way [VerdictChip] already did,
+        // so the photograph is left exactly as the shop took it.
         overlayNumber?.let {
-            Text(
-                it,
-                color = overlayNumberColor,
-                fontSize = 46.sp,
-                lineHeight = 48.sp,
-                letterSpacing = (-1.5).sp,
-                fontWeight = FontWeight.Black,
-                modifier = Modifier.align(Alignment.TopEnd).padding(Space.md),
-                style = Tabular
-            )
+            Column(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(Space.md)
+                    .background(AppBackground.copy(alpha = 0.72f), Radius.sm)
+                    .padding(horizontal = Space.md, vertical = Space.sm),
+                horizontalAlignment = Alignment.End
+            ) {
+                Text(
+                    it,
+                    color = overlayNumberColor,
+                    fontSize = 46.sp,
+                    lineHeight = 48.sp,
+                    letterSpacing = (-1.5).sp,
+                    fontWeight = FontWeight.Black,
+                    style = Tabular
+                )
+                overlayNote?.let { note ->
+                    Text(
+                        note,
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        style = Tabular
+                    )
+                }
+            }
         }
         chip?.let {
             VerdictChip(

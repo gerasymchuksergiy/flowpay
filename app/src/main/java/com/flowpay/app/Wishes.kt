@@ -399,8 +399,30 @@ enum class WishSort(val label: String) {
  * Negative means it got cheaper, which is the direction worth noticing.
  */
 fun priceChangePercent(wish: Wish): Double {
-    val first = wish.history.firstOrNull()?.price ?: wish.price
+    val first = firstPrice(wish)
     return if (first > 0) (wish.price - first) / first * 100 else 0.0
+}
+
+/** The price this thing was first seen at, which every percentage is measured from. */
+fun firstPrice(wish: Wish): Double =
+    wish.history.firstOrNull()?.price?.takeIf { it > 0 } ?: wish.price
+
+/**
+ * "було 5 300 ₴" — the figure the percentage beside it is a percentage *of*.
+ *
+ * The screen used to print "−8%" and keep the number it was measured against to
+ * itself, which makes the percentage a claim rather than a measurement: there was
+ * no way to check it short of dragging a finger to the left edge of the chart.
+ * Null where there is nothing to compare against, so a wish seen once says
+ * nothing rather than quoting today's price back as history.
+ */
+fun firstPriceNote(wish: Wish): String? {
+    val first = firstPrice(wish)
+    return if (wish.history.size > 1 && first > 0 && first != wish.price) {
+        "було ${money(first)}"
+    } else {
+        null
+    }
 }
 
 /**

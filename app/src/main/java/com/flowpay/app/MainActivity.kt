@@ -2699,6 +2699,8 @@ fun SharedTransitionScope.WishDetailScreen(
                     height = 240.dp,
                     overlayNumber = signedPercent(change, 0)
                     .takeIf { change <= -1.0 && wish.history.size > 1 && !stale },
+                    overlayNote = firstPriceNote(wish)
+                        .takeIf { change <= -1.0 && wish.history.size > 1 && !stale },
                     chip = freshnessLabel(wish.freshness)
                         ?: verdictLabel(verdict).takeIf { verdict != BuyVerdict.UNKNOWN },
                     chipIcon = if (stale) Icons.Default.ErrorOutline else Icons.Default.Bolt,
