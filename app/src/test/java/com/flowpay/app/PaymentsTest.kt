@@ -17,9 +17,16 @@ class PaymentsTest {
     private val utilities = Pay("Комуналка", 2400.0, day = 20)
     private val internet = Pay("Інтернет", 300.0, day = 1, currency = UAH)
 
+    /**
+     * The totals need a date only to know which trials have run out, and nothing in
+     * this class has a trial. Named so that a reader does not go looking for the
+     * significance of the date, because there is none.
+     */
+    private val anyDay = LocalDate.of(2026, 9, 15)
+
     @Test
     fun `hryvnia only expenses add up without needing a rate`() {
-        val total = monthlyTotal(listOf(utilities, internet), usdSellRate = 0.0)
+        val total = monthlyTotal(listOf(utilities, internet), usdSellRate = 0.0, today = anyDay)
 
         assertEquals(2700.0, total.uah, 0.001)
         assertEquals(2700.0, total.total, 0.001)
@@ -30,7 +37,7 @@ class PaymentsTest {
 
     @Test
     fun `dollar rent is converted and added to the hryvnia expenses`() {
-        val total = monthlyTotal(listOf(rentInDollars, utilities, internet), usdSellRate = 44.8)
+        val total = monthlyTotal(listOf(rentInDollars, utilities, internet), usdSellRate = 44.8, today = anyDay)
 
         assertEquals(2700.0, total.uah, 0.001)
         assertEquals(250.0, total.usd, 0.001)
@@ -42,7 +49,7 @@ class PaymentsTest {
 
     @Test
     fun `without a rate the dollars are reported separately rather than counted as zero hryvnia`() {
-        val total = monthlyTotal(listOf(rentInDollars, utilities), usdSellRate = 0.0)
+        val total = monthlyTotal(listOf(rentInDollars, utilities), usdSellRate = 0.0, today = anyDay)
 
         assertEquals(2400.0, total.total, 0.001)
         assertEquals(250.0, total.usd, 0.001)
@@ -52,7 +59,7 @@ class PaymentsTest {
 
     @Test
     fun `a negative rate is treated as no rate at all`() {
-        val total = monthlyTotal(listOf(rentInDollars), usdSellRate = -44.8)
+        val total = monthlyTotal(listOf(rentInDollars), usdSellRate = -44.8, today = anyDay)
 
         assertEquals(0.0, total.usdInUah, 0.001)
         assertEquals(0.0, total.total, 0.001)
@@ -64,12 +71,12 @@ class PaymentsTest {
         val legacy = Pay("Мобільний", 200.0)
 
         assertEquals(UAH, legacy.currency)
-        assertEquals(200.0, monthlyTotal(listOf(legacy), 44.8).total, 0.001)
+        assertEquals(200.0, monthlyTotal(listOf(legacy), 44.8, anyDay).total, 0.001)
     }
 
     @Test
     fun `an empty list costs nothing and needs no rate`() {
-        val total = monthlyTotal(emptyList(), usdSellRate = 44.8)
+        val total = monthlyTotal(emptyList(), usdSellRate = 44.8, today = anyDay)
 
         assertEquals(0.0, total.total, 0.001)
         assertFalse(total.hasUsd)
@@ -78,7 +85,7 @@ class PaymentsTest {
 
     @Test
     fun `free money is income less everything standing`() {
-        val month = budget(45_000.0, monthlyTotal(listOf(rentInDollars, utilities, internet), 44.8))
+        val month = budget(45_000.0, monthlyTotal(listOf(rentInDollars, utilities, internet), 44.8, anyDay))
 
         assertEquals(45_000.0, month.income, 0.001)
         assertEquals(13_900.0, month.expenses, 0.001)
@@ -89,7 +96,7 @@ class PaymentsTest {
 
     @Test
     fun `a month that does not fit reports a shortfall rather than clamping to zero`() {
-        val month = budget(10_000.0, monthlyTotal(listOf(rentInDollars, utilities), 44.8))
+        val month = budget(10_000.0, monthlyTotal(listOf(rentInDollars, utilities), 44.8, anyDay))
 
         assertEquals(-3_600.0, month.free, 0.001)
         assertTrue(month.overspent)
@@ -97,7 +104,7 @@ class PaymentsTest {
 
     @Test
     fun `no income means nothing can be said about free money`() {
-        val month = budget(0.0, monthlyTotal(listOf(utilities), 44.8))
+        val month = budget(0.0, monthlyTotal(listOf(utilities), 44.8, anyDay))
 
         assertTrue(month.unknown)
         assertFalse(month.overspent)
@@ -105,7 +112,7 @@ class PaymentsTest {
 
     @Test
     fun `income with no expenses is entirely free`() {
-        val month = budget(20_000.0, monthlyTotal(emptyList(), 44.8))
+        val month = budget(20_000.0, monthlyTotal(emptyList(), 44.8, anyDay))
 
         assertEquals(20_000.0, month.free, 0.001)
         assertFalse(month.overspent)
@@ -115,7 +122,7 @@ class PaymentsTest {
     fun `several dollar expenses are summed before conversion`() {
         val total = monthlyTotal(
             listOf(rentInDollars, Pay("Хостинг", 30.0, currency = USD)),
-            usdSellRate = 44.0
+            usdSellRate = 44.0, today = anyDay
         )
 
         assertEquals(280.0, total.usd, 0.001)
@@ -306,7 +313,7 @@ class PaymentsTest {
 
     @Test
     fun `a year is twelve of the same month`() {
-        val yearly = yearlyTotal(listOf(utilities, internet), usdSellRate = 0.0)
+        val yearly = yearlyTotal(listOf(utilities, internet), usdSellRate = 0.0, today = anyDay)
 
         assertEquals(32_400.0, yearly.uah, 0.001)
         assertEquals(32_400.0, yearly.total, 0.001)
@@ -314,7 +321,7 @@ class PaymentsTest {
 
     @Test
     fun `dollar rent is converted before it is multiplied out`() {
-        val yearly = yearlyTotal(listOf(rentInDollars, utilities, internet), usdSellRate = 44.8)
+        val yearly = yearlyTotal(listOf(rentInDollars, utilities, internet), usdSellRate = 44.8, today = anyDay)
 
         assertEquals(3_000.0, yearly.usd, 0.001)
         assertEquals(134_400.0, yearly.usdInUah, 0.001)
@@ -326,7 +333,7 @@ class PaymentsTest {
     fun `a year with no rate says so rather than showing the hryvnia part as the answer`() {
         // The trap this guards: multiplying a short month by twelve makes the gap
         // twelve times bigger while looking like a bigger, more confident number.
-        val yearly = yearlyTotal(listOf(rentInDollars, utilities, internet), usdSellRate = 0.0)
+        val yearly = yearlyTotal(listOf(rentInDollars, utilities, internet), usdSellRate = 0.0, today = anyDay)
 
         assertTrue(yearly.rateMissing)
         assertEquals(3_000.0, yearly.usd, 0.001)
@@ -336,7 +343,7 @@ class PaymentsTest {
 
     @Test
     fun `an empty screen has no yearly cost and no missing rate`() {
-        val yearly = yearlyTotal(emptyList(), usdSellRate = 0.0)
+        val yearly = yearlyTotal(emptyList(), usdSellRate = 0.0, today = anyDay)
 
         assertEquals(0.0, yearly.total, 0.001)
         assertFalse(yearly.rateMissing)

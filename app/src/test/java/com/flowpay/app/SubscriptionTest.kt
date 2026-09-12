@@ -300,6 +300,217 @@ class SubscriptionTest {
         assertTrue(summary.empty)
     }
 
+    // ------------------------------------------------------------ the free month
+
+    /** Free until the third of October; renews on the twelfth of every month. */
+    private val trial = Pay(
+        "Spotify",
+        199.0,
+        day = 12,
+        warnDays = 3,
+        trialEnd = LocalDate.of(2026, 10, 3).toEpochDay()
+    )
+
+    @Test
+    fun `the end day is a charging day, not one more free one`() {
+        val ends = LocalDate.of(2026, 10, 3).toEpochDay()
+
+        assertTrue(onTrial(trial, ends - 1))
+        assertFalse(onTrial(trial, ends))
+        assertFalse(onTrial(trial, ends + 1))
+    }
+
+    @Test
+    fun `an expense with no trial is never free`() {
+        assertFalse(onTrial(netflix, 0L))
+        assertFalse(onTrial(netflix, epochToday))
+        assertNull(trialLabel(netflix, today))
+    }
+
+    @Test
+    fun `a running trial counts as nothing in the month`() {
+        val total = monthlyTotal(listOf(trial, netflix), usdSellRate = 0.0, today = today)
+
+        assertEquals(269.0, total.total, 0.001)
+    }
+
+    @Test
+    fun `the month picks the charge up the day the trial runs out`() {
+        val ends = LocalDate.of(2026, 10, 3)
+
+        assertEquals(
+            269.0,
+            monthlyTotal(listOf(trial, netflix), 0.0, ends.minusDays(1)).total,
+            0.001
+        )
+        assertEquals(468.0, monthlyTotal(listOf(trial, netflix), 0.0, ends).total, 0.001)
+    }
+
+    @Test
+    fun `a dollar expense on trial leaves no rate to be missing`() {
+        // Counting it as nought and still reporting "курс ще не завантажено" would
+        // put a warning on a figure that is complete.
+        val hosting = trial.copy(currency = USD, amount = 12.0)
+
+        val total = monthlyTotal(listOf(hosting), usdSellRate = 0.0, today = today)
+
+        assertFalse(total.hasUsd)
+        assertFalse(total.rateMissing)
+        assertEquals(0.0, total.total, 0.001)
+    }
+
+    @Test
+    fun `the free cash does not spend money that is not being taken`() {
+        // The figure the whole trial feature exists to keep honest.
+        val month = budget(20_000.0, monthlyTotal(listOf(trial, netflix), 0.0, today))
+
+        assertEquals(19_731.0, month.free, 0.001)
+    }
+
+    @Test
+    fun `the overview and the widget agree with the month`() {
+        val summary = overview(
+            emptyList(),
+            listOf(trial, netflix),
+            emptyList(),
+            income = 20_000.0,
+            usdSellRate = 0.0,
+            today = today
+        )
+        val widget = widgetSummary(listOf(trial, netflix), emptyList(), 20_000.0, 0.0, today)
+
+        assertEquals(269.0, summary.monthlyExpenses, 0.001)
+        assertEquals(19_731.0, summary.freeCash, 0.001)
+        assertEquals("Вільно 19 731 ₴", shown(widget.freeCash))
+    }
+
+    @Test
+    fun `the year counts the trial as nought and says what it becomes`() {
+        // Two different true statements: what twelve of this month costs, and what
+        // signing up has actually committed to.
+        assertEquals(269.0 * 12, yearlyTotal(listOf(trial, netflix), 0.0, today).total, 0.001)
+        assertEquals(468.0 * 12, yearlyCommitment(listOf(trial, netflix), 0.0, today).total, 0.001)
+    }
+
+    @Test
+    fun `one expense's annual figure ignores the trial entirely`() {
+        // What a year of this costs is what signing up commits you to, and a free
+        // month does not change it.
+        assertEquals(199.0 * 12, yearlyCost(trial), 0.001)
+        assertEquals("2 388 ₴ на рік", shown(annualLabel(trial)))
+    }
+
+    @Test
+    fun `the screen says how long it stays free`() {
+        assertEquals("безкоштовно до 3 жовтня", trialLabel(trial, today))
+        assertNull(trialLabel(trial, LocalDate.of(2026, 10, 3)))
+    }
+
+    @Test
+    fun `the trial is still on the timeline, because it is still a commitment`() {
+        // Due that day and taking nothing are different facts, and the list of what
+        // is standing is not the list of what is taken.
+        val renewal = LocalDate.of(2026, 9, 12)
+
+        assertEquals(listOf(trial), paymentsDueOn(listOf(trial), renewal))
+        assertTrue(chargedOn(listOf(trial), renewal).isEmpty())
+        assertEquals(1, paymentGroups(listOf(trial), today).size)
+    }
+
+    @Test
+    fun `the debit strip does not mark a renewal that takes nothing`() {
+        // The strip is captioned "Списання у найближчі 30 днів".
+        val september = LocalDate.of(2026, 9, 1)
+
+        assertTrue(paymentOffsets(listOf(trial), september).isEmpty())
+        // October's renewal is past the trial, so that one is a debit.
+        assertEquals(setOf(11), paymentOffsets(listOf(trial), LocalDate.of(2026, 10, 1)))
+    }
+
+    // --------------------------------------------------- the first real charge
+
+    @Test
+    fun `the next charge is the first renewal after the free period, not the next one`() {
+        // The 12th of September falls inside the trial. The answer is October's.
+        assertEquals(LocalDate.of(2026, 10, 12), nextCharge(trial, today))
+    }
+
+    @Test
+    fun `an expense with no trial charges on its next ordinary date`() {
+        assertEquals(LocalDate.of(2026, 10, 12), nextCharge(netflix, today))
+        assertEquals(LocalDate.of(2026, 9, 12), nextCharge(netflix, LocalDate.of(2026, 9, 1)))
+    }
+
+    @Test
+    fun `a trial ending on the charge day charges that very day`() {
+        val ends = trial.copy(trialEnd = LocalDate.of(2026, 10, 12).toEpochDay())
+
+        assertEquals(LocalDate.of(2026, 10, 12), nextCharge(ends, today))
+    }
+
+    @Test
+    fun `the reminder counts to the first real charge`() {
+        // Three days' notice on the 12th of October, so nothing is said in September
+        // and something is said on the 9th of October.
+        assertTrue(remindersDue(listOf(trial), LocalDate.of(2026, 9, 9)).isEmpty())
+        assertTrue(remindersDue(listOf(trial), LocalDate.of(2026, 9, 12)).isEmpty())
+
+        val due = remindersDue(listOf(trial), LocalDate.of(2026, 10, 9))
+
+        assertEquals(1, due.size)
+        assertEquals(3, due.first().daysAway)
+    }
+
+    @Test
+    fun `the digest stays quiet about a charge of nothing`() {
+        val summary = digest(
+            wishes = emptyList(),
+            pays = listOf(trial),
+            orders = emptyList(),
+            // Three days before the free renewal on the 12th.
+            today = LocalDate.of(2026, 9, 9),
+            usdSellRate = 0.0,
+            income = 20_000.0
+        )
+
+        assertTrue(summary.empty)
+    }
+
+    @Test
+    fun `the weekend shift still applies to the first real charge`() {
+        // The 12th of December 2026 is a Saturday, so the money has to be there by
+        // Friday the 11th — the shift is backwards, deliberately.
+        val free = trial.copy(trialEnd = LocalDate.of(2026, 12, 1).toEpochDay())
+
+        val due = remindersDue(listOf(free), LocalDate.of(2026, 12, 8))
+
+        assertEquals(1, due.size)
+        assertEquals(3, due.first().daysAway)
+        assertEquals(LocalDate.of(2026, 12, 12), due.first().movedFrom)
+    }
+
+    @Test
+    fun `the next payment panel looks past a whole trial rather than reporting none`() {
+        // Stopping at thirty-one days would report a subscription free until March
+        // as having no charge at all, which is the blindness this exists to fix.
+        val long = trial.copy(trialEnd = LocalDate.of(2027, 3, 1).toEpochDay())
+
+        val next = nextPayment(listOf(long), today, usdSellRate = 0.0)
+
+        assertNotNull(next)
+        assertEquals(LocalDate.of(2027, 3, 12), next!!.date)
+        assertEquals(199.0, next.total.total, 0.001)
+    }
+
+    @Test
+    fun `the editor says when the first charge lands before the trial is saved`() {
+        assertEquals(
+            "Перше списання 12 жовтня",
+            firstChargeNote(12, LocalDate.of(2026, 10, 3).toEpochDay(), today)
+        )
+        assertNull(firstChargeNote(12, 0L, today))
+    }
+
     // ------------------------------------------------------------ on disk
 
     @Test
@@ -309,6 +520,12 @@ class SubscriptionTest {
         assertEquals(raised, back)
         assertEquals(listOf(269.0, 309.0), back.amounts.map { it.price })
         assertEquals(LocalDate.of(2026, 3, 1).toEpochDay(), back.amounts.first().day)
+    }
+
+    @Test
+    fun `a trial survives a round trip through storage`() {
+        assertEquals(trial, payOf(payJson(trial)))
+        assertEquals(trial.trialEnd, payOf(payJson(trial)).trialEnd)
     }
 
     @Test
@@ -324,8 +541,13 @@ class SubscriptionTest {
         assertEquals(UAH, pay.currency)
         assertEquals(DEFAULT_WARN_DAYS, pay.warnDays)
         assertTrue(pay.amounts.isEmpty())
+        assertEquals(0L, pay.trialEnd)
         assertNull(lastAmountChange(pay))
         assertNull(amountHistoryNote(pay))
+        // And behaves exactly as it did: charged in full, from today.
+        assertFalse(onTrial(pay, epochToday))
+        assertEquals(300.0, monthlyTotal(listOf(pay), 0.0, today).total, 0.001)
+        assertEquals(LocalDate.of(2026, 10, 1), nextCharge(pay, today))
     }
 
     @Test

@@ -27,16 +27,74 @@ data class MonthlyTotal(
     val rateMissing: Boolean
 )
 
+// ------------------------------------------------------------- the free month
+
+/**
+ * A subscription can start free, and the first real charge is the one nobody
+ * remembers.
+ *
+ * The free month is not a discount, it is a commitment with its price hidden a
+ * month away — which is why an app that shows the charge from day one is wrong in
+ * one direction and an app that hides the subscription entirely is wrong in the
+ * other. So a trial expense is on the list, on the timeline and in the annual
+ * figure from the day it is added, and takes nothing at all until this day comes.
+ */
+
+/**
+ * Whether the trial is still running on [day].
+ *
+ * The end day itself is a charging day, not one more free one: a trial "до 3
+ * жовтня" that stayed free through the third would put the first real charge a
+ * day after the date the user was shown.
+ */
+fun onTrial(pay: Pay, day: Long): Boolean = pay.trialEnd > day
+
+/** What this expense actually takes on [day]. Nothing, while a trial is running. */
+fun chargedAmount(pay: Pay, day: Long): Double = if (onTrial(pay, day)) 0.0 else pay.amount
+
+/** The expenses that are still free today. */
+fun trialsRunning(items: List<Pay>, today: LocalDate): List<Pay> =
+    items.filter { onTrial(it, today.toEpochDay()) }
+
+/**
+ * "Перше списання 12 жовтня" — the date a free period actually commits to.
+ *
+ * Said in the editor, while the trial is being set, because the whole failure this
+ * feature addresses is signing up in September and being charged in October with
+ * nothing in between having mentioned October.
+ */
+fun firstChargeNote(day: Int, trialEnd: Long, today: LocalDate): String? {
+    if (trialEnd <= 0L) return null
+    val charge = nextCharge(Pay("", 0.0, day, trialEnd = trialEnd), today)
+    return "Перше списання ${dayMonth(charge)}"
+}
+
+/** "безкоштовно до 3 жовтня", or null once the trial has run out. */
+fun trialLabel(pay: Pay, today: LocalDate): String? =
+    if (onTrial(pay, today.toEpochDay())) {
+        "безкоштовно до ${dayMonth(LocalDate.ofEpochDay(pay.trialEnd))}"
+    } else {
+        null
+    }
+
 /**
  * Adds up a month.
  *
  * Takes the rate at which the bank sells dollars, because that is the side of the
  * spread you pay when you have to find dollars for the rent. Using the buy rate
  * would quietly understate every month.
+ *
+ * [today] is required rather than defaulted, and that is the point: a trial counts
+ * as nought here, so every figure built on this one — the free cash, the budget,
+ * the widget, the tile, the overview — needs to know what day it is. A default
+ * would have let each of those keep compiling while quietly overstating the month
+ * by the price of a subscription that is not being charged yet.
  */
-fun monthlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
-    val uah = items.filter { it.currency != USD }.sumOf { it.amount }
-    val usd = items.filter { it.currency == USD }.sumOf { it.amount }
+fun monthlyTotal(items: List<Pay>, usdSellRate: Double, today: LocalDate): MonthlyTotal {
+    val day = today.toEpochDay()
+    val billed = items.map { it.copy(amount = chargedAmount(it, day)) }
+    val uah = billed.filter { it.currency != USD }.sumOf { it.amount }
+    val usd = billed.filter { it.currency == USD }.sumOf { it.amount }
     val rate = usdSellRate.coerceAtLeast(0.0)
     val hasUsd = usd > 0.0
     val convertible = hasUsd && rate > 0.0
@@ -64,8 +122,8 @@ fun yearlyCost(pay: Pay): Double = pay.amount * MONTHS_IN_YEAR
  * year is a decision. Built from [monthlyTotal] so a missing rate stays missing
  * rather than being quietly multiplied into a smaller number twelve times over.
  */
-fun yearlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
-    val monthly = monthlyTotal(items, usdSellRate)
+fun yearlyTotal(items: List<Pay>, usdSellRate: Double, today: LocalDate): MonthlyTotal {
+    val monthly = monthlyTotal(items, usdSellRate, today)
     return monthly.copy(
         uah = monthly.uah * MONTHS_IN_YEAR,
         usd = monthly.usd * MONTHS_IN_YEAR,
@@ -76,6 +134,19 @@ fun yearlyTotal(items: List<Pay>, usdSellRate: Double): MonthlyTotal {
 
 /** "36 000 ₴ на рік" — one expense's annual cost, in its own currency. */
 fun annualLabel(pay: Pay): String = "${amountLabel(yearlyCost(pay), pay.currency)} на рік"
+
+/**
+ * A year of these expenses once every running trial has ended.
+ *
+ * [yearlyTotal] counts a trial as the nought it currently is, which is the truth
+ * about this month and a lie about the year: a free month is a commitment to the
+ * eleven paid ones behind it. This is the figure the screen puts underneath, and
+ * the reason [yearlyCost] and [annualLabel] never look at the trial either — one
+ * expense's annual cost is what signing up commits you to, not what it charged
+ * this morning.
+ */
+fun yearlyCommitment(items: List<Pay>, usdSellRate: Double, today: LocalDate): MonthlyTotal =
+    yearlyTotal(items.map { it.copy(trialEnd = 0L) }, usdSellRate, today)
 
 // ------------------------------------------------------- what it used to cost
 
@@ -235,8 +306,15 @@ data class YearlyShift(
  */
 fun yearlyShift(items: List<Pay>, usdSellRate: Double, today: LocalDate): YearlyShift {
     val yearAgo = today.minusYears(1).toEpochDay()
-    val before = yearlyTotal(items.map { it.copy(amount = amountOn(it, yearAgo)) }, usdSellRate)
-    val now = yearlyTotal(items, usdSellRate)
+    // A trial is left in place on both sides, so it counts as nought in each and
+    // the comparison stays about prices. Zeroing it on one side alone would make
+    // a subscription that is free this month read as having vanished since last year.
+    val before = yearlyTotal(
+        items.map { it.copy(amount = amountOn(it, yearAgo)) },
+        usdSellRate,
+        today
+    )
+    val now = yearlyTotal(items, usdSellRate, today)
     val difference = now.total - before.total
     return YearlyShift(
         before = before,
@@ -293,11 +371,21 @@ fun budget(income: Double, expenses: MonthlyTotal): Budget {
  */
 fun effectivePaymentDay(day: Int, monthLength: Int): Int = day.coerceIn(1, monthLength)
 
-/** Payments falling due on exactly this date. */
+/** Payments falling due on exactly this date, whether or not money moves. */
 fun paymentsDueOn(items: List<Pay>, date: LocalDate): List<Pay> {
     val monthLength = date.lengthOfMonth()
     return items.filter { effectivePaymentDay(it.day, monthLength) == date.dayOfMonth }
 }
+
+/**
+ * Payments that actually take money on [date].
+ *
+ * The same list minus whatever is still free that day. The distinction is the
+ * whole of the trial feature: a renewal during a trial is a date on the calendar
+ * and is not a debit, and the two things are wanted in different places.
+ */
+fun chargedOn(items: List<Pay>, date: LocalDate): List<Pay> =
+    paymentsDueOn(items, date).filterNot { onTrial(it, date.toEpochDay()) }
 
 /**
  * The next date money actually leaves, and what leaves with it.
@@ -314,15 +402,27 @@ data class NextPayment(
     val total: MonthlyTotal
 )
 
+/**
+ * How far ahead the search for the next real charge looks.
+ *
+ * A month and a day used to be enough to find the next occurrence of any day
+ * number, including the 31st landing on the 30th of a short month. A trial breaks
+ * that: a subscription free until March has no charge in the next thirty-one days,
+ * and stopping there would report it as no charge at all — the free-month
+ * blindness this exists to fix, reintroduced one function along. A year and a
+ * month covers the longest trial anyone offers and still terminates.
+ */
+private const val CHARGE_SEARCH_DAYS = 396
+
 fun nextPayment(items: List<Pay>, today: LocalDate, usdSellRate: Double): NextPayment? {
     if (items.isEmpty()) return null
-    // A month and a day is enough to find the next occurrence of any day number,
-    // including the 31st landing on the 30th of a short month.
-    for (offset in 0..31) {
+    for (offset in 0..CHARGE_SEARCH_DAYS) {
         val date = today.plusDays(offset.toLong())
-        val due = paymentsDueOn(items, date)
+        // Charged rather than merely due: this panel says when money next leaves,
+        // and during a trial the next renewal is not a day money leaves.
+        val due = chargedOn(items, date)
         if (due.isNotEmpty()) {
-            return NextPayment(date, offset, due, monthlyTotal(due, usdSellRate))
+            return NextPayment(date, offset, due, monthlyTotal(due, usdSellRate, date))
         }
     }
     return null
@@ -383,6 +483,26 @@ private fun nextDateFor(pay: Pay, today: LocalDate): LocalDate {
 }
 
 /**
+ * The next date this expense actually takes money.
+ *
+ * During a trial that is not the next time the day comes round — it is the first
+ * time it comes round once the free period has run out, which can be months away.
+ * Warning someone about the free charge is warning them about nothing, and it
+ * spends the one notification they were going to read on the wrong date.
+ *
+ * No loop: the day recurs monthly, so the first occurrence on or after the later
+ * of today and the trial's end is the answer outright.
+ */
+fun nextCharge(pay: Pay, today: LocalDate): LocalDate {
+    val from = if (pay.trialEnd > 0L) {
+        maxOf(today, LocalDate.ofEpochDay(pay.trialEnd))
+    } else {
+        today
+    }
+    return nextDateFor(pay, from)
+}
+
+/**
  * Days from today, 0 being today, that carry a payment.
  *
  * The strip used to draw the calendar month while the list below it was already
@@ -391,7 +511,10 @@ private fun nextDateFor(pay: Pay, today: LocalDate): LocalDate {
  */
 fun paymentOffsets(items: List<Pay>, today: LocalDate, days: Int = 30): Set<Int> =
     (0 until days)
-        .filter { paymentsDueOn(items, today.plusDays(it.toLong())).isNotEmpty() }
+        // The strip is captioned as debits, so a renewal that is still free does
+        // not get a mark. The timeline below it still lists the expense, because
+        // that is a list of what is standing, not of what is taken.
+        .filter { chargedOn(items, today.plusDays(it.toLong())).isNotEmpty() }
         .toSet()
 
 // ------------------------------------------------------------ advance warning
@@ -455,7 +578,10 @@ fun remindersDue(
     holidays: Set<Long> = emptySet()
 ): List<DueReminder> =
     items.mapNotNull { pay ->
-        val charged = nextDateFor(pay, today)
+        // The first REAL charge. A subscription free until October renews in
+        // September taking nothing, and a reminder three days before that is a
+        // reminder about a charge of nought.
+        val charged = nextCharge(pay, today)
         val day = paymentDay(charged, holidays)
         // Clamped at nought: a working day already behind us means "today", and
         // "через -1 день" is not a thing to put in front of a person.
@@ -839,11 +965,14 @@ fun monthRecord(
     val forMonth = marks.filter { it.month == month }
     // Marks are totalled through the same function as expenses, so a dollar rent
     // paid with no rate loaded stays visible as dollars instead of reading as nought.
+    // A mark is money that was actually handed over, so it carries no trial and
+    // none of these ever read as free.
     val paid = monthlyTotal(
         forMonth.map { Pay(it.name, it.amount, currency = it.currency) },
-        usdSellRate
+        usdSellRate,
+        today
     )
-    val planned = monthlyTotal(pays, usdSellRate)
+    val planned = monthlyTotal(pays, usdSellRate, today)
     val settled = pays.all { isPaid(marks, it.name, month) }
     return MonthRecord(
         month = month,

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 /**
  * The one figure reachable without leaving whatever is on screen.
@@ -22,8 +23,11 @@ class TileTest {
 
     private val internet = listOf(Pay("Інтернет", 300.0, day = 16))
 
+    /** The total needs a date only to know which trials have run out; none here has one. */
+    private val anyDay = LocalDate.of(2026, 9, 15)
+
     private fun month(income: Double, expenses: List<Pay> = internet) =
-        budget(income, monthlyTotal(expenses, 0.0))
+        budget(income, monthlyTotal(expenses, 0.0, anyDay))
 
     @Test
     fun `a tap swaps which figure is shown rather than opening the app`() {

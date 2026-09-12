@@ -17,6 +17,9 @@ class ResearchFindingsTest {
 
     private val day = 20_000L
 
+    /** The overview needs a date only to know which trials have run out; none here has one. */
+    private val anyDay = LocalDate.of(2026, 9, 15)
+
     private fun wish(
         price: Double,
         target: Double = 0.0,
@@ -219,7 +222,7 @@ class ResearchFindingsTest {
         )
         val pays = listOf(Pay("Інтернет", 1000.0))
 
-        val summary = overview(wishes, pays, emptyList(), income = 5_100.0, usdSellRate = 44.8)
+        val summary = overview(wishes, pays, emptyList(), income = 5_100.0, usdSellRate = 44.8, today = anyDay)
 
         assertEquals(6200.0, summary.plannedMonthly, 0.001)
         assertEquals(4100.0, summary.freeCash, 0.001)
@@ -232,7 +235,7 @@ class ResearchFindingsTest {
         val wishes = listOf(wish(price = 20_000.0).copy(monthlyPlan = 2000.0))
         val pays = listOf(Pay("Інтернет", 1000.0))
 
-        val summary = overview(wishes, pays, emptyList(), income = 10_000.0, usdSellRate = 44.8)
+        val summary = overview(wishes, pays, emptyList(), income = 10_000.0, usdSellRate = 44.8, today = anyDay)
 
         assertFalse(summary.plansConflict)
         assertEquals(0.0, summary.plansOverBudget, 0.001)
@@ -242,7 +245,7 @@ class ResearchFindingsTest {
     fun `no conflict is claimed when the income is unknown`() {
         val wishes = listOf(wish(price = 20_000.0).copy(monthlyPlan = 9000.0))
 
-        val summary = overview(wishes, emptyList(), emptyList(), income = 0.0, usdSellRate = 44.8)
+        val summary = overview(wishes, emptyList(), emptyList(), income = 0.0, usdSellRate = 44.8, today = anyDay)
 
         assertFalse(summary.plansConflict)
     }

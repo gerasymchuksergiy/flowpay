@@ -126,7 +126,7 @@ fun digest(
 
     // The month's free cash rides along rather than standing on its own. It is the
     // figure every one of the lines above is spent against, and it is never news.
-    val trailer = freeCashLine(budget(income, monthlyTotal(pays, usdSellRate)))
+    val trailer = freeCashLine(budget(income, monthlyTotal(pays, usdSellRate, today)))
 
     // A single piece of news is its own headline. Hiding one sentence behind a
     // generic title would make the digest worse than the notification it replaced;

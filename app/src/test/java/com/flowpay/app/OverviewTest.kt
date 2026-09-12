@@ -15,6 +15,9 @@ import java.time.LocalTime
  */
 class OverviewTest {
 
+    /** The overview needs a date only to know which trials have run out; none here has one. */
+    private val anyDay = LocalDate.of(2026, 9, 15)
+
     private fun wish(
         id: String,
         price: Double,
@@ -159,7 +162,7 @@ class OverviewTest {
             Order("4", "w", "u", ORDERED)
         )
 
-        val summary = overview(wishes, pays, orders, income = 45_000.0, usdSellRate = 44.8)
+        val summary = overview(wishes, pays, orders, income = 45_000.0, usdSellRate = 44.8, today = anyDay)
 
         assertEquals(2, summary.wishCount)
         assertEquals(6000.0, summary.wishTotal, 0.001)
@@ -180,23 +183,23 @@ class OverviewTest {
         val pays = listOf(Pay("Інтернет", 1000.0))
 
         // 9000 free a month against 10000 outstanding is two months.
-        assertEquals(2, overview(wishes, pays, emptyList(), 10_000.0, 44.8).monthsToFundAll)
+        assertEquals(2, overview(wishes, pays, emptyList(), 10_000.0, 44.8, anyDay).monthsToFundAll)
         // No income entered means the question cannot be answered.
-        assertNull(overview(wishes, pays, emptyList(), 0.0, 44.8).monthsToFundAll)
+        assertNull(overview(wishes, pays, emptyList(), 0.0, 44.8, anyDay).monthsToFundAll)
         // Neither can it when the month already does not fit.
-        assertNull(overview(wishes, pays, emptyList(), 500.0, 44.8).monthsToFundAll)
+        assertNull(overview(wishes, pays, emptyList(), 500.0, 44.8, anyDay).monthsToFundAll)
     }
 
     @Test
     fun `everything already saved needs no months`() {
         val wishes = listOf(wish("a", price = 1000.0, saved = 1000.0))
 
-        assertEquals(0, overview(wishes, emptyList(), emptyList(), 20_000.0, 44.8).monthsToFundAll)
+        assertEquals(0, overview(wishes, emptyList(), emptyList(), 20_000.0, 44.8, anyDay).monthsToFundAll)
     }
 
     @Test
     fun `an empty app reports zeroes rather than dividing by them`() {
-        val summary = overview(emptyList(), emptyList(), emptyList(), 0.0, 0.0)
+        val summary = overview(emptyList(), emptyList(), emptyList(), 0.0, 0.0, anyDay)
 
         assertEquals(0, summary.wishCount)
         assertEquals(0f, summary.savedProgress, 0.001f)

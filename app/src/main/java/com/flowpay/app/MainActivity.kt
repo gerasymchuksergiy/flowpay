@@ -230,7 +230,16 @@ data class Pay(
      * been edited — nothing fetches these, so a point is written only when a
      * person types a different number.
      */
-    val amounts: List<PricePoint> = emptyList()
+    val amounts: List<PricePoint> = emptyList(),
+    /**
+     * Epoch day a free trial runs out. Zero means there is no trial.
+     *
+     * A subscription that starts free is the one whose first real charge nobody
+     * remembers, because the moment worth remembering is a month after the moment
+     * you signed up. The expense is real from the day it is added — it belongs on
+     * the list and on the calendar — but it takes nothing until this day comes.
+     */
+    val trialEnd: Long = 0L
 )
 data class Order(
     val id: String,
@@ -785,7 +794,7 @@ fun payJson(pay: Pay): JSONObject = JSONObject()
     .put("cur", pay.currency).put("wd", pay.warnDays)
     // Both of these have to travel, or the bin restores a subscription that has
     // forgotten it was ever cheaper and a backup imports a trial as a live charge.
-    .put("am", amountsJson(pay.amounts))
+    .put("am", amountsJson(pay.amounts)).put("te", pay.trialEnd)
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
@@ -798,7 +807,9 @@ fun payOf(o: JSONObject): Pay = Pay(
     o.optInt("wd", DEFAULT_WARN_DAYS),
     // An expense saved before any of this comes back with no history at all, which
     // is the truth: nothing was watching what it used to cost.
-    amountsOf(o.optJSONArray("am"))
+    amountsOf(o.optJSONArray("am")),
+    // Nought is no trial, which is what every expense on the phone already is.
+    o.optLong("te", 0L)
 )
 
 fun orderJson(order: Order): JSONObject = JSONObject()
@@ -1225,10 +1236,16 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // System back closes the item page before it leaves the app.
     BackHandler(enabled = openedWish != null) { openedWish = null }
 
+    // Read once, so the pill cannot change its mind about what is due partway
+    // through a session that happens to cross midnight, and so the budget and the
+    // pill cannot disagree about which trials have run out.
+    val today = remember { LocalDate.now() }
+
     // Recomputed whenever expenses change, so the wishlist plan and the expenses
     // screen never disagree about what is free this month.
     val usdSell = remember { store.fxRate().first }.sell
-    val monthBudget = budget(remember(pays) { store.income() }, monthlyTotal(pays, usdSell))
+    val monthBudget =
+        budget(remember(pays) { store.income() }, monthlyTotal(pays, usdSell, today))
 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
@@ -1239,9 +1256,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         else -> null
     }
 
-    // Read once, so the pill cannot change its mind about what is due partway
-    // through a session that happens to cross midnight.
-    val today = remember { LocalDate.now() }
     // Suppressed on an item page for the same reason as the action button: that
     // page is one thing at a time, and the pill would be a second one.
     val note = if (openedWish == null) statusNote(orders, pays, wishes, today, usdSell) else null
@@ -1507,7 +1521,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                         pays,
                                         orders,
                                         monthBudget.income,
-                                        usdSell
+                                        usdSell,
+                                        today
                                     ),
                                     store = store,
                                     months = monthRecords(pays, paid, today, usdSell),
@@ -3699,14 +3714,19 @@ fun PaymentsScreen(
     // The rate the exchange screen already fetched and cached. Dollar entries are
     // converted at the sell rate, since that is what buying dollars costs.
     val rate = remember { store.fxRate().first }
-    val monthly = monthlyTotal(items, rate.sell)
-    val yearly = yearlyTotal(items, rate.sell)
+    // Read once, so the timeline and the strip cannot disagree about which day it
+    // is, nor the totals about which trials have run out.
+    val today = remember { LocalDate.now() }
+    val monthly = monthlyTotal(items, rate.sell, today)
+    val yearly = yearlyTotal(items, rate.sell, today)
+    // What the year becomes once the free periods end. Only shown while one is
+    // running, because otherwise it is the same figure twice.
+    val trials = trialsRunning(items, today)
+    val committed = yearlyCommitment(items, rate.sell, today)
     var income by remember { mutableDoubleStateOf(store.income()) }
     var editingIncome by remember { mutableStateOf(false) }
     val month = budget(income, monthly)
     var editing by remember { mutableStateOf<Int?>(null) }
-    // Read once, so the timeline and the strip cannot disagree about which day it is.
-    val today = remember { LocalDate.now() }
     val shift = yearlyShift(items, rate.sell, today)
     val thisMonth = monthKey(today)
     val record = monthRecord(items, paid, thisMonth, today, rate.sell)
@@ -3818,6 +3838,17 @@ fun PaymentsScreen(
                                         lineHeight = Type.captionLine
                                     )
                                 }
+                                // The row above counts a trial as the nought it
+                                // currently is. That is true of this month and
+                                // false of the year, so the commitment behind the
+                                // free period is stated rather than left to be
+                                // discovered on the first statement.
+                                if (trials.isNotEmpty()) {
+                                    LeaderRow(
+                                        "Після пробних періодів",
+                                        money(committed.total)
+                                    )
+                                }
                                 if (monthly.rateMissing) {
                                     // Both totals are short by this much, so it is said as
                                     // a gap rather than folded in as a smaller number.
@@ -3903,7 +3934,10 @@ fun PaymentsScreen(
                                         )
                                         // The annual figure is the one that changes minds
                                         // about a subscription, so it rides with the name
-                                        // rather than waiting on another screen.
+                                        // rather than waiting on another screen. It never
+                                        // looks at the trial: what a year of this costs is
+                                        // what signing up commits you to, and a free month
+                                        // does not change it.
                                         Text(
                                             annualLabel(pay),
                                             color = TextSecondary,
@@ -3911,6 +3945,18 @@ fun PaymentsScreen(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
+                                        // The date the free ride ends, on the row, in
+                                        // the accent — because it is the one fact about
+                                        // this expense that expires.
+                                        trialLabel(pay, today)?.let { free ->
+                                            Text(
+                                                free,
+                                                color = Accent,
+                                                fontSize = Type.captionSize,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
                                     }
                                     Column(horizontalAlignment = Alignment.End) {
                                         Text(
@@ -4002,6 +4048,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var day by remember { mutableStateOf("1") }
     var currency by remember { mutableStateOf(UAH) }
     var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
+    var trialEnd by remember { mutableLongStateOf(0L) }
+    val today = remember { LocalDate.now() }
     FormSheet(
         title = "Нова постійна витрата",
         confirmLabel = "Додати",
@@ -4018,7 +4066,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
                         // The opening figure, dated. An expense whose history starts
                         // here can later say when its old price started; one seeded
                         // at the first edit instead can only say that it did.
-                        listOf(PricePoint(value, LocalDate.now().toEpochDay()))
+                        listOf(PricePoint(value, today.toEpochDay())),
+                        trialEnd
                     )
                 )
             }
@@ -4040,6 +4089,16 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
         CurrencySegments(currency) { currency = it }
         NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
         NumberField("День оплати", day) { day = it }
+        TrialField(trialEnd, today) { trialEnd = it }
+        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today)?.let { note ->
+            Text(
+                note,
+                Modifier.padding(top = Space.xs),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
         WarnDaysChips(warnDays) { warnDays = it }
     }
 }
@@ -5229,6 +5288,8 @@ fun EditPaymentSheet(
     var day by remember { mutableStateOf(pay.day.toString()) }
     var currency by remember { mutableStateOf(pay.currency) }
     var warnDays by remember { mutableIntStateOf(pay.warnDays) }
+    var trialEnd by remember { mutableLongStateOf(pay.trialEnd) }
+    val today = remember { LocalDate.now() }
     FormSheet(
         title = "Змінити витрату",
         confirmLabel = "Зберегти",
@@ -5241,10 +5302,11 @@ fun EditPaymentSheet(
                     // straight into the copy: this is the one moment the app can
                     // learn that a subscription has raised its price, and writing
                     // the new figure over the old one is how that moment was lost.
-                    edited(pay, value, currency, LocalDate.now().toEpochDay()).copy(
+                    edited(pay, value, currency, today.toEpochDay()).copy(
                         name = name.trim().ifBlank { pay.name },
                         day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
-                        warnDays = warnDays
+                        warnDays = warnDays,
+                        trialEnd = trialEnd
                     )
                 )
             }
@@ -5273,6 +5335,18 @@ fun EditPaymentSheet(
             )
         }
         NumberField("День оплати", day) { day = it }
+        TrialField(trialEnd, today) { trialEnd = it }
+        // The reminder counts to this date, not to the free renewal before it.
+        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day, trialEnd, today)
+            ?.let { note ->
+                Text(
+                    note,
+                    Modifier.padding(top = Space.xs),
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+            }
         WarnDaysChips(warnDays) { warnDays = it }
         val trail = amountTrailLines(pay)
         if (trail.isNotEmpty()) {
@@ -5462,6 +5536,63 @@ fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
         confirmButton = { Button({ save(parseAmount(text)) }) { Text("Зберегти") } },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )
+}
+
+/**
+ * The date a free trial runs out.
+ *
+ * A date rather than "30 днів", because a trial is sold in days and charged on a
+ * date, and the conversion is exactly the arithmetic nobody does. Optional and
+ * absent by default: almost no expense has one, and a field every rent and
+ * electricity bill has to dismiss is a field that makes the form worse.
+ */
+@Composable
+fun TrialField(trialEnd: Long, today: LocalDate, set: (Long) -> Unit) {
+    var picking by remember { mutableStateOf(false) }
+    val ends = trialEnd.takeIf { it > 0L }?.let { LocalDate.ofEpochDay(it) }
+    Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
+        Text("Пробний період", color = TextSecondary, fontSize = Type.captionSize)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton({ picking = true }, Modifier.weight(1f)) {
+                Text(
+                    if (ends == null) {
+                        "Додати безкоштовний період"
+                    } else {
+                        "Безкоштовно до ${formatDate(ends)}"
+                    }
+                )
+            }
+            if (ends != null) {
+                TextButton({ set(0L) }) { Text("Прибрати", color = Negative) }
+            }
+        }
+    }
+    if (picking) {
+        val millisPerDay = 86_400_000L
+        val state = rememberDatePickerState(
+            // A month out: the length almost every trial actually runs.
+            initialSelectedDateMillis = (ends ?: today.plusMonths(1)).toEpochDay() * millisPerDay,
+            selectableDates = object : SelectableDates {
+                // A trial that ran out yesterday is not a trial, it is a charge,
+                // and entering one would hide a live subscription behind a nought.
+                override fun isSelectableDate(utcTimeMillis: Long) =
+                    utcTimeMillis / millisPerDay > today.toEpochDay()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { picking = false },
+            confirmButton = {
+                TextButton({
+                    // The picker works in UTC midnights, so this is an exact day.
+                    state.selectedDateMillis?.let { set(it / millisPerDay) }
+                    picking = false
+                }) { Text("Обрати") }
+            },
+            dismissButton = { TextButton({ picking = false }) { Text("Скасувати") } }
+        ) {
+            DatePicker(state)
+        }
+    }
 }
 
 /**

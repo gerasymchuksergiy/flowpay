@@ -47,11 +47,13 @@ fun overview(
     pays: List<Pay>,
     orders: List<Order>,
     income: Double,
-    usdSellRate: Double
+    usdSellRate: Double,
+    /** Needed only to know which subscriptions are still inside a free trial. */
+    today: LocalDate
 ): Overview {
     val goals = wishes.sumOf { wishGoal(it) }
     val saved = wishes.sumOf { it.saved.coerceAtLeast(0.0) }
-    val expenses = monthlyTotal(pays, usdSellRate)
+    val expenses = monthlyTotal(pays, usdSellRate, today)
     val month = budget(income, expenses)
     val remaining = (goals - saved).coerceAtLeast(0.0)
     val planned = wishes.sumOf { it.monthlyPlan.coerceAtLeast(0.0) }
@@ -114,7 +116,7 @@ fun widgetSummary(
     today: LocalDate
 ): WidgetSummary {
     val next = nextPayment(pays, today, usdSellRate)
-    val month = budget(income, monthlyTotal(pays, usdSellRate))
+    val month = budget(income, monthlyTotal(pays, usdSellRate, today))
     return WidgetSummary(
         paymentName = next?.let { dueSummary(it.items) } ?: "Платежів не заплановано",
         paymentDate = next?.let { dayMonth(it.date) }.orEmpty(),

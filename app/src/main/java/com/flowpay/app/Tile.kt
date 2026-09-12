@@ -6,6 +6,7 @@ import android.graphics.drawable.Icon
 import android.os.Build
 import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
+import java.time.LocalDate
 
 /**
  * One figure in the notification shade.
@@ -92,7 +93,9 @@ class FlowPayTileService : TileService() {
         val face = tileFace(
             store.tileFace(),
             rate,
-            budget(store.income(), monthlyTotal(store.pays(), rate.sell))
+            // A subscription still inside its free trial takes nothing yet, and the
+            // tile's whole job is one honest figure for what is left this month.
+            budget(store.income(), monthlyTotal(store.pays(), rate.sell, LocalDate.now()))
         )
         tile.label = face.label
         tile.state = if (face.active) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
