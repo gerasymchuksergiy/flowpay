@@ -21,49 +21,80 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
     override suspend fun doWork(): Result = coroutineScope {
         val store = Store(applicationContext)
 
+        val today = java.time.LocalDate.now().toEpochDay()
+
+        // Fetched before the prices rather than after, because every price recorded
+        // in this pass has to carry the rate of the day it was read. A rate fetched
+        // afterwards would be stamped onto readings taken before it.
+        val rate = runCatching { usdRate() }.getOrNull()?.takeIf { it.sell > 0 }
+        if (rate != null) {
+            store.saveFxRate(rate, System.currentTimeMillis())
+            // The rate chart needs a point a day. Recording it only when the currency
+            // screen is opened would leave the axis full of holes on every day the app
+            // was not used, and the cached rate the expenses screen converts with would
+            // go stale in exactly the same way.
+            store.saveRateHistory(appendRate(store.rateHistory(), rate.sell, today))
+        }
+        val stamp = rate ?: store.fxRate().first
+
         val old = store.wishes()
         var pricesRead = 0
         val fresh = old.map { previous ->
-            runCatching { refreshed(previous) }.getOrNull()?.let { current ->
-                pricesRead++
-                // A price that wobbles by a few hryvnia must not ring the phone twice a
-                // day, so an alert has to beat the last price already announced.
-                val alert = priceAlertFor(previous, current.price)
-                when (alert.kind) {
-                    AlertKind.TARGET_REACHED -> notify(
-                        previous.name,
-                        "Досягнуто ціль ${money(previous.targetPrice)} — зараз ${money(current.price)}",
-                        CHANNEL_PRICES,
-                        "Зміни цін"
-                    )
-                    AlertKind.NEW_LOW -> notify(
-                        previous.name,
-                        "Найнижча ціна за весь час: ${money(current.price)}",
-                        CHANNEL_PRICES,
-                        "Зміни цін"
-                    )
-                    AlertKind.DROP -> notify(
-                        previous.name,
-                        "Ціна впала: ${money(previous.price)} → ${money(current.price)}",
-                        CHANNEL_PRICES,
-                        "Зміни цін"
-                    )
-                    AlertKind.NONE -> Unit
+            when (val reading = refreshed(previous, today, stamp)) {
+                Reading.Failed -> previous
+                // A page that answered without a price is still news about the item,
+                // so the new freshness is saved. It is deliberately not counted as a
+                // price read: a whole list of these is a shop outage, not a success.
+                is Reading.Stale -> reading.wish
+                is Reading.Priced -> {
+                    val current = reading.wish
+                    pricesRead++
+                    // A price that wobbles by a few hryvnia must not ring the phone twice a
+                    // day, so an alert has to beat the last price already announced.
+                    val alert = priceAlertFor(previous, current.price)
+                    // A wish put aside on purpose is silent until its day. Ringing
+                    // the phone about a thing you decided not to think about until
+                    // March is the app overruling a decision the user already made.
+                    if (!onHold(previous, today)) {
+                        when (alert.kind) {
+                            AlertKind.TARGET_REACHED -> notify(
+                                previous.name,
+                                "Досягнуто ціль ${money(previous.targetPrice)} — зараз ${money(current.price)}",
+                                CHANNEL_PRICES,
+                                "Зміни цін"
+                            )
+                            AlertKind.BACK_IN_STOCK -> notify(
+                                previous.name,
+                                "Знову в наявності — ${money(current.price)}",
+                                CHANNEL_PRICES,
+                                "Зміни цін"
+                            )
+                            AlertKind.NEW_LOW -> notify(
+                                previous.name,
+                                "Найнижча ціна за весь час: ${money(current.price)}",
+                                CHANNEL_PRICES,
+                                "Зміни цін"
+                            )
+                            AlertKind.DROP -> notify(
+                                previous.name,
+                                "Ціна впала: ${money(previous.price)} → ${money(current.price)}",
+                                CHANNEL_PRICES,
+                                "Зміни цін"
+                            )
+                            AlertKind.NONE -> Unit
+                        }
+                    }
+                    current.copy(notifiedPrice = alert.notifyPrice)
                 }
-                current.copy(notifiedPrice = alert.notifyPrice)
-            } ?: previous
+            }
         }
         store.saveWishes(fresh)
 
-        // The rate chart needs a point a day. Recording it only when the currency
-        // screen is opened would leave the axis full of holes on every day the app
-        // was not used, and the cached rate the expenses screen converts with would
-        // go stale in exactly the same way.
-        runCatching { usdRate() }.getOrNull()?.takeIf { it.sell > 0 }?.let { rate ->
-            store.saveFxRate(rate, System.currentTimeMillis())
-            store.saveRateHistory(
-                appendRate(store.rateHistory(), rate.sell, java.time.LocalDate.now().toEpochDay())
-            )
+        // A hold that ran out while the app was closed has to announce itself, or
+        // the pause quietly becomes a deletion: the card would sit at the foot of
+        // the list with nobody ever told it was waiting for an answer.
+        fresh.filter { holdEnded(it, today) && it.holdUntil == today }.forEach { wish ->
+            notify(wish.name, "Ще хочеш? Пауза скінчилась", CHANNEL_PRICES, "Зміни цін")
         }
 
         val parcels = store.orders()

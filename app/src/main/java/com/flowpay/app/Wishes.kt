@@ -10,6 +10,89 @@ import java.time.LocalDate
  * another. They live here once.
  */
 
+/**
+ * How much the price on a card is currently worth believing.
+ *
+ * Without this a 404, a redesigned shop or an out-of-stock page leaves the last
+ * known figure sitting on the card looking exactly like a price read this morning,
+ * and the app goes on offering a buy verdict about a number nobody can buy at. The
+ * states are the outcomes the fetch can actually distinguish, no more: anything
+ * finer would be guesswork dressed as a diagnosis.
+ */
+enum class Freshness {
+    /** The page was read and the followed price was on it. */
+    OK,
+
+    /** The page answered, but states no price at all: redesigned, or a wall. */
+    UNREADABLE,
+
+    /** The page still lists prices, but not the variant being followed. */
+    OUT_OF_STOCK,
+
+    /** The address itself no longer answers: the shop dropped the page. */
+    GONE,
+
+    /** Typed in by hand. Nothing is being read, and nothing is claimed to be. */
+    MANUAL
+}
+
+/**
+ * Whether the price behind a card is too doubtful to judge or to sort on.
+ *
+ * A hand-typed price is not stale: it is exactly as current as the person who
+ * typed it made it, and it is the deliberate fallback for a page that cannot be
+ * read at all.
+ */
+fun isStale(freshness: Freshness): Boolean = when (freshness) {
+    Freshness.OK, Freshness.MANUAL -> false
+    Freshness.UNREADABLE, Freshness.OUT_OF_STOCK, Freshness.GONE -> true
+}
+
+/** The short form for a card, or null when there is nothing to warn about. */
+fun freshnessLabel(freshness: Freshness): String? = when (freshness) {
+    Freshness.OK -> null
+    Freshness.UNREADABLE -> "Ціну не розпізнано"
+    Freshness.OUT_OF_STOCK -> "Немає в наявності"
+    Freshness.GONE -> "Сторінки більше немає"
+    Freshness.MANUAL -> "Ціна вручну"
+}
+
+/** The whole sentence for the item page, which has the room to explain itself. */
+fun freshnessNote(freshness: Freshness): String? = when (freshness) {
+    Freshness.OK -> null
+    Freshness.UNREADABLE ->
+        "На сторінці більше немає ціни, яку вдається прочитати. Показана остання відома."
+    Freshness.OUT_OF_STOCK ->
+        "Магазин більше не вказує цей варіант. Показана остання відома ціна."
+    Freshness.GONE ->
+        "Сторінка не відповідає. Показана остання відома ціна."
+    Freshness.MANUAL ->
+        "Ціну вказано вручну, тож автоматично вона не оновлюється."
+}
+
+/** Reads a stored freshness back, defaulting to the state old data was saved in. */
+fun freshnessFrom(name: String): Freshness =
+    Freshness.entries.firstOrNull { it.name == name } ?: Freshness.OK
+
+/**
+ * What one re-read of a page meant for the wish behind it.
+ *
+ * Three outcomes rather than two, for the same reason [OfferMatch] has three: a
+ * page that answered with nothing usable is a fact about the item and belongs on
+ * the card, while a dropped connection is a fact about the phone and must change
+ * nothing at all. Collapsing them would let a tunnel turn a whole wishlist grey.
+ */
+sealed interface Reading {
+    /** A price was read, and it is the one this wish follows. */
+    data class Priced(val wish: Wish) : Reading
+
+    /** The page answered without a usable price. The wish carries which kind. */
+    data class Stale(val wish: Wish) : Reading
+
+    /** Nothing came back: no network, a timeout, a shop that hung up. */
+    data object Failed : Reading
+}
+
 enum class WishSort(val label: String) {
     ADDED("За додаванням"),
     BIGGEST_DROP("Найбільше падіння"),
@@ -84,6 +167,77 @@ fun priceMovement(wishes: List<Wish>): PriceMovement {
     )
 }
 
+// ------------------------------------------------- how long it has been wanted
+
+/**
+ * The day this wish joined the list.
+ *
+ * Wishes saved before the field existed have nothing in it, but they are not
+ * undatable: the first price ever recorded for one was recorded when it was added,
+ * which is the same day give or take the seconds it took to read the page. Falling
+ * back to it means the age works on the user's existing list rather than starting
+ * every item at zero on the day this shipped.
+ */
+fun addedDay(wish: Wish): Long = when {
+    wish.addedDay > 0L -> wish.addedDay
+    else -> wish.history.firstOrNull { it.day > 0L }?.day ?: 0L
+}
+
+/** How many days this has been wanted, or null when nothing dates it. */
+fun wantedDays(wish: Wish, today: Long): Int? {
+    val since = addedDay(wish).takeIf { it in 1..today } ?: return null
+    return (today - since).toInt()
+}
+
+/**
+ * How long this has been wanted, said the way a person would.
+ *
+ * The number is the point of the whole feature, so it is stated plainly rather
+ * than softened: a wishlist works by putting distance between the urge and the
+ * decision, and four months of wanting the same thing is an argument either way.
+ * Days up to a month, then months, because "97 днів" stops being a duration and
+ * becomes arithmetic.
+ */
+fun wantedLabel(wish: Wish, today: Long): String? {
+    val days = wantedDays(wish, today) ?: return null
+    return when {
+        days == 0 -> "Додано сьогодні"
+        days < 31 -> "У списку ${daysLabel(days)}"
+        else -> "У списку ${monthsLabel(days / 30)}"
+    }
+}
+
+// ------------------------------------------------------------ deliberate holds
+
+/** Put aside on purpose, and not due back yet: collapsed on the list and silent. */
+fun onHold(wish: Wish, today: Long): Boolean = wish.holdUntil > today
+
+/**
+ * A hold whose day has come.
+ *
+ * The day itself counts as ended, not as one more day of waiting: a hold "until
+ * the twelfth" that stays silent through the twelfth would come back a day late
+ * every time, and the date the user picked is the date they wanted to be asked.
+ */
+fun holdEnded(wish: Wish, today: Long): Boolean = wish.holdUntil in 1..today
+
+/** What a held wish says for itself while it waits. */
+fun holdLabel(wish: Wish, today: Long): String? = when {
+    onHold(wish, today) -> "Відкладено до ${formatDate(LocalDate.ofEpochDay(wish.holdUntil))}"
+    holdEnded(wish, today) -> "Ще хочеш?"
+    else -> null
+}
+
+/**
+ * Splits the list into what is being watched and what was deliberately set aside.
+ *
+ * Held wishes keep their place in the list rather than being hidden: the point of
+ * a hold is to come back to the thing, and something you cannot find again was
+ * deleted, not postponed.
+ */
+fun partitionByHold(items: List<Wish>, today: Long): Pair<List<Wish>, List<Wish>> =
+    items.partition { !onHold(it, today) }
+
 /** Ukrainian plural for how many wishes are being watched. */
 fun positionsLabel(count: Int): String {
     val lastTwo = count % 100
@@ -157,8 +311,19 @@ private fun linkKey(url: String): String = url.trim().lowercase()
  * A shop that blocks the fetch, or answers with a consent wall, must not cost
  * the link: a row with no price can be refreshed later, a lost address cannot.
  */
-fun placeholderWish(url: String, id: String): Wish =
-    Wish(id = id, name = placeholderName(url), url = url, image = "", price = 0.0, history = emptyList())
+fun placeholderWish(url: String, id: String, today: Long = LocalDate.now().toEpochDay()): Wish =
+    Wish(
+        id = id,
+        name = placeholderName(url),
+        url = url,
+        image = "",
+        price = 0.0,
+        history = emptyList(),
+        addedDay = today,
+        // It has no price and nothing has claimed one, which is what the state says.
+        // Typing one in by hand is the way out, and the card offers it.
+        freshness = Freshness.UNREADABLE
+    )
 
 data class RefreshResult(val wishes: List<Wish>, val updated: Int)
 
@@ -172,20 +337,31 @@ data class RefreshResult(val wishes: List<Wish>, val updated: Int)
 /**
  * Folds already-followed readings back into the list.
  *
- * The sibling of [applyRefresh] for the path that resolves each wish's own
- * variant before merging: the work is done by then, so a non-null entry replaces
- * its wish outright, and a null — an unreadable page or a vanished variant —
- * leaves it exactly as it was.
+ * The sibling of [applyRefresh] for the path that resolves each wish's own variant
+ * before merging. [readings] lines up with [items] by position. A [Reading.Priced]
+ * replaces its wish and counts as an update; a [Reading.Stale] replaces it too —
+ * that is how the new freshness reaches the card — but is not counted, because no
+ * price was updated and saying otherwise would be the exact dishonesty this is
+ * meant to remove. A [Reading.Failed] leaves the wish untouched down to its
+ * freshness, so a tunnel cannot mark a shelf of healthy wishes as gone.
  */
-fun applyFollowed(items: List<Wish>, refreshed: List<Wish?>): RefreshResult {
+fun applyFollowed(items: List<Wish>, readings: List<Reading?>): RefreshResult {
     var updated = 0
     val next = items.mapIndexed { index, previous ->
-        val current = refreshed.getOrNull(index) ?: return@mapIndexed previous
-        updated++
-        current
+        when (val reading = readings.getOrNull(index)) {
+            is Reading.Priced -> {
+                updated++
+                reading.wish
+            }
+            is Reading.Stale -> reading.wish
+            else -> previous
+        }
     }
     return RefreshResult(next, updated)
 }
+
+/** How many of the list came back with something other than a price. */
+fun staleCount(items: List<Wish>): Int = items.count { isStale(it.freshness) }
 
 fun applyRefresh(
     items: List<Wish>,
@@ -213,4 +389,16 @@ fun refreshMessage(updated: Int, total: Int): String = when {
     updated == 0 -> "Жодної ціни не вдалося прочитати"
     updated == total -> "Ціни оновлено: ${positionsLabel(total)}"
     else -> "Ціни оновлено: $updated з $total"
+}
+
+/**
+ * The second line after a run, naming what came back without a price.
+ *
+ * Kept apart from [refreshMessage] because the two answer different questions.
+ * "3 з 5" says how much arrived; it does not say that two of the cards on screen
+ * are now showing figures nobody can buy at, and that is the part worth a sentence.
+ */
+fun staleMessage(stale: Int): String? = when {
+    stale <= 0 -> null
+    else -> "Без ціни: ${positionsLabel(stale)}"
 }

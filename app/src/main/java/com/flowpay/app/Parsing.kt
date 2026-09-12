@@ -200,10 +200,16 @@ fun matchOffer(offers: List<Offer>, variant: String, lastPrice: Double): OfferMa
  * Builds a wish from a product page. Throws when there is no price, because a
  * price tracker with no price to track is worse than a clear failure.
  */
-fun parseProduct(html: String, url: String, id: String, today: Long = 0L): Wish {
+fun parseProduct(
+    html: String,
+    url: String,
+    id: String,
+    today: Long = 0L,
+    rate: FxRate = FxRate()
+): Wish {
     val offers = extractOffers(html)
     require(offers.isNotEmpty()) { "Не вдалося знайти ціну на сторінці" }
-    return wishFromOffer(html, url, id, offers.first(), today)
+    return wishFromOffer(html, url, id, offers.first(), today, rate)
 }
 
 /**
@@ -213,15 +219,23 @@ fun parseProduct(html: String, url: String, id: String, today: Long = 0L): Wish 
  * fact to be read but a choice to be made, and the choice has to be recorded with
  * the wish or every later check would have to guess again.
  */
-fun wishFromOffer(html: String, url: String, id: String, offer: Offer, today: Long = 0L): Wish =
+fun wishFromOffer(
+    html: String,
+    url: String,
+    id: String,
+    offer: Offer,
+    today: Long = 0L,
+    rate: FxRate = FxRate()
+): Wish =
     Wish(
         id = id,
         name = cleanProductTitle(metaContent(html, "og:title")).ifBlank { "Новий товар" },
         url = url,
         image = decodeEntities(metaContent(html, "og:image")),
         price = offer.price,
-        history = listOf(PricePoint(offer.price, today)),
-        variant = offer.label
+        history = listOf(PricePoint(offer.price, today, rate.sell, rate.source)),
+        variant = offer.label,
+        addedDay = today
     )
 
 /**
