@@ -1,9 +1,13 @@
 package com.flowpay.app
 
+import android.graphics.Bitmap
 import android.provider.Settings
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MaterialTheme
@@ -13,7 +17,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.ImageShader
+import androidx.compose.ui.graphics.ShaderBrush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.Font
@@ -51,6 +62,53 @@ val AccentSoft = Color(0xff2a3318)
 val Negative = Color(0xffff7a6b)
 
 val HairLine = Color(0xff33362c)
+
+/**
+ * Grain, because near-black is where a panel runs out of numbers.
+ *
+ * An OLED cannot hold [AppBackground] accurately. Down here the effective
+ * precision falls below the eight bits the colour is written in, so two tones a
+ * single level apart come out identical, a slow gradient collapses into steps,
+ * and the panel's own dithering invents its own pattern on top. Noise fixes it by
+ * construction: it scatters neighbouring pixels across several levels, so there
+ * is no longer an edge where a band could form.
+ *
+ * **Static, and it stays static.** Film grain that moves is motion by another
+ * name — it would run straight past the reduced-motion setting the rest of this
+ * file is careful to honour, and it would never idle. A fixed tile gets the whole
+ * anti-banding benefit for nothing: no animation, no invalidation, one bitmap.
+ *
+ * The numbers, because the obvious ones are wrong. Composited normally, a tile of
+ * full-range white noise at a tenth opacity lifts #0a0b09 from 10 to 22 — past
+ * [SurfaceLow] at 18, so the background would end up lighter than the surface
+ * meant to sit above it, and the whole ramp would invert. The tile therefore has
+ * to be dark itself. Capped at 64 and drawn at a tenth, the ground moves between
+ * 9 and 15 around a mean of 12: three levels of swing, which is comfortably more
+ * than the one-level step that causes the banding, and two levels of lift, which
+ * leaves black still reading as black and well clear of [SurfaceLow].
+ */
+private const val GrainTileSize = 128
+private const val GrainCeiling = 64
+private const val GrainAlpha = 0.10f
+
+/**
+ * One tile of monochrome noise.
+ *
+ * Seeded rather than random, so the texture is the same on every launch and a
+ * screenshot taken today matches one taken tomorrow.
+ */
+private fun grainTile(): ImageBitmap {
+    val random = java.util.Random(0x5EEDL)
+    val pixels = IntArray(GrainTileSize * GrainTileSize)
+    for (index in pixels.indices) {
+        val level = random.nextInt(GrainCeiling + 1)
+        pixels[index] = (0xff shl 24) or (level shl 16) or (level shl 8) or level
+    }
+    return Bitmap
+        .createBitmap(GrainTileSize, GrainTileSize, Bitmap.Config.ARGB_8888)
+        .apply { setPixels(pixels, 0, GrainTileSize, 0, 0, GrainTileSize, GrainTileSize) }
+        .asImageBitmap()
+}
 
 /**
  * Vertical and horizontal rhythm on a 4dp base.
@@ -388,11 +446,28 @@ object Motion {
 
 @Composable
 fun FlowPayTheme(content: @Composable () -> Unit) {
+    // One bitmap for the life of the app. The brush is what every screen draws
+    // its ground with, so building it per screen would be building it per tab.
+    val grain = remember {
+        ShaderBrush(ImageShader(grainTile(), TileMode.Repeated, TileMode.Repeated))
+    }
     CompositionLocalProvider(LocalReducedMotion provides systemReducedMotion()) {
         MaterialTheme(
             colorScheme = FlowPayColors,
-            typography = FlowPayTypography,
-            content = content
-        )
+            typography = FlowPayTypography
+        ) {
+            // The ground is painted here rather than by the Scaffold, because the
+            // grain has to land between the background and the content: over the
+            // flat colour, where the banding is, and under the text and the
+            // photographs, which have no use for it.
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(AppBackground)
+                    .drawBehind { drawRect(grain, alpha = GrainAlpha) }
+            ) {
+                content()
+            }
+        }
     }
 }

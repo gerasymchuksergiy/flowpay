@@ -1371,7 +1371,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     FlowPayTheme {
         Scaffold(
             modifier = Modifier.nestedScroll(barScroll),
-            containerColor = AppBackground,
+            // Transparent, not AppBackground: the theme has already painted the
+            // ground and laid the grain over it, and a second opaque fill here
+            // would cover the grain up again.
+            containerColor = Color.Transparent,
             contentColor = TextPrimary,
             snackbarHost = { SnackbarHost(notices) },
             floatingActionButton = {
