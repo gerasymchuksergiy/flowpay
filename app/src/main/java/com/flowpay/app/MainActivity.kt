@@ -2027,7 +2027,8 @@ private fun CategoryChip(label: String, amount: String, active: Boolean, onClick
             // muted grey from the palette turns muddy against it.
             color = if (active) AccentInk.copy(alpha = 0.7f) else TextSecondary,
             fontSize = Type.overlineSize,
-            maxLines = 1
+            maxLines = 1,
+            style = Tabular
         )
     }
 }
@@ -2162,7 +2163,8 @@ fun AddWishSheet(
                         // on the page the person is choosing from.
                         Text(
                             amountLabel(offer.price, offer.currency.ifBlank { UAH }),
-                            fontWeight = Type.strong
+                            fontWeight = Type.strong,
+                            style = Tabular
                         )
                     }
                 }
@@ -2444,7 +2446,8 @@ fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted:
                 fontSize = Type.sectionSize,
                 lineHeight = Type.sectionLine,
                 fontWeight = if (muted) Type.regular else Type.strong,
-                color = if (muted) TextDisabled else TextPrimary
+                color = if (muted) TextDisabled else TextPrimary,
+                style = Tabular
             )
         }
     }
@@ -2613,7 +2616,8 @@ fun SharedTransitionScope.WishDetailScreen(
                             color = if (change <= 0) Accent else Negative,
                             fontSize = Type.captionSize,
                             fontWeight = Type.strong,
-                            modifier = Modifier.padding(bottom = Space.sm)
+                            modifier = Modifier.padding(bottom = Space.sm),
+                            style = Tabular
                         )
                     }
                 }
@@ -3374,7 +3378,8 @@ fun SharedTransitionScope.WishCard(
                         .align(Alignment.TopEnd)
                         .padding(Space.sm)
                         .background(Accent, Radius.pill)
-                        .padding(horizontal = Space.sm, vertical = 2.dp)
+                        .padding(horizontal = Space.sm, vertical = 2.dp),
+                    style = Tabular
                 )
             }
             freshnessLabel(wish.freshness)?.takeIf { stale }?.let { warning ->
@@ -3409,7 +3414,10 @@ fun SharedTransitionScope.WishCard(
                 fontWeight = Type.strong,
                 // A price nobody can currently buy at must not carry the weight of
                 // one that was read this morning.
-                color = if (stale || held) TextDisabled else TextPrimary
+                color = if (stale || held) TextDisabled else TextPrimary,
+                // The grid puts two of these side by side, which is precisely where
+                // digits of unequal width stop lining up and the column looks nudged.
+                style = Tabular
             )
             // Where this price sits in its own range, unlabelled and five pixels
             // tall. The percentage badge over the photograph says how far the price
@@ -3438,7 +3446,8 @@ fun SharedTransitionScope.WishCard(
                 Text(
                     "ціль ${money(wish.targetPrice)}",
                     color = TextSecondary,
-                    fontSize = Type.overlineSize
+                    fontSize = Type.overlineSize,
+                    style = Tabular
                 )
             }
             if (!held && (wish.saved > 0 || wish.monthlyPlan > 0)) {
@@ -3592,7 +3601,8 @@ fun CalculatorScreen(store: Store) {
                                                 color = AccentInk,
                                                 fontSize = Type.sectionSize,
                                                 lineHeight = Type.sectionLine,
-                                                fontWeight = Type.strong
+                                                fontWeight = Type.strong,
+                                                style = Tabular
                                             )
                                         }
                                     }
@@ -4031,13 +4041,15 @@ fun PaymentsScreen(
                                     Column(horizontalAlignment = Alignment.End) {
                                         Text(
                                             amountLabel(pay.amount, pay.currency),
-                                            fontWeight = Type.strong
+                                            fontWeight = Type.strong,
+                                            style = Tabular
                                         )
                                         if (pay.currency == USD && rate.sell > 0) {
                                             Text(
                                                 "≈ ${approxMoney(pay.amount * rate.sell)}",
                                                 color = TextSecondary,
-                                                fontSize = Type.captionSize
+                                                fontSize = Type.captionSize,
+                                                style = Tabular
                                             )
                                         }
                                     }
@@ -4292,7 +4304,12 @@ fun OrdersScreen(
                                 maxLines = 2
                             )
                             if (order.price > 0) {
-                                Text(money(order.price), fontWeight = Type.strong, fontSize = Type.bodySize)
+                                Text(
+                                    money(order.price),
+                                    fontWeight = Type.strong,
+                                    fontSize = Type.bodySize,
+                                    style = Tabular
+                                )
                             }
                             if (order.tracking.isNotBlank()) {
                                 Text(
@@ -4789,7 +4806,8 @@ fun SettingsScreen(
                                         moved.change < 0 -> Accent
                                         moved.change > 0 -> Negative
                                         else -> TextPrimary
-                                    }
+                                    },
+                                    style = Tabular
                                 )
                                 Text(
                                     "від ${money(moved.firstTotal)} за весь час спостереження · " +
@@ -5041,7 +5059,8 @@ fun SettingsScreen(
                                                 amountLabel(pay.amount, pay.currency),
                                                 color = if (done) TextPrimary else TextSecondary,
                                                 fontSize = Type.bodySize,
-                                                fontWeight = Type.medium
+                                                fontWeight = Type.medium,
+                                                style = Tabular
                                             )
                                         }
                                     }

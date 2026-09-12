@@ -146,7 +146,8 @@ fun HeroPanel(
                     fontSize = Type.heroSize,
                     lineHeight = Type.heroLine,
                     letterSpacing = Type.heroTracking,
-                    fontWeight = if (muted) Type.medium else FontWeight.Black
+                    fontWeight = if (muted) Type.medium else FontWeight.Black,
+                    style = Tabular
                 )
                 caption?.let {
                     Spacer(Modifier.height(Space.xs))
@@ -843,13 +844,14 @@ fun FigureWithTarget(
     valueSize: androidx.compose.ui.unit.TextUnit = Type.sectionSize
 ) {
     Row(modifier, verticalAlignment = Alignment.Bottom) {
-        Text(value, color = color, fontSize = valueSize, fontWeight = Type.strong)
+        Text(value, color = color, fontSize = valueSize, fontWeight = Type.strong, style = Tabular)
         target?.let {
             Text(
                 " / $it",
                 color = TextSecondary,
                 fontSize = Type.captionSize,
-                modifier = Modifier.padding(bottom = 2.dp)
+                modifier = Modifier.padding(bottom = 2.dp),
+                style = Tabular
             )
         }
     }
@@ -1006,7 +1008,8 @@ fun LeaderRow(label: String, value: String, modifier: Modifier = Modifier, alarm
             value,
             color = if (alarm) Negative else TextPrimary,
             fontSize = Type.captionSize,
-            fontWeight = Type.strong
+            fontWeight = Type.strong,
+            style = Tabular
         )
     }
 }
@@ -1375,7 +1378,8 @@ fun PhotoHeader(
                 lineHeight = 48.sp,
                 letterSpacing = (-1.5).sp,
                 fontWeight = FontWeight.Black,
-                modifier = Modifier.align(Alignment.TopEnd).padding(Space.md)
+                modifier = Modifier.align(Alignment.TopEnd).padding(Space.md),
+                style = Tabular
             )
         }
         chip?.let {
