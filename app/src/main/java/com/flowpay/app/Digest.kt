@@ -92,7 +92,14 @@ fun digest(
     usdSellRate: Double,
     income: Double,
     holidays: Set<Long> = emptySet(),
-    rateTarget: RateTarget? = null
+    rateTarget: RateTarget? = null,
+    /**
+     * Epoch day the stored rate was fetched, so a threshold is not announced on a
+     * stale one. Zero means no rate has ever been loaded, which reads as stale and
+     * so says nothing — the safe way round for a default, since a caller that
+     * forgets it goes quiet rather than quoting a rate it cannot vouch for.
+     */
+    rateDay: Long = 0L
 ): Digest {
     val news = buildList {
         // Leads, because it is the only line here the user asked for by name. The
@@ -106,7 +113,7 @@ fun digest(
         // would ring, since the rate is read twice a day and the exchange is shut
         // at three in the morning. So the crossing is worth exactly one line in
         // the message that arrives when something could be done about it.
-        rateTargetLine(rateTarget, usdSellRate)?.let { add(it) }
+        rateTargetLine(rateTarget, usdSellRate, rateDay, today.toEpochDay())?.let { add(it) }
         // Above the waiting parcel: one that is going back to the sender has a
         // deadline you cannot see and an outcome you have to act to change.
         problemLine(orders)?.let { add(it) }

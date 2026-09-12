@@ -96,25 +96,25 @@ class RateTargetTest {
         assertEquals(today, told.hitDay)
         assertFalse(rateTargetReached(told, 42.10))
         assertFalse(rateTargetReached(told, 99.0))
-        assertNull(rateTargetLine(told, 42.10))
+        assertNull(rateTargetLine(told, 42.10, today, today))
     }
 
     @Test
     fun `the line names both the rate now and the number that was asked for`() {
         val target = armRateTarget(42.0, 41.30)!!
 
-        assertNull(rateTargetLine(target, 41.80))
+        assertNull(rateTargetLine(target, 41.80, today, today))
         assertEquals(
             "Долар 42,10 ₴ — курс перетнув 42,00",
-            shown(rateTargetLine(target, 42.10)!!)
+            shown(rateTargetLine(target, 42.10, today, today)!!)
         )
-        assertNull(rateTargetLine(null, 42.10))
+        assertNull(rateTargetLine(null, 42.10, today, today))
     }
 
     @Test
     fun `figures in the line are Ukrainian whatever the phone is set to`() {
         val target = armRateTarget(42.0, 41.30)!!
-        val line = rateTargetLine(target, 42.10)!!
+        val line = rateTargetLine(target, 42.10, today, today)!!
 
         // A decimal point here would mean the line was formatted in the phone's
         // locale rather than the app's, which CI runs as en-US on purpose.
@@ -152,14 +152,16 @@ class RateTargetTest {
 
     private val day = LocalDate.of(2026, 9, 15)
 
-    private fun morning(target: RateTarget?, rate: Double) = digest(
+    /** A morning whose rate was fetched today, unless the caller ages it. */
+    private fun morning(target: RateTarget?, rate: Double, rateDay: Long = today) = digest(
         wishes = emptyList(),
         pays = emptyList(),
         orders = emptyList(),
         today = day,
         usdSellRate = rate,
         income = 0.0,
-        rateTarget = target
+        rateTarget = target,
+        rateDay = rateDay
     )
 
     @Test
@@ -193,7 +195,8 @@ class RateTargetTest {
             today = day,
             usdSellRate = 42.10,
             income = 30000.0,
-            rateTarget = armRateTarget(42.0, 41.30)
+            rateTarget = armRateTarget(42.0, 41.30),
+            rateDay = today
         )
 
         assertFalse(full.empty)
@@ -205,5 +208,58 @@ class RateTargetTest {
     @Test
     fun `no threshold changes nothing about the digest`() {
         assertTrue(morning(null, 42.10).empty)
+    }
+
+    // ------------------------------------------------ a rate old enough to lie
+
+    @Test
+    fun `a stale rate says nothing rather than announcing last week's crossing`() {
+        val target = armRateTarget(42.0, 41.30)
+
+        // The digest needs no network and runs every morning regardless, so an
+        // offline phone keeps converting at whatever it last fetched.
+        assertTrue(morning(target, 42.10, rateDay = today - STALE_RATE_DAYS).empty)
+        assertTrue(morning(target, 42.10, rateDay = today - 30).empty)
+        // A rate never loaded at all is the same answer for the same reason.
+        assertTrue(morning(target, 42.10, rateDay = 0L).empty)
+    }
+
+    @Test
+    fun `a rate inside the window still speaks`() {
+        val target = armRateTarget(42.0, 41.30)
+
+        assertFalse(morning(target, 42.10, rateDay = today).empty)
+        // The last day that still counts as current, so the boundary is pinned
+        // rather than left to drift with the constant.
+        assertFalse(morning(target, 42.10, rateDay = today - (STALE_RATE_DAYS - 1)).empty)
+    }
+
+    @Test
+    fun `freshness here means what it means on the item page`() {
+        // One rule, one constant. The alternative is the item page calling a rate
+        // old while the digest quotes the same figure as this morning's.
+        assertTrue(rateIsFresh(today, today))
+        assertTrue(rateIsFresh(today - (STALE_RATE_DAYS - 1), today))
+        assertFalse(rateIsFresh(today - STALE_RATE_DAYS, today))
+        assertFalse(rateIsFresh(0L, today))
+
+        val converted = toHryvnia(59.99, USD, FxRate(41.0, 42.0))
+        // The same boundary, read off the other side of the app.
+        assertNull(staleRateNote(converted, today - (STALE_RATE_DAYS - 1), today))
+        assertNotNull(staleRateNote(converted, today - STALE_RATE_DAYS, today))
+    }
+
+    @Test
+    fun `a threshold silenced by a stale rate is still armed, not spent`() {
+        val target = armRateTarget(42.0, 41.30)!!
+
+        // Nothing was said, so nothing may be marked as said: the disarm in the
+        // worker hangs off this exact call returning a line.
+        assertNull(rateTargetLine(target, 42.10, today - 30, today))
+        // And the moment a real rate arrives, it speaks.
+        assertEquals(
+            "Долар 42,10 ₴ — курс перетнув 42,00",
+            shown(rateTargetLine(target, 42.10, today, today)!!)
+        )
     }
 }

@@ -560,14 +560,36 @@ fun rateTargetReached(target: RateTarget?, rate: Double): Boolean {
 fun disarmRateTarget(target: RateTarget, today: Long): RateTarget = target.copy(hitDay = today)
 
 /**
+ * Whether the stored rate is current enough to make a claim about right now.
+ *
+ * The same three days [staleRateNote] uses to start admitting a converted price
+ * is standing on an old rate, and deliberately the same constant rather than a
+ * second opinion about what "current" means: the two would drift, and then the
+ * item page would be calling a rate old while the digest quoted it as today's.
+ *
+ * A rate stamped in the future is a clock that moved, not a fresh reading, but it
+ * is treated as fresh here because [staleRateNote] treats it that way too.
+ */
+fun rateIsFresh(rateDay: Long, today: Long): Boolean =
+    rateDay > 0L && today - rateDay < STALE_RATE_DAYS
+
+/**
  * The digest line for a rate that has crossed the number it was watched for.
  *
  * Null while it is still waiting and null once it has been said, which is the
  * whole of "once": by the morning after, the same rate is no longer news about
  * anything, and a line that repeats daily is how a digest stops being read.
+ *
+ * Also null on a rate too old to speak for the present. The digest needs no
+ * network and runs every morning regardless, so a phone that has been offline for
+ * a week would otherwise announce that the dollar "перетнув 42" on the strength of
+ * last week's figure — and spend the one telling this threshold gets on it. Going
+ * quiet costs nothing instead: the target stays armed and says it properly on the
+ * first morning there is a real rate to say it about.
  */
-fun rateTargetLine(target: RateTarget?, rate: Double): String? {
+fun rateTargetLine(target: RateTarget?, rate: Double, rateDay: Long, today: Long): String? {
     if (target == null || !rateTargetReached(target, rate)) return null
+    if (!rateIsFresh(rateDay, today)) return null
     return "Долар ${rateFigure(rate)} ₴ — курс перетнув ${rateFigure(target.rate)}"
 }
 

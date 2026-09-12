@@ -13,6 +13,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -47,8 +48,18 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // so the last digested day is recorded and the same day is never repeated.
         if (store.lastReminderDay() == today.toEpochDay()) return Result.success()
 
-        val rate = store.fxRate().first.sell
+        val cachedRate = store.fxRate()
+        val rate = cachedRate.first.sell
+        // The day the figure was fetched, derived the same way the item page does
+        // it, so "how old is the rate" is one answer across the app rather than two.
+        val rateDay = cachedRate.second.takeIf { it > 0L }
+            ?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay() }
+            ?: 0L
         val rateTarget = store.rateTarget()
+        // Worked out once and used for both the telling and the disarming, because
+        // the two asking the store separately is how a crossing gets stamped as
+        // said on a morning the message never carried it.
+        val crossing = rateTargetLine(rateTarget, rate, rateDay, today.toEpochDay())
         val summary = digest(
             wishes = store.wishes(),
             pays = store.pays(),
@@ -57,16 +68,17 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             usdSellRate = rate,
             income = store.income(),
             holidays = store.holidays(today.year),
-            rateTarget = rateTarget
+            rateTarget = rateTarget,
+            rateDay = rateDay
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
         if (!summary.empty) notify(summary.title, summary.body)
 
-        // Disarmed after the message rather than before it, and only when the same
-        // rate the digest was built from still says so, because the two reading the
-        // store separately is how a crossing gets stamped as told and never said.
-        if (rateTarget != null && rateTargetReached(rateTarget, rate)) {
+        // Disarmed after the message rather than before it, and on exactly the
+        // condition that produced the line: a threshold silenced for a stale rate
+        // is still waiting, not still spent.
+        if (rateTarget != null && crossing != null) {
             store.saveRateTarget(disarmRateTarget(rateTarget, today.toEpochDay()))
         }
 
