@@ -122,6 +122,19 @@ fun wishSources(wish: Wish): List<WishSource> = wish.sources.ifEmpty {
     }
 }
 
+/** Ukrainian plural for how many shops a wish is watched in. */
+fun shopsLabel(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "магазинів"
+        last == 1 -> "магазин"
+        last in 2..4 -> "магазини"
+        else -> "магазинів"
+    }
+    return "$count $word"
+}
+
 /**
  * The shop whose price the wish is currently showing: the cheapest that answers.
  *

@@ -21,6 +21,9 @@ import androidx.core.net.toUri
 import androidx.lifecycle.lifecycleScope
 import androidx.glance.appwidget.updateAll
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionLayout
@@ -68,6 +71,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -523,6 +527,28 @@ class Store(context: Context) {
     fun recapSeen(): String = prefs.getString("recap", "").orEmpty()
 
     fun saveRecapSeen(month: String) = prefs.edit { putString("recap", month) }
+
+    /**
+     * Whether a foldable section on the wish page is left open.
+     *
+     * One answer per section for the whole app rather than one per wish: the
+     * choice being made is "do I want to see the price history when I open a
+     * thing", and someone who has answered that once should not be asked again on
+     * the next wish. It is also why this is not a field on [Wish] — nothing about
+     * a pair of headphones says whether their owner likes charts.
+     *
+     * Out of [exportJson] for the same reason the rate target and the recap mark
+     * are: it describes how this phone is being looked at rather than what is on
+     * it, and restoring a year-old file should not reach across and refold the
+     * screen.
+     *
+     * [key] is one of the ASCII constants beside [CollapsibleSection], so the
+     * stored name never passes through a locale-sensitive case change.
+     */
+    fun sectionOpen(key: String): Boolean = prefs.getBoolean("sec_$key", false)
+
+    fun saveSectionOpen(key: String, open: Boolean) =
+        prefs.edit { putBoolean("sec_$key", open) }
 
     /** Which figure the Quick Settings tile is currently showing. */
     fun tileFace(): String = prefs.getString("tile", TILE_RATE) ?: TILE_RATE
@@ -2559,6 +2585,108 @@ fun SectionTitle(text: String) {
     )
 }
 
+/**
+ * The names the folded state of each section is stored under.
+ *
+ * Plain ASCII and written out rather than derived from the heading: the headings
+ * are Ukrainian, and a key built by lowercasing one would be a locale-sensitive
+ * transformation standing between a person's choice and the preference that
+ * remembers it.
+ */
+const val SECTION_HISTORY = "history"
+const val SECTION_SHOPS = "shops"
+const val SECTION_PLAN = "plan"
+
+/**
+ * A heading that can fold its own content away, and says what is inside while shut.
+ *
+ * The wish page was a wall: everything it knows, expanded, in one column, with the
+ * description of the thing itself buried below a block of savings arithmetic. The
+ * fix is not only to fold the long parts away, because a row reading "Історія
+ * ціни ⌄" and nothing else makes you open all three to find out which one holds
+ * what you came for — which is the wall again, with taps in front of it. So the
+ * [summary] is not decoration: it is the reason a closed section is allowed to be
+ * closed, and it must be a figure the screen has already worked out rather than a
+ * new one invented here.
+ *
+ * [open] is hoisted, because the answer outlives the screen — see [Store.sectionOpen].
+ *
+ * **No haptic, and that is on purpose.** Haptics.kt sets the budget at five and
+ * spends none of it on an ordinary tap: a vibration on every tap stops being
+ * feedback within a day and becomes the texture of the app. `switched` is defined
+ * for a real two-state change the person made to their own data — a payment
+ * marked paid, a wish put on hold — and folding a heading is neither. It changes
+ * nothing but the view, and the screen answers the tap completely and instantly by
+ * opening. That is also the argument the three-way chart switch on this same page
+ * already makes for staying silent, and this control will end up on more screens
+ * than that one, so a buzz here would be the fastest route to exactly the texture
+ * Haptics.kt is written against.
+ */
+@Composable
+fun CollapsibleSection(
+    title: String,
+    summary: String,
+    open: Boolean,
+    onToggle: (Boolean) -> Unit,
+    content: @Composable () -> Unit
+) {
+    // The chevron is the same gesture as the opening, so it rides the same spring
+    // rather than a second one of its own — and Motion is what makes both of them
+    // snap when the phone has been told to stop animating.
+    val turn by animateFloatAsState(
+        if (open) 180f else 0f,
+        Motion.spatial(),
+        label = "section chevron"
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            // Clickable before the padding, so the whole heading block is the
+            // target rather than the two lines of text inside it.
+            .clickable { onToggle(!open) }
+            .padding(horizontal = Space.screen)
+            .padding(top = Space.xxl, bottom = Space.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = Type.sectionSize,
+                lineHeight = Type.sectionLine,
+                fontWeight = Type.medium
+            )
+            if (summary.isNotBlank()) {
+                Text(
+                    summary,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.xs)
+                )
+            }
+        }
+        Icon(
+            Icons.Default.ExpandMore,
+            if (open) "Згорнути" else "Розгорнути",
+            Modifier.padding(start = Space.md).rotate(turn),
+            tint = TextSecondary
+        )
+    }
+    AnimatedVisibility(
+        visible = open,
+        // Height only. A section holding the price chart must not have the chart
+        // fade or draw itself into existence behind the reveal — the thing has a
+        // press-and-drag scrub on it, and a canvas that is still arriving is a
+        // canvas that owes the finger an answer it cannot give yet. Anchored at the
+        // top so the block grows downward out of its own heading instead of sliding
+        // up from under whatever follows it.
+        enter = expandVertically(Motion.spatial(), expandFrom = Alignment.Top),
+        exit = shrinkVertically(Motion.spatial(), shrinkTowards = Alignment.Top)
+    ) {
+        content()
+    }
+}
+
 /** One number of the savings plan, muted while there is nothing to show yet. */
 @Composable
 fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted: Boolean = false) {
@@ -2636,6 +2764,14 @@ fun SharedTransitionScope.WishDetailScreen(
     val scope = rememberCoroutineScope()
     val store = remember(context) { Store(context) }
 
+    // Whether each of the three detail sections below is unfolded. Seeded from the
+    // preference and written back on every tap, so the choice carries to the next
+    // wish opened rather than resetting with the screen. Shut by default: relieving
+    // the wall is the whole point, and a default of open is the wall.
+    var historyOpen by remember { mutableStateOf(store.sectionOpen(SECTION_HISTORY)) }
+    var shopsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_SHOPS)) }
+    var planOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PLAN)) }
+
     val today = remember { LocalDate.now() }
     // The day the stored rate was fetched, so a converted price can say how old
     // the rate behind it is. Zero until a rate has ever been loaded.
@@ -2660,6 +2796,33 @@ fun SharedTransitionScope.WishDetailScreen(
     // a figure the shop has stopped standing behind.
     val verdict = if (stale) BuyVerdict.UNKNOWN else insight.verdict
     val held = onHold(wish, today.toEpochDay())
+
+    // What each folded heading says while it is shut. Every figure is one the screen
+    // has already worked out: a summary that could disagree with the block under it
+    // would be worse than no summary at all.
+    val historySummary = when {
+        stale -> "Ціна не читається"
+        insight.changes < 1 -> "Змін ціни ще не було"
+        insight.atReferenceLow -> "Найнижча за ${daysLabel(insight.referenceDays)}"
+        else -> "${signedPercent(change)} від першої ціни"
+    }
+    val shopsSummary = run {
+        val watched = wishSources(wish)
+        val cheapest = bestSource(watched)
+        when {
+            watched.isEmpty() -> "Магазинів ще немає"
+            cheapest != null -> "${shopsLabel(watched.size)} · від ${money(cheapest.price)}"
+            else -> "${shopsLabel(watched.size)} · ціни не читаються"
+        }
+    }
+    // The same five cases the tiles inside the section choose between, in one line.
+    val planSummary = when {
+        plan.reached -> "Сума зібрана"
+        byDate && deadlineDate == null -> "Дату покупки ще не обрано"
+        byDate && monthsLeft == 0 -> "Потрібно ${money(plan.remaining)} одразу"
+        plan.needsRate -> "Щомісячну суму ще не вказано"
+        else -> "${money(plan.monthly)} на місяць · ${monthsLabel(plan.months)}"
+    }
 
     // Persist only when something the user typed or picked actually changed.
     LaunchedEffect(savedText, monthlyText, deadlineDay) {
@@ -2825,196 +2988,6 @@ fun SharedTransitionScope.WishDetailScreen(
                 }
             )
 
-            // Where the price comes from. Shown even for one shop, because that is
-            // where the button to add a second one lives — and because a wish with
-            // one shop that has stopped answering needs somewhere to say so that is
-            // not the price itself.
-            SectionTitle("Де стежимо")
-            Column(Modifier.padding(horizontal = Space.screen)) {
-                Card(
-                    Modifier.fillMaxWidth().litEdge(Radius.md),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
-                    shape = Radius.md
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        val sources = wishSources(wish)
-                        val cheapest = bestSource(sources)
-                        sources.forEachIndexed { index, source ->
-                            if (index > 0) Spacer(Modifier.height(Space.md))
-                            SourceRow(
-                                source = source,
-                                cheapest = cheapest != null && source.url == cheapest.url &&
-                                    sources.size > 1,
-                                removable = sources.size > 1,
-                                onOpen = {
-                                    context.startActivity(
-                                        Intent(Intent.ACTION_VIEW, source.url.toUri())
-                                    )
-                                },
-                                onRemove = { onChange(withoutSource(wish, source.url)) }
-                            )
-                        }
-                        sourceSpreadNote(sources)?.let { spread ->
-                            Text(
-                                spread,
-                                color = Accent,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.md)
-                            )
-                        }
-                        TextButton(
-                            { addingSource = true },
-                            Modifier.padding(top = Space.sm)
-                        ) { Text("Додати магазин") }
-                    }
-                }
-            }
-
-            SectionTitle("План накопичення")
-            Column(Modifier.padding(horizontal = Space.screen)) {
-                HeroPanel(
-                    label = if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
-                    value = money(plan.remaining),
-                    caption = "${money(plan.saved)} з ${money(plan.goal)}",
-                    muted = plan.reached,
-                    trailing = {
-                        ProgressRing(plan.progress, diameter = 84.dp, stroke = 9.dp) {
-                            Text(
-                                "${(plan.progress * 100).toInt()}%",
-                                color = if (plan.reached) TextSecondary else AccentInk,
-                                fontSize = Type.captionSize,
-                                fontWeight = Type.strong
-                            )
-                        }
-                    }
-                )
-
-                NumberField("Вже відкладено, ₴", savedText) { savedText = it }
-
-                // The plan can be read from either end. Say what you can put aside
-                // and it answers when; say when you want it and it answers how much.
-                Row(
-                    Modifier.fillMaxWidth().padding(top = Space.lg),
-                    horizontalArrangement = Arrangement.spacedBy(Space.sm)
-                ) {
-                    FilterChip(
-                        !byDate,
-                        { byDate = false; deadlineDay = 0L },
-                        { Text("Знаю суму", fontSize = Type.captionSize) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
-                        byDate,
-                        { byDate = true },
-                        { Text("Знаю дату", fontSize = Type.captionSize) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                // The link between the two halves of the app: what the expenses
-                // screen says is spare is the most that can go here each month.
-                if (!byDate && freeCash > 0) {
-                    val fromFree = savingsPlan(goal, parseAmount(savedText), freeCash)
-                    Row(
-                        Modifier.fillMaxWidth().padding(top = Space.md),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                "Вільно після витрат ${money(freeCash)} на місяць",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine
-                            )
-                            if (!fromFree.reached) {
-                                Text(
-                                    "цією сумою — ${monthsLabel(fromFree.months)}",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize
-                                )
-                            }
-                        }
-                        TextButton({ monthlyText = amountText(freeCash) }) { Text("Взяти") }
-                    }
-                }
-
-                if (byDate) {
-                    OutlinedButton(
-                        { pickingDate = true },
-                        Modifier.fillMaxWidth().padding(top = Space.md),
-                        shape = Radius.sm,
-                        border = BorderStroke(1.dp, HairLine),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
-                    ) {
-                        Icon(Icons.Default.CalendarMonth, null)
-                        Text(
-                            if (deadlineDate != null) "  Купити до ${formatDate(deadlineDate)}"
-                            else "  Обрати дату покупки"
-                        )
-                    }
-                } else {
-                    NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
-                }
-
-                Spacer(Modifier.height(Space.lg))
-                when {
-                    plan.reached -> PlanTile(
-                        "Можна купувати",
-                        "Гроші вже є",
-                        Modifier.fillMaxWidth()
-                    )
-
-                    byDate && deadlineDate == null -> PlanTile(
-                        "Скільки відкладати",
-                        "Оберіть дату покупки",
-                        Modifier.fillMaxWidth(),
-                        muted = true
-                    )
-
-                    byDate && monthsLeft == 0 -> PlanTile(
-                        "Менше місяця до дати",
-                        "Потрібно ${money(plan.remaining)} одразу",
-                        Modifier.fillMaxWidth()
-                    )
-
-                    plan.needsRate -> PlanTile(
-                        "Скільки чекати",
-                        "Впишіть щомісячну суму",
-                        Modifier.fillMaxWidth(),
-                        muted = true
-                    )
-
-                    byDate -> {
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                            PlanTile("Відкладати щомісяця", money(plan.monthly), Modifier.weight(1f))
-                            PlanTile("Внесків до дати", monthsLabel(monthsLeft), Modifier.weight(1f))
-                        }
-                        Spacer(Modifier.height(Space.md))
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                            PlanTile("Це щотижня", money(plan.weekly), Modifier.weight(1f))
-                            PlanTile("Це щодня", money(plan.daily), Modifier.weight(1f))
-                        }
-                    }
-
-                    else -> {
-                        // The daily figure leads because it is the one people act on.
-                        // Field work on a savings app found the same amount framed
-                        // per day rather than per month quadrupled sign-ups.
-                        PlanTile("Це ${money(plan.daily)} на день", monthsLabel(plan.months), Modifier.fillMaxWidth())
-                        Spacer(Modifier.height(Space.md))
-                        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
-                            PlanTile("Щотижня", money(plan.weekly), Modifier.weight(1f))
-                            PlanTile(
-                                "Готово",
-                                formatDate(readyDate(plan.months, today)),
-                                Modifier.weight(1f)
-                            )
-                        }
-                    }
-                }
-            }
-
             // Only where the shop actually said something. A heading over an
             // empty block is worse than no block: it reads as something broken
             // rather than as a shop that publishes nothing.
@@ -3067,167 +3040,385 @@ fun SharedTransitionScope.WishDetailScreen(
                 }
             }
 
-            SectionTitle("Історія ціни")
-            Column(Modifier.padding(horizontal = Space.screen)) {
-                Card(
-                    Modifier.fillMaxWidth().litEdge(Radius.md),
-                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
-                    shape = Radius.md
-                ) {
-                    Column(Modifier.padding(Space.lg)) {
-                        // The range bar goes first because it is the densest thing
-                        // on the screen: where today sits between the cheapest and
-                        // the dearest ever seen, with the usual thirty days shaded
-                        // behind it, read without an axis and without a sentence.
-                        //
-                        // Gone while the reading is doubtful, for the same reason
-                        // the verdict below goes quiet: placing a price the shop has
-                        // stopped standing behind would be a picture of a claim the
-                        // next paragraph refuses to make in words.
-                        if (!stale && insight.highest > insight.lowest) {
-                            PriceRangeBar(insight)
-                            Spacer(Modifier.height(Space.lg))
-                        }
-                        val usdPoints = remember(wish.history) { inDollars(wish.history) }
-                        // Offered only once two points carry a rate. One converted
-                        // point is a number, not a history, and the other two views
-                        // would draw a single dot saying nothing about direction.
-                        val twoCurrencies = hasDollarHistory(wish.history)
-                        val view = if (twoCurrencies) chartView else CHART_HRYVNIA
-                        if (twoCurrencies) {
-                            // One track with one marker, rather than three chips
-                            // that each look independently switchable.
-                            SegmentedControl(
-                                listOf("₴", "$", "Ціна і курс"),
-                                view
-                            ) { chartView = it }
+            // The chart, the verdict and the notes under them. First of the three
+            // because "what has this cost before now" is the question the page is
+            // read for once you know what the thing is.
+            CollapsibleSection(
+                title = "Історія ціни",
+                summary = historySummary,
+                open = historyOpen,
+                onToggle = { historyOpen = it; store.saveSectionOpen(SECTION_HISTORY, it) }
+            ) {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.fillMaxWidth().litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            // The range bar goes first because it is the densest thing
+                            // on the screen: where today sits between the cheapest and
+                            // the dearest ever seen, with the usual thirty days shaded
+                            // behind it, read without an axis and without a sentence.
+                            //
+                            // Gone while the reading is doubtful, for the same reason
+                            // the verdict below goes quiet: placing a price the shop has
+                            // stopped standing behind would be a picture of a claim the
+                            // next paragraph refuses to make in words.
+                            if (!stale && insight.highest > insight.lowest) {
+                                PriceRangeBar(insight)
+                                Spacer(Modifier.height(Space.lg))
+                            }
+                            val usdPoints = remember(wish.history) { inDollars(wish.history) }
+                            // Offered only once two points carry a rate. One converted
+                            // point is a number, not a history, and the other two views
+                            // would draw a single dot saying nothing about direction.
+                            val twoCurrencies = hasDollarHistory(wish.history)
+                            val view = if (twoCurrencies) chartView else CHART_HRYVNIA
+                            if (twoCurrencies) {
+                                // One track with one marker, rather than three chips
+                                // that each look independently switchable.
+                                SegmentedControl(
+                                    listOf("₴", "$", "Ціна і курс"),
+                                    view
+                                ) { chartView = it }
+                                Spacer(Modifier.height(Space.md))
+                            }
+                            when (view) {
+                                // Both lines set to 100 at the first reading: the one
+                                // picture that separates a thing getting dearer from
+                                // the hryvnia moving underneath it.
+                                CHART_REBASED -> RebasedPriceAndRate(wish.history)
+                                CHART_DOLLAR -> PriceChart(usdPoints, format = ::dollars)
+                                else -> PriceChart(
+                                    remember(wish.history, wish.price, wish.checkedDay) {
+                                        chartSeries(wish.history, wish.price, wish.checkedDay)
+                                    },
+                                    // Every chart here is drawn on its own scale, so two
+                                    // of them side by side cannot be compared by eye.
+                                    // This figure is what makes them comparable, and it
+                                    // is the price of being allowed a per-item scale at
+                                    // all. It measures from the left edge of the chart,
+                                    // which is the first price ever recorded. Withheld
+                                    // while the reading is doubtful, like everything else
+                                    // on this card that depends on the price being real.
+                                    note = "від першої ціни ${signedPercent(change)}"
+                                        .takeIf { wish.history.isNotEmpty() && !stale }
+                                )
+                            }
+                            if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
+                                Text(
+                                    "Зараз ${dollars(usdPoints.last().price)} " +
+                                        "· курс записано з кожною ціною",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                            if (twoCurrencies) {
+                                // The line the two-currency history exists to write: a
+                                // flat hryvnia price that has quietly got cheaper, or a
+                                // rise that was only ever the rate moving.
+                                currencyMoveNote(wish.history)?.let { note ->
+                                    Text(
+                                        note,
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine,
+                                        modifier = Modifier.padding(top = Space.sm)
+                                    )
+                                }
+                            }
                             Spacer(Modifier.height(Space.md))
-                        }
-                        when (view) {
-                            // Both lines set to 100 at the first reading: the one
-                            // picture that separates a thing getting dearer from
-                            // the hryvnia moving underneath it.
-                            CHART_REBASED -> RebasedPriceAndRate(wish.history)
-                            CHART_DOLLAR -> PriceChart(usdPoints, format = ::dollars)
-                            else -> PriceChart(
-                                remember(wish.history, wish.price, wish.checkedDay) {
-                                    chartSeries(wish.history, wish.price, wish.checkedDay)
-                                },
-                                // Every chart here is drawn on its own scale, so two
-                                // of them side by side cannot be compared by eye.
-                                // This figure is what makes them comparable, and it
-                                // is the price of being allowed a per-item scale at
-                                // all. It measures from the left edge of the chart,
-                                // which is the first price ever recorded. Withheld
-                                // while the reading is doubtful, like everything else
-                                // on this card that depends on the price being real.
-                                note = "від першої ціни ${signedPercent(change)}"
-                                    .takeIf { wish.history.isNotEmpty() && !stale }
-                            )
-                        }
-                        if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
                             Text(
-                                "Зараз ${dollars(usdPoints.last().price)} " +
-                                    "· курс записано з кожною ціною",
+                                verdictLabel(verdict),
+                                color = when (verdict) {
+                                    BuyVerdict.GOOD -> Accent
+                                    BuyVerdict.POOR -> Negative
+                                    else -> TextSecondary
+                                },
+                                fontSize = Type.cardTitleSize,
+                                fontWeight = Type.medium
+                            )
+                            Text(
+                                when {
+                                    stale -> "Поки ціна не читається, оцінювати нічого"
+                                    verdict == BuyVerdict.UNKNOWN ->
+                                        "Потрібно щонайменше два тижні спостережень і дві зміни ціни"
+                                    verdict == BuyVerdict.GOOD ->
+                                        if (insight.atReferenceLow)
+                                            "Це найнижча ціна за останні ${daysLabel(insight.referenceDays)}"
+                                        else "Ціна в нижній частині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                    verdict == BuyVerdict.FAIR ->
+                                        "Ціна в середині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                    else ->
+                                        "За останні ${daysLabel(insight.referenceDays)} ціна опускалась " +
+                                            "на ${figure(insight.offHighest, 0)}% нижче"
+                                },
                                 color = TextSecondary,
                                 fontSize = Type.captionSize,
-                                modifier = Modifier.padding(top = Space.sm)
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.xs)
                             )
-                        }
-                        if (twoCurrencies) {
-                            // The line the two-currency history exists to write: a
-                            // flat hryvnia price that has quietly got cheaper, or a
-                            // rise that was only ever the rate moving.
-                            currencyMoveNote(wish.history)?.let { note ->
+                            // The shop's own discount, checked against the app's record of
+                            // what the price actually was before it. This is the figure EU
+                            // law makes a shop quote, and the reason the rule exists.
+                            if (!stale) {
+                                priorLowNote(insight)?.let { claim ->
+                                    Text(
+                                        claim,
+                                        color = Negative,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine,
+                                        modifier = Modifier.padding(top = Space.sm)
+                                    )
+                                }
+                            }
+                            // The reference the verdict is actually measured against, as a
+                            // figure rather than a description of one.
+                            referenceWindowNote(insight)?.let { reference ->
                                 Text(
-                                    note,
+                                    reference,
+                                    color = TextPrimary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    fontWeight = Type.medium,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                            if (insight.changes > 1) {
+                                val lowDay = lowestPointDay(wish.history)
+                                Text(
+                                    "За весь час: найнижча ${money(insight.lowest)}" +
+                                        (lowDay?.let { " — ${formatDate(LocalDate.ofEpochDay(it))}" } ?: "") +
+                                        " · найвища ${money(insight.highest)}",
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine,
                                     modifier = Modifier.padding(top = Space.sm)
                                 )
                             }
+                            Text(
+                                listOfNotNull(
+                                    changesLabel(insight.changes),
+                                    insight.daysTracked.takeIf { it > 0 }?.let { daysLabel(it) }
+                                ).joinToString(" за "),
+                                color = TextDisabled,
+                                fontSize = Type.captionSize
+                            )
                         }
-                        Spacer(Modifier.height(Space.md))
-                        Text(
-                            verdictLabel(verdict),
-                            color = when (verdict) {
-                                BuyVerdict.GOOD -> Accent
-                                BuyVerdict.POOR -> Negative
-                                else -> TextSecondary
-                            },
-                            fontSize = Type.cardTitleSize,
-                            fontWeight = Type.medium
-                        )
-                        Text(
-                            when {
-                                stale -> "Поки ціна не читається, оцінювати нічого"
-                                verdict == BuyVerdict.UNKNOWN ->
-                                    "Потрібно щонайменше два тижні спостережень і дві зміни ціни"
-                                verdict == BuyVerdict.GOOD ->
-                                    if (insight.atReferenceLow)
-                                        "Це найнижча ціна за останні ${daysLabel(insight.referenceDays)}"
-                                    else "Ціна в нижній частині діапазону останніх ${daysLabel(insight.referenceDays)}"
-                                verdict == BuyVerdict.FAIR ->
-                                    "Ціна в середині діапазону останніх ${daysLabel(insight.referenceDays)}"
-                                else ->
-                                    "За останні ${daysLabel(insight.referenceDays)} ціна опускалась " +
-                                        "на ${figure(insight.offHighest, 0)}% нижче"
-                            },
-                            color = TextSecondary,
-                            fontSize = Type.captionSize,
-                            lineHeight = Type.captionLine,
-                            modifier = Modifier.padding(top = Space.xs)
-                        )
-                        // The shop's own discount, checked against the app's record of
-                        // what the price actually was before it. This is the figure EU
-                        // law makes a shop quote, and the reason the rule exists.
-                        if (!stale) {
-                            priorLowNote(insight)?.let { claim ->
+                    }
+                }
+            }
+
+            // Where the price comes from. Shown even for one shop, because that is
+            // where the button to add a second one lives — and because a wish with
+            // one shop that has stopped answering needs somewhere to say so that is
+            // not the price itself.
+            CollapsibleSection(
+                title = "Де стежимо",
+                summary = shopsSummary,
+                open = shopsOpen,
+                onToggle = { shopsOpen = it; store.saveSectionOpen(SECTION_SHOPS, it) }
+            ) {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.fillMaxWidth().litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            val sources = wishSources(wish)
+                            val cheapest = bestSource(sources)
+                            sources.forEachIndexed { index, source ->
+                                if (index > 0) Spacer(Modifier.height(Space.md))
+                                SourceRow(
+                                    source = source,
+                                    cheapest = cheapest != null && source.url == cheapest.url &&
+                                        sources.size > 1,
+                                    removable = sources.size > 1,
+                                    onOpen = {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, source.url.toUri())
+                                        )
+                                    },
+                                    onRemove = { onChange(withoutSource(wish, source.url)) }
+                                )
+                            }
+                            sourceSpreadNote(sources)?.let { spread ->
                                 Text(
-                                    claim,
-                                    color = Negative,
+                                    spread,
+                                    color = Accent,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine,
-                                    modifier = Modifier.padding(top = Space.sm)
+                                    modifier = Modifier.padding(top = Space.md)
+                                )
+                            }
+                            TextButton(
+                                { addingSource = true },
+                                Modifier.padding(top = Space.sm)
+                            ) { Text("Додати магазин") }
+                        }
+                    }
+                }
+            }
+
+            // Last, because it is the longest block on the page and the least often
+            // the reason for opening it.
+            CollapsibleSection(
+                title = "План накопичення",
+                summary = planSummary,
+                open = planOpen,
+                onToggle = { planOpen = it; store.saveSectionOpen(SECTION_PLAN, it) }
+            ) {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    HeroPanel(
+                        label = if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
+                        value = money(plan.remaining),
+                        caption = "${money(plan.saved)} з ${money(plan.goal)}",
+                        muted = plan.reached,
+                        trailing = {
+                            ProgressRing(plan.progress, diameter = 84.dp, stroke = 9.dp) {
+                                Text(
+                                    "${(plan.progress * 100).toInt()}%",
+                                    color = if (plan.reached) TextSecondary else AccentInk,
+                                    fontSize = Type.captionSize,
+                                    fontWeight = Type.strong
                                 )
                             }
                         }
-                        // The reference the verdict is actually measured against, as a
-                        // figure rather than a description of one.
-                        referenceWindowNote(insight)?.let { reference ->
-                            Text(
-                                reference,
-                                color = TextPrimary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                fontWeight = Type.medium,
-                                modifier = Modifier.padding(top = Space.sm)
-                            )
-                        }
-                        if (insight.changes > 1) {
-                            val lowDay = lowestPointDay(wish.history)
-                            Text(
-                                "За весь час: найнижча ${money(insight.lowest)}" +
-                                    (lowDay?.let { " — ${formatDate(LocalDate.ofEpochDay(it))}" } ?: "") +
-                                    " · найвища ${money(insight.highest)}",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine,
-                                modifier = Modifier.padding(top = Space.sm)
-                            )
-                        }
-                        Text(
-                            listOfNotNull(
-                                changesLabel(insight.changes),
-                                insight.daysTracked.takeIf { it > 0 }?.let { daysLabel(it) }
-                            ).joinToString(" за "),
-                            color = TextDisabled,
-                            fontSize = Type.captionSize
+                    )
+
+                    NumberField("Вже відкладено, ₴", savedText) { savedText = it }
+
+                    // The plan can be read from either end. Say what you can put aside
+                    // and it answers when; say when you want it and it answers how much.
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = Space.lg),
+                        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                    ) {
+                        FilterChip(
+                            !byDate,
+                            { byDate = false; deadlineDay = 0L },
+                            { Text("Знаю суму", fontSize = Type.captionSize) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            byDate,
+                            { byDate = true },
+                            { Text("Знаю дату", fontSize = Type.captionSize) },
+                            modifier = Modifier.weight(1f)
                         )
                     }
-                }
 
+                    // The link between the two halves of the app: what the expenses
+                    // screen says is spare is the most that can go here each month.
+                    if (!byDate && freeCash > 0) {
+                        val fromFree = savingsPlan(goal, parseAmount(savedText), freeCash)
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = Space.md),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Вільно після витрат ${money(freeCash)} на місяць",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                                if (!fromFree.reached) {
+                                    Text(
+                                        "цією сумою — ${monthsLabel(fromFree.months)}",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                }
+                            }
+                            TextButton({ monthlyText = amountText(freeCash) }) { Text("Взяти") }
+                        }
+                    }
+
+                    if (byDate) {
+                        OutlinedButton(
+                            { pickingDate = true },
+                            Modifier.fillMaxWidth().padding(top = Space.md),
+                            shape = Radius.sm,
+                            border = BorderStroke(1.dp, HairLine),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        ) {
+                            Icon(Icons.Default.CalendarMonth, null)
+                            Text(
+                                if (deadlineDate != null) "  Купити до ${formatDate(deadlineDate)}"
+                                else "  Обрати дату покупки"
+                            )
+                        }
+                    } else {
+                        NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
+                    }
+
+                    Spacer(Modifier.height(Space.lg))
+                    when {
+                        plan.reached -> PlanTile(
+                            "Можна купувати",
+                            "Гроші вже є",
+                            Modifier.fillMaxWidth()
+                        )
+
+                        byDate && deadlineDate == null -> PlanTile(
+                            "Скільки відкладати",
+                            "Оберіть дату покупки",
+                            Modifier.fillMaxWidth(),
+                            muted = true
+                        )
+
+                        byDate && monthsLeft == 0 -> PlanTile(
+                            "Менше місяця до дати",
+                            "Потрібно ${money(plan.remaining)} одразу",
+                            Modifier.fillMaxWidth()
+                        )
+
+                        plan.needsRate -> PlanTile(
+                            "Скільки чекати",
+                            "Впишіть щомісячну суму",
+                            Modifier.fillMaxWidth(),
+                            muted = true
+                        )
+
+                        byDate -> {
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                PlanTile("Відкладати щомісяця", money(plan.monthly), Modifier.weight(1f))
+                                PlanTile("Внесків до дати", monthsLabel(monthsLeft), Modifier.weight(1f))
+                            }
+                            Spacer(Modifier.height(Space.md))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                PlanTile("Це щотижня", money(plan.weekly), Modifier.weight(1f))
+                                PlanTile("Це щодня", money(plan.daily), Modifier.weight(1f))
+                            }
+                        }
+
+                        else -> {
+                            // The daily figure leads because it is the one people act on.
+                            // Field work on a savings app found the same amount framed
+                            // per day rather than per month quadrupled sign-ups.
+                            PlanTile("Це ${money(plan.daily)} на день", monthsLabel(plan.months), Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(Space.md))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                PlanTile("Щотижня", money(plan.weekly), Modifier.weight(1f))
+                                PlanTile(
+                                    "Готово",
+                                    formatDate(readyDate(plan.months, today)),
+                                    Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Outside every fold, because an action that can be folded away is an
+            // action nobody finds. It used to live inside the price history, which
+            // is now a section that spends most of its life shut.
+            Column(Modifier.padding(horizontal = Space.screen)) {
                 Spacer(Modifier.height(Space.xl))
                 // Buying is what the whole page is for, so it gets the filled button
                 // and the full width. Everything else here is secondary — except on

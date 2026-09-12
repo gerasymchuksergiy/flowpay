@@ -559,4 +559,16 @@ class WishSourcesTest {
             filterWishes(listOf(unpriced), "Техніка", "").map { it.id }
         )
     }
+
+    @Test
+    fun `the shop count on a folded heading takes the right plural`() {
+        // The line a shut "Де стежимо" heading carries. Ukrainian needs three
+        // forms, and the teens take the one that does not follow from the last digit.
+        assertEquals("1 магазин", shopsLabel(1))
+        assertEquals("2 магазини", shopsLabel(2))
+        assertEquals("5 магазинів", shopsLabel(5))
+        assertEquals("11 магазинів", shopsLabel(11))
+        assertEquals("21 магазин", shopsLabel(21))
+        assertEquals("22 магазини", shopsLabel(22))
+    }
 }
