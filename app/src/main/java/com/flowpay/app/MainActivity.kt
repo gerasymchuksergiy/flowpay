@@ -61,6 +61,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Path
@@ -3811,6 +3812,76 @@ fun CalculatorScreen(store: Store) {
     }
 }
 
+/**
+ * The month as one bar: what the standing costs take, and what survives them.
+ *
+ * One shape and one colour, because at five subscriptions a palette would be
+ * five arbitrary hues nobody can hold in their head — and the question the bar
+ * answers is not "which one" but "how much of the month is already gone".
+ *
+ * The third state is the reason this is a composable rather than a call to
+ * [PillProgress]. With no income entered there is no denominator, and both a full
+ * bar and an empty one would be a claim: one says the month is spent, the other
+ * says it is free. So the lime runs from the left and fades out, which says
+ * exactly what is true — this much is committed, and how much of the month that
+ * is remains unknown.
+ */
+@Composable
+fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
+    val height = 14.dp
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            committedHeadline(bar),
+            fontSize = Type.sectionSize,
+            lineHeight = Type.sectionLine,
+            fontWeight = Type.strong,
+            color = when (bar.state) {
+                CommittedState.KNOWN -> Accent
+                CommittedState.OVERSPENT -> Negative
+                CommittedState.UNKNOWN -> TextSecondary
+            }
+        )
+        Spacer(Modifier.height(Space.sm))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .background(SurfaceHigh, Radius.pill)
+        ) {
+            when (bar.state) {
+                CommittedState.UNKNOWN -> Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(height)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Accent.copy(alpha = 0.55f), Color.Transparent)
+                            ),
+                            Radius.pill
+                        )
+                )
+
+                else -> Box(
+                    Modifier
+                        .fillMaxWidth(bar.share.coerceIn(0f, 1f))
+                        .height(height)
+                        .background(
+                            if (bar.state == CommittedState.OVERSPENT) Negative else Accent,
+                            Radius.pill
+                        )
+                )
+            }
+        }
+        Spacer(Modifier.height(Space.sm))
+        Text(
+            committedDetail(bar),
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
+    }
+}
+
 @Composable
 fun PaymentsScreen(
     items: List<Pay>,
@@ -3891,45 +3962,28 @@ fun PaymentsScreen(
                         shape = Radius.md
                     ) {
                         Column(Modifier.padding(Space.lg)) {
+                            // Not "here are your subscriptions" but "here is what
+                            // survives them". The same figures as a bite out of
+                            // the month, which is what makes a small number feel
+                            // consequential without exaggerating it by a hryvnia.
                             Row(
                                 Modifier.fillMaxWidth().clickable { editingIncome = true },
-                                verticalAlignment = Alignment.CenterVertically
+                                verticalAlignment = Alignment.Top
                             ) {
                                 Column(Modifier.weight(1f)) {
                                     Text(
-                                        if (month.unknown) "Вкажіть дохід" else "Вільно на місяць",
+                                        if (month.unknown) "Вкажіть дохід" else "Місяць",
                                         color = TextSecondary,
                                         fontSize = Type.captionSize
                                     )
-                                    Spacer(Modifier.height(Space.xs))
-                                    Text(
-                                        when {
-                                            month.unknown -> "щоб бачити, скільки лишається"
-                                            else -> money(month.free)
-                                        },
-                                        fontSize = if (month.unknown) Type.bodySize else Type.sectionSize,
-                                        lineHeight = Type.sectionLine,
-                                        fontWeight = if (month.unknown) Type.regular else Type.strong,
-                                        color = when {
-                                            month.unknown -> TextDisabled
-                                            month.overspent -> Negative
-                                            else -> Accent
-                                        }
-                                    )
-                                    if (!month.unknown) {
-                                        Text(
-                                            if (month.overspent) "Витрати перевищують дохід ${money(month.income)}"
-                                            else "З доходу ${money(month.income)}",
-                                            color = TextSecondary,
-                                            fontSize = Type.captionSize
-                                        )
-                                    }
+                                    Spacer(Modifier.height(Space.sm))
+                                    CommittedBar(committedOf(month))
                                 }
+                                Spacer(Modifier.width(Space.md))
                                 Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
                             }
                             if (items.isNotEmpty()) {
-                                Spacer(Modifier.height(Space.sm))
-                                LeaderRow("Разом на місяць", money(monthly.total))
+                                Spacer(Modifier.height(Space.md))
                                 // What the month actually cost, beside what it was
                                 // meant to. Until this row existed the screen could
                                 // only ever state the plan.

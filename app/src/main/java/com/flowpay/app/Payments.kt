@@ -513,6 +513,88 @@ fun budget(income: Double, expenses: MonthlyTotal): Budget {
     )
 }
 
+// ------------------------------------------------- what survives the standing costs
+
+/**
+ * The month as one bar: what is already spoken for, and what is left.
+ *
+ * The framing is the whole value of it. "Ось твої підписки" is a list nobody acts
+ * on; "ось що від місяця лишається" is the same figures as a bite out of the
+ * month, which is how the apps that solved this present it — a payday view, a
+ * committed-spending line subtracted from what there is to spend. It makes a small
+ * number feel consequential without exaggerating it by a hryvnia.
+ */
+enum class CommittedState {
+    /** There is an income to measure against, and the month fits inside it. */
+    KNOWN,
+
+    /** The standing costs are larger than the income. */
+    OVERSPENT,
+
+    /** No income has been entered, so there is no denominator and no share. */
+    UNKNOWN
+}
+
+data class Committed(
+    /** What the standing costs take this month. Known in every state. */
+    val committed: Double,
+    val income: Double,
+    /** Income minus the standing costs. Negative when the month does not fit. */
+    val left: Double,
+    /**
+     * The share of the month already spoken for, 0..1.
+     *
+     * Zero in [CommittedState.UNKNOWN], where it means nothing at all and the bar
+     * must not be drawn from it: a bar with an invented denominator is the thing
+     * this app has refused to build before.
+     */
+    val share: Float,
+    val state: CommittedState
+)
+
+/** The bar, from the budget the screen already has. */
+fun committedOf(month: Budget): Committed = Committed(
+    committed = month.expenses,
+    income = month.income,
+    left = month.free,
+    share = when {
+        month.unknown -> 0f
+        month.overspent -> 1f
+        month.income <= 0.0 -> 0f
+        else -> (month.expenses / month.income).coerceIn(0.0, 1.0).toFloat()
+    },
+    state = when {
+        month.unknown -> CommittedState.UNKNOWN
+        month.overspent -> CommittedState.OVERSPENT
+        else -> CommittedState.KNOWN
+    }
+)
+
+/**
+ * The line above the bar: what survives, not what went.
+ *
+ * The remainder leads in every state it can lead in, because that is the figure a
+ * person decides with. Where there is no remainder to state, the committed figure
+ * stands alone rather than being dressed in a share of something unknown.
+ */
+fun committedHeadline(bar: Committed): String = when (bar.state) {
+    CommittedState.KNOWN -> "Лишається ${money(bar.left)}"
+    CommittedState.OVERSPENT -> "Бракує ${money(-bar.left)}"
+    CommittedState.UNKNOWN -> "${money(bar.committed)} уже зайнято"
+}
+
+/** The line under it, which is where the standing costs are finally named. */
+fun committedDetail(bar: Committed): String = when (bar.state) {
+    CommittedState.KNOWN ->
+        "Постійні витрати ${money(bar.committed)} з ${money(bar.income)}"
+
+    CommittedState.OVERSPENT ->
+        "Постійні витрати ${money(bar.committed)} перевищують дохід ${money(bar.income)}"
+
+    // No share, no bar, no invented income — just the honest missing half.
+    CommittedState.UNKNOWN -> "Скільки лишається — скажу, щойно буде вказано дохід"
+}
+
 /**
  * The day of the month a payment actually lands on.
  *
