@@ -3466,11 +3466,16 @@ fun SharedTransitionScope.WishCard(
         priceInsight(wish.history, wish.price, wish.checkedDay)
             .takeIf { it.highest > it.lowest }
     }
+    // The card's own outline says whether the price you named has arrived. A held
+    // wish is excluded on purpose: a hold is you telling the app not to raise this
+    // until March, and a card that reshaped itself to say "now!" would be the app
+    // overruling the one decision the hold exists to protect.
+    val reached = targetHit(wish, today) && !held
     Card(
         onClick = onOpen,
         modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-        shape = Radius.md
+        shape = wishCardShape(reached)
     ) {
         Box {
             if (wish.image.isNotBlank()) {

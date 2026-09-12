@@ -64,6 +64,10 @@ dependencies {
  // between a wishlist card and its page depends on it directly.
  implementation("androidx.compose.animation:animation")
  implementation("androidx.compose.material:material-icons-extended")
+ // Polygons and the morph between them. Not part of the Compose BOM — it is a
+ // plain graphics library with no Compose dependency of its own — so it carries
+ // its own version. The AAR declares minSdk 23, below this app's floor of 26.
+ implementation("androidx.graphics:graphics-shapes:1.1.0")
  implementation("io.coil-kt:coil-compose:2.7.0")
  implementation("androidx.work:work-runtime-ktx:2.11.2")
  // The home screen widget. Glance is versioned on its own rather than through the
