@@ -14,8 +14,22 @@ package com.flowpay.app
  * about time has a date behind it.
  */
 
-/** One observed price and the epoch day it was seen on. Day zero means unknown. */
-data class PricePoint(val price: Double, val day: Long)
+/**
+ * One observed price and the epoch day it was seen on. Day zero means unknown.
+ *
+ * The rate travels with the price rather than being looked up later, because the
+ * question the dollar chart answers — did this actually get dearer, or did the
+ * hryvnia move — cannot be answered by dividing an old price by today's rate.
+ * That would show the item tracking the currency perfectly and hide the trend.
+ */
+data class PricePoint(
+    val price: Double,
+    val day: Long,
+    /** Hryvnia per dollar on the day the price was read. Zero before this was recorded. */
+    val rate: Double = 0.0,
+    /** [SOURCE_MONOBANK] or [SOURCE_NBU]: the two are not the same number. */
+    val rateSource: String = ""
+)
 
 /** How many recorded changes to keep. Only changes are stored, so this is a long memory. */
 const val HISTORY_CAP = 180
@@ -27,48 +41,117 @@ const val HISTORY_CAP = 180
  * beside it, so an unchanged price needs no entry. That is what keeps the history
  * meaningful instead of a wall of duplicates.
  */
-fun appendPrice(history: List<PricePoint>, price: Double, today: Long): List<PricePoint> {
+fun appendPrice(
+    history: List<PricePoint>,
+    price: Double,
+    today: Long,
+    rate: Double = 0.0,
+    rateSource: String = ""
+): List<PricePoint> {
     if (price <= 0.0) return history
     val last = history.lastOrNull()
     if (last != null && last.price == price) return history
-    return (history + PricePoint(price, today)).takeLast(HISTORY_CAP)
+    return (history + PricePoint(price, today, rate.coerceAtLeast(0.0), rateSource))
+        .takeLast(HISTORY_CAP)
 }
 
 enum class BuyVerdict {
-    /** At or near the cheapest this has been seen. */
+    /** At or near the cheapest of the reference window. */
     GOOD,
 
-    /** In the lower half of the observed range. */
+    /** In the lower half of the window's range. */
     FAIR,
 
-    /** Near the top of the range: waiting has usually paid off before. */
+    /** Near the top of the window's range: waiting has usually paid off before. */
     POOR,
 
     /** Too little history to say anything honest. */
     UNKNOWN
 }
 
+/**
+ * The span a verdict is measured over.
+ *
+ * Thirty days is the window EU law puts on an announced discount, and it is the
+ * right one here for the same reason: it is short enough that a shop cannot
+ * establish a high "usual" price by simply waiting, and long enough to contain a
+ * normal sale cycle.
+ */
+const val REFERENCE_WINDOW_DAYS = 30
+
+/**
+ * The prices this item actually cost on each day of the trailing window.
+ *
+ * Only changes are recorded, so the points dated inside the window are not the
+ * whole story: a price set a year ago and never touched has no point in the last
+ * thirty days at all, yet it is what the item cost on every one of them. The last
+ * reading before the window opened is therefore carried in, and the current price
+ * closes the window. Undated points — histories written before dates existed —
+ * cannot be placed on the axis and are left out.
+ */
+fun windowPrices(
+    history: List<PricePoint>,
+    current: Double,
+    today: Long,
+    window: Int = REFERENCE_WINDOW_DAYS
+): List<PricePoint> {
+    if (today <= 0L) return emptyList()
+    val dated = history.filter { it.price > 0.0 && it.day in 1..today }.sortedBy { it.day }
+    val opens = today - window + 1
+    val inside = dated.filter { it.day >= opens }
+    val carried = dated.lastOrNull { it.day < opens }
+    val now = current.takeIf { it > 0.0 }?.let { PricePoint(it, today) }
+    return listOfNotNull(carried) + inside + listOfNotNull(now)
+}
+
+/** A price the app's own history says a later "discount" should be measured from. */
+data class PriorLow(val price: Double, val day: Long)
+
 data class PriceInsight(
     val current: Double,
+    /** The cheapest ever recorded, across the whole history. */
     val lowest: Double,
+    /** The dearest ever recorded, across the whole history. */
     val highest: Double,
     /** The current price is the lowest yet recorded. */
     val atLowest: Boolean,
     /**
-     * Where the current price sits in the observed range: zero at the cheapest ever
-     * seen, one at the dearest. Lower is better.
+     * Where the current price sits in the reference window's range: zero at the
+     * cheapest of the last thirty days, one at the dearest. Lower is better.
      */
     val position: Double,
-    /** How far below the highest observed price the current one is, as a percentage. */
+    /** How far below the highest price of the window the current one is, as a percentage. */
     val offHighest: Double,
     /** Days between the first recorded change and the last check. */
     val daysTracked: Int,
     val changes: Int,
-    val verdict: BuyVerdict
+    val verdict: BuyVerdict,
+    /** The cheapest the item actually cost during the window. Zero when nothing dates it. */
+    val referenceLow: Double = 0.0,
+    /** The dearest it cost during the window. Zero when nothing dates it. */
+    val referenceHigh: Double = 0.0,
+    /** How many days of the window the history actually covers, at most the window itself. */
+    val referenceDays: Int = 0,
+    /** The current price is at or below the window's low. */
+    val atReferenceLow: Boolean = false,
+    /**
+     * Set only when the history shows the price raised inside the window and then
+     * cut: the shop's "was" figure is the raise, and this is the real prior low a
+     * discount ought to be measured from. Null whenever that pattern is absent.
+     */
+    val priorLow: PriorLow? = null
 )
 
 /**
  * Judges whether now looks like a good moment to buy.
+ *
+ * Measured against the cheapest of the trailing thirty days rather than the whole
+ * tracked range. Judging against everything ever seen makes the verdict drift: an
+ * item watched for a year accumulates one freak low and one freak high, after which
+ * every ordinary price sits near the top of that range and reads as "дорого" for
+ * ever, while a real fall this week barely moves the needle. Thirty days is also the
+ * window EU law puts on an announced discount, for the related reason that a shop
+ * can otherwise manufacture a high reference price simply by waiting.
  *
  * Deliberately conservative about saying anything at all: with fewer than two
  * recorded changes or less than a week of watching, there is no basis for an
@@ -77,7 +160,8 @@ data class PriceInsight(
 fun priceInsight(
     history: List<PricePoint>,
     current: Double,
-    lastCheckedDay: Long
+    lastCheckedDay: Long,
+    window: Int = REFERENCE_WINDOW_DAYS
 ): PriceInsight {
     val prices = history.map { it.price }.filter { it > 0.0 } + listOf(current).filter { it > 0.0 }
     if (prices.isEmpty()) {
@@ -85,9 +169,6 @@ fun priceInsight(
     }
     val lowest = prices.min()
     val highest = prices.max()
-    val range = highest - lowest
-    val position = if (range > 0.0) ((current - lowest) / range).coerceIn(0.0, 1.0) else 0.0
-    val offHighest = if (highest > 0.0) (highest - current) / highest * 100 else 0.0
 
     val knownDays = history.map { it.day }.filter { it > 0L }
     val firstDay = knownDays.minOrNull()
@@ -97,10 +178,35 @@ fun priceInsight(
         0
     }
 
+    val recent = windowPrices(history, current, lastCheckedDay, window)
+    // With nothing dated, the window can say nothing, and the whole range is the
+    // only thing left to measure against. The verdict below refuses to speak in
+    // that case anyway, because daysTracked is then zero.
+    val referenceLow = recent.minOfOrNull { it.price } ?: lowest
+    val referenceHigh = recent.maxOfOrNull { it.price } ?: highest
+    val referenceDays = if (firstDay == null || lastCheckedDay <= 0L) {
+        0
+    } else {
+        minOf(window.toLong(), lastCheckedDay - firstDay + 1).coerceAtLeast(0L).toInt()
+    }
+
+    val range = referenceHigh - referenceLow
+    val position = if (range > 0.0) ((current - referenceLow) / range).coerceIn(0.0, 1.0) else 0.0
+    val offHighest = if (referenceHigh > 0.0) (referenceHigh - current) / referenceHigh * 100 else 0.0
+
+    // A fall is in progress and the window was cheaper than the fall has reached:
+    // that, and only that, is the inflate-then-discount pattern worth naming.
+    val priorLow = if (current > 0.0 && current < referenceHigh && referenceLow < current) {
+        recent.filter { it.price == referenceLow }.maxByOrNull { it.day }
+            ?.let { PriorLow(it.price, it.day) }
+    } else {
+        null
+    }
+
     val verdict = when {
         history.size < 2 || daysTracked < 7 -> BuyVerdict.UNKNOWN
         range == 0.0 -> BuyVerdict.FAIR
-        current <= lowest || position <= 0.2 -> BuyVerdict.GOOD
+        current <= referenceLow || position <= 0.2 -> BuyVerdict.GOOD
         position <= 0.6 -> BuyVerdict.FAIR
         else -> BuyVerdict.POOR
     }
@@ -114,8 +220,40 @@ fun priceInsight(
         offHighest = offHighest,
         daysTracked = daysTracked,
         changes = history.size,
-        verdict = verdict
+        verdict = verdict,
+        referenceLow = referenceLow,
+        referenceHigh = referenceHigh,
+        referenceDays = referenceDays,
+        atReferenceLow = current > 0.0 && current <= referenceLow,
+        priorLow = priorLow
     )
+}
+
+/**
+ * What the window is allowed to call itself.
+ *
+ * A caption reading "за 30 днів" above eleven days of history would be a claim the
+ * app cannot support, and it is exactly the kind of quiet overstatement this whole
+ * change exists to remove.
+ */
+fun referenceWindowNote(insight: PriceInsight): String? = when {
+    insight.referenceDays <= 0 -> null
+    insight.referenceDays >= REFERENCE_WINDOW_DAYS -> "Найнижча за 30 днів ${money(insight.referenceLow)}"
+    else -> "Найнижча за ${daysLabel(insight.referenceDays)} ${money(insight.referenceLow)}"
+}
+
+/**
+ * The sentence to put beside a shop's own discount claim.
+ *
+ * EU law makes a shop quote the lowest price of the thirty days before a reduction,
+ * precisely so that raising a price in order to cut it cannot be sold as a saving.
+ * Where the app has watched the whole window itself, it can check the claim, and
+ * this is the figure the shop ought to have printed.
+ */
+fun priorLowNote(insight: PriceInsight): String? {
+    val prior = insight.priorLow ?: return null
+    return "Магазин рахує знижку від ${money(insight.referenceHigh)}, але за останні " +
+        "${daysLabel(insight.referenceDays)} ціна вже була ${money(prior.price)}"
 }
 
 /** What to put on the card for each verdict. */
@@ -166,6 +304,9 @@ enum class AlertKind {
     /** Crossed the target the user set. Always worth saying. */
     TARGET_REACHED,
 
+    /** A page that had stopped giving a price is giving one again. */
+    BACK_IN_STOCK,
+
     /** Cheaper than it has ever been seen. */
     NEW_LOW,
 
@@ -193,6 +334,14 @@ fun priceAlertFor(previous: Wish, newPrice: Double): PriceAlertDecision {
     val target = previous.targetPrice
     if (target > 0 && previous.price > target && newPrice <= target) {
         return PriceAlertDecision(AlertKind.TARGET_REACHED, newPrice)
+    }
+
+    // Ranked above a new low because it is the rarer fact and the one that expires:
+    // a thing back in stock can go out again, whereas a low price is still a low
+    // price tomorrow. The price alone would announce nothing, since a page that
+    // stopped answering usually resumes at the figure it left off at.
+    if (isStale(previous.freshness)) {
+        return PriceAlertDecision(AlertKind.BACK_IN_STOCK, newPrice)
     }
 
     val seen = previous.history.map { it.price }.filter { it > 0 } + previous.price
@@ -270,6 +419,84 @@ fun rateHistoryNote(history: List<PricePoint>, today: Long): String {
     val span = (today - first).toInt()
     if (span <= 0) return "Записую курс щодня, поки що ${entriesLabel(history.size)}"
     return "${entriesLabel(history.size)} за ${daysLabel(span + 1)}"
+}
+
+// -------------------------------------------------------- the price in dollars
+
+/**
+ * The same history restated in dollars.
+ *
+ * Points recorded before the rate was travel with the price are dropped rather
+ * than converted at today's rate. A year-old hryvnia price divided by this
+ * morning's dollar is not what the item cost in dollars then, and a chart drawn
+ * that way would show the price tracking the currency exactly — hiding the one
+ * trend the second currency exists to reveal.
+ */
+fun inDollars(history: List<PricePoint>): List<PricePoint> =
+    history.filter { it.price > 0.0 && it.rate > 0.0 }
+        .map { PricePoint(it.price / it.rate, it.day, it.rate, it.rateSource) }
+
+/**
+ * Whether the dollar view has enough behind it to be offered at all.
+ *
+ * One converted point is a number, not a history: the switch would draw a single
+ * bar and say nothing about direction, which is the only thing it is there for.
+ */
+fun hasDollarHistory(history: List<PricePoint>): Boolean = inDollars(history).size >= 2
+
+/**
+ * How far the price moved in each currency over the same two readings.
+ *
+ * The point of recording the rate. Under a floating hryvnia a price that has not
+ * moved has still got cheaper in dollars, and one that "rose 5%" may have done
+ * nothing but track the rate. Both figures are measured between the first and last
+ * points that carry a rate, so the gap between them is the currency and nothing else.
+ */
+data class CurrencyMove(
+    val fromDay: Long,
+    val toDay: Long,
+    val hryvniaPercent: Double,
+    val dollarPercent: Double
+)
+
+/** Null until two readings carry a rate, because one cannot be compared with itself. */
+fun currencyMove(history: List<PricePoint>): CurrencyMove? {
+    val dated = history.filter { it.price > 0.0 && it.rate > 0.0 }
+    val first = dated.firstOrNull() ?: return null
+    val last = dated.lastOrNull() ?: return null
+    if (first === last) return null
+    val firstDollars = first.price / first.rate
+    val lastDollars = last.price / last.rate
+    return CurrencyMove(
+        fromDay = first.day,
+        toDay = last.day,
+        hryvniaPercent = (last.price - first.price) / first.price * 100,
+        dollarPercent = (lastDollars - firstDollars) / firstDollars * 100
+    )
+}
+
+/**
+ * The line that only the two-currency history can write.
+ *
+ * Said out loud only when the currencies disagree about the direction, or when one
+ * moved and the other did not. When both say the same thing the second figure adds
+ * nothing, and a caption that always appears stops being read.
+ */
+fun currencyMoveNote(history: List<PricePoint>): String? {
+    val move = currencyMove(history) ?: return null
+    val flat = 1.0
+    val hryvnia = move.hryvniaPercent
+    val dollar = move.dollarPercent
+    val sameStory = kotlin.math.abs(hryvnia - dollar) < flat
+    if (sameStory) return null
+    return "У гривні ${signedPercent(hryvnia)}, у доларі ${signedPercent(dollar)} — " +
+        "різницю зробив курс"
+}
+
+/** "+5%" / "−3%", with the minus sign Ukrainian typography actually uses. */
+fun signedPercent(value: Double): String {
+    val rounded = "%.1f".format(kotlin.math.abs(value))
+    return if (value < 0) "−$rounded%" else "+$rounded%"
 }
 
 /** "41,10 – 41,80" — the span the recorded rate covered, or null while it has not moved. */

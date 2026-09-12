@@ -110,7 +110,27 @@ data class Wish(
      * Empty on a page that states one price, which is most of them. On a page of
      * editions or sizes it is the anchor that keeps later checks on the same one.
      */
-    val variant: String = ""
+    val variant: String = "",
+    /**
+     * How much the price above is currently worth believing.
+     *
+     * Defaults to [Freshness.OK] so that every wish saved before this existed reads
+     * back the way it was last seen: those were all read from a page successfully,
+     * and starting them as doubtful would put a warning on a whole healthy list.
+     */
+    val freshness: Freshness = Freshness.OK,
+    /**
+     * Epoch day this wish was added. Zero on wishes saved before it was recorded;
+     * [addedDay] recovers those from the first price ever taken for them.
+     */
+    val addedDay: Long = 0L,
+    /**
+     * Epoch day a deliberate hold runs out. Zero means no hold.
+     *
+     * A wishlist's job is to put distance between the urge and the decision, and
+     * the list alone does not do that — this is the app using time as the tool.
+     */
+    val holdUntil: Long = 0L
 )
 
 data class Pay(
@@ -208,10 +228,16 @@ class Store(context: Context) {
             targetPrice = o.optDouble("t", 0.0),
             category = o.optString("c", "Інше"),
             // Histories written before dates existed are bare numbers. They are read
-            // as points with an unknown day rather than being thrown away.
+            // as points with an unknown day rather than being thrown away, and the
+            // same goes for points written before the rate travelled with them.
             history = (0 until recorded.length()).mapNotNull { index ->
                 recorded.optJSONObject(index)?.let { point ->
-                    PricePoint(point.optDouble("p", 0.0), point.optLong("d", 0L))
+                    PricePoint(
+                        point.optDouble("p", 0.0),
+                        point.optLong("d", 0L),
+                        point.optDouble("r", 0.0),
+                        point.optString("rs")
+                    )
                 } ?: recorded.optDouble(index, 0.0).takeIf { it > 0 }?.let { PricePoint(it, 0L) }
             }.filter { it.price > 0 },
             checkedDay = o.optLong("cd", 0L),
@@ -219,7 +245,12 @@ class Store(context: Context) {
             variant = o.optString("v"),
             saved = o.optDouble("s", 0.0),
             monthlyPlan = o.optDouble("m", 0.0),
-            deadline = o.optLong("dl", 0L)
+            deadline = o.optLong("dl", 0L),
+            // Anything saved before freshness existed was last seen being read from
+            // a page, so that is the honest default rather than a fresh doubt.
+            freshness = freshnessFrom(o.optString("fr")),
+            addedDay = o.optLong("ad", 0L),
+            holdUntil = o.optLong("hu", 0L)
         )
     }
 
@@ -230,13 +261,17 @@ class Store(context: Context) {
                 "h",
                 JSONArray().apply {
                     it.history.forEach { point ->
-                        put(JSONObject().put("p", point.price).put("d", point.day))
+                        put(
+                            JSONObject().put("p", point.price).put("d", point.day)
+                                .put("r", point.rate).put("rs", point.rateSource)
+                        )
                     }
                 }
             )
             .put("cd", it.checkedDay)
             .put("s", it.saved).put("m", it.monthlyPlan).put("dl", it.deadline)
             .put("np", it.notifiedPrice).put("v", it.variant)
+            .put("fr", it.freshness.name).put("ad", it.addedDay).put("hu", it.holdUntil)
     })
 
     fun pays(): List<Pay> = jsonList("pay") {
@@ -365,30 +400,62 @@ fun isSupportedWebUrl(value: String): Boolean = runCatching {
     url.protocol in setOf("http", "https") && url.host.isNotBlank()
 }.getOrDefault(false)
 
-fun refreshedWish(previous: Wish, current: Wish, today: Long = LocalDate.now().toEpochDay()): Wish =
+fun refreshedWish(
+    previous: Wish,
+    current: Wish,
+    today: Long = LocalDate.now().toEpochDay(),
+    rate: FxRate = FxRate()
+): Wish =
     previous.copy(
         image = current.image.ifBlank { previous.image },
         price = current.price,
-        history = appendPrice(previous.history, current.price, today),
-        checkedDay = today
+        history = appendPrice(previous.history, current.price, today, rate.sell, rate.source),
+        checkedDay = today,
+        freshness = if (current.price > 0.0) Freshness.OK else previous.freshness
     )
 
 /**
  * Re-reads a page and follows the variant this wish was set to.
  *
- * Kept apart from [refreshedWish] because the interesting case is the one where
- * nothing is returned: a page that no longer carries the followed variant must
- * leave the stored price alone rather than swap in a neighbouring edition.
+ * The interesting cases are the two that are not a price. A page that lost the
+ * followed variant, and a page that lost its prices altogether, must both leave the
+ * stored figure alone rather than swap in a neighbouring edition — but they are no
+ * longer silent about it, because a stored figure that nobody can buy at is exactly
+ * what used to sit on the card looking current. The wish comes back carrying which
+ * of the two happened; only [Reading.Priced] touches the price or the history.
  */
-fun refreshedFromPage(previous: Wish, html: String, today: Long = LocalDate.now().toEpochDay()): Wish? {
-    val match = matchOffer(extractOffers(html), previous.variant, previous.price)
-    val offer = (match as? OfferMatch.Found)?.offer ?: return null
-    return previous.copy(
-        price = offer.price,
-        history = appendPrice(previous.history, offer.price, today),
-        checkedDay = today
+fun readWish(
+    previous: Wish,
+    html: String,
+    today: Long = LocalDate.now().toEpochDay(),
+    rate: FxRate = FxRate()
+): Reading = when (val match = matchOffer(extractOffers(html), previous.variant, previous.price)) {
+    is OfferMatch.Found -> Reading.Priced(
+        previous.copy(
+            price = match.offer.price,
+            history = appendPrice(previous.history, match.offer.price, today, rate.sell, rate.source),
+            checkedDay = today,
+            freshness = Freshness.OK
+        )
+    )
+    // The checked day still moves: the page was genuinely looked at, and the item
+    // screen says how long ago that was whatever the answer turned out to be.
+    OfferMatch.Missing -> Reading.Stale(
+        previous.copy(checkedDay = today, freshness = Freshness.OUT_OF_STOCK)
+    )
+    OfferMatch.None -> Reading.Stale(
+        previous.copy(checkedDay = today, freshness = Freshness.UNREADABLE)
     )
 }
+
+/**
+ * The shop answered that the page is not there.
+ *
+ * Distinct from a failed connection on purpose: a 404 is a fact about the item
+ * worth showing on its card, whereas a timeout is a fact about the phone and must
+ * leave every card exactly as it was.
+ */
+class PageGone(val code: Int) : java.io.IOException("Сторінка більше не відповідає ($code)")
 
 /** Fetches a shop page. Separate from parsing it, so both uses share one request. */
 suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
@@ -399,30 +466,45 @@ suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
     connection.connectTimeout = 15_000
     connection.readTimeout = 15_000
     connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
+    // Checked rather than left to the stream, which throws the same
+    // FileNotFoundException for a 404 as for several failures that say nothing
+    // about the item. The card is allowed to claim the page is gone only here.
+    val code = connection.responseCode
+    if (code == 404 || code == 410) throw PageGone(code)
     connection.inputStream.bufferedReader().use { it.readText() }
 }
 
-suspend fun product(link: String): Wish {
+suspend fun product(link: String, rate: FxRate = FxRate()): Wish {
     val normalizedLink = link.trim()
     val html = pageHtml(normalizedLink)
     return parseProduct(
         html,
         normalizedLink,
         System.currentTimeMillis().toString(),
-        LocalDate.now().toEpochDay()
+        LocalDate.now().toEpochDay(),
+        rate
     )
 }
 
 /**
  * Re-reads a wish's page and follows the variant it was set to.
  *
- * Null means the reading is not usable — the page lost its prices, or lost the
- * edition being followed — and a null must leave the stored price alone. Silently
- * adopting a neighbouring variant's price would corrupt the history a verdict is
- * computed from, and nothing on screen would show it had happened.
+ * Never throws. Every outcome the fetch can tell apart is a [Reading], including
+ * the two that leave the price alone: silently adopting a neighbouring variant's
+ * price would corrupt the history a verdict is computed from, and nothing on screen
+ * would show it had happened. A page that answers 404 is the item's own news and
+ * reaches the card; anything else that fails is the network's, and changes nothing.
  */
-suspend fun refreshed(previous: Wish): Wish? =
-    refreshedFromPage(previous, pageHtml(previous.url))
+suspend fun refreshed(previous: Wish, today: Long, rate: FxRate): Reading {
+    val html = try {
+        pageHtml(previous.url)
+    } catch (gone: PageGone) {
+        return Reading.Stale(previous.copy(checkedDay = today, freshness = Freshness.GONE))
+    } catch (failure: Exception) {
+        return Reading.Failed
+    }
+    return readWish(previous, html, today, rate)
+}
 
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
 
@@ -608,11 +690,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     say(refreshMessage(0, 0))
                 } else {
                     say("Перевіряю ціни…")
-                    val fetched = wishes.map { runCatching { refreshed(it) }.getOrNull() }
+                    val day = LocalDate.now().toEpochDay()
+                    val rate = store.fxRate().first
+                    val fetched = wishes.map { refreshed(it, day, rate) }
                     val result = applyFollowed(wishes, fetched)
                     wishes = result.wishes
                     store.saveWishes(result.wishes)
                     say(refreshMessage(result.updated, result.wishes.size))
+                    staleMessage(staleCount(result.wishes))?.let { say(it) }
                 }
             }
             is AppCommand.AddShared -> when (val link = sharedLink(command.text, wishes)) {
@@ -622,18 +707,24 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     // The link is saved before the page is read, so a shop that
                     // blocks the fetch costs a name and a price, never the item.
                     val id = System.currentTimeMillis().toString()
-                    val saved = wishes + placeholderWish(link.url, id)
+                    val day = LocalDate.now().toEpochDay()
+                    val rate = store.fxRate().first
+                    val saved = wishes + placeholderWish(link.url, id, day)
                     wishes = saved
                     store.saveWishes(saved)
                     say("Додано до бажань, шукаю ціну…")
-                    val fetched = runCatching { product(link.url) }.getOrNull()
+                    val fetched = runCatching { product(link.url, rate) }.getOrNull()
                     if (fetched == null) {
-                        say("Сторінка не читається — посилання збережено")
+                        say("Сторінка не читається — впишіть ціну вручну")
                     } else {
                         // The shop's title replaces the placeholder, but the row
                         // keeps its id so nothing else has to be told it changed.
                         val filled = wishes.map {
-                            if (it.id == id) refreshedWish(it, fetched).copy(name = fetched.name) else it
+                            if (it.id == id) {
+                                refreshedWish(it, fetched, day, rate).copy(name = fetched.name)
+                            } else {
+                                it
+                            }
                         }
                         wishes = filled
                         store.saveWishes(filled)
@@ -892,6 +983,9 @@ fun WishlistScreen(
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // Read once, so a session that crosses midnight cannot change its mind about
+    // which wishes are still on hold halfway down the list.
+    val today = remember { LocalDate.now() }
 
     val openedWish = opened?.let { id -> items.firstOrNull { it.id == id } }
     // The list and the page live in one composition, so the photo can travel
@@ -933,11 +1027,16 @@ fun WishlistScreen(
                         onClick = {
                             scope.launch {
                                 refreshing = true
-                                val fetched = items.map { runCatching { refreshed(it) }.getOrNull() }
+                                val day = LocalDate.now().toEpochDay()
+                                val rate = store.fxRate().first
+                                val fetched = items.map { refreshed(it, day, rate) }
                                 val result = applyFollowed(items, fetched)
                                 save(result.wishes)
                                 refreshing = false
-                                message = refreshMessage(result.updated, items.size)
+                                message = listOfNotNull(
+                                    refreshMessage(result.updated, items.size),
+                                    staleMessage(staleCount(result.wishes))
+                                ).joinToString(" · ")
                             }
                         },
                         enabled = !refreshing && items.isNotEmpty()
@@ -1043,8 +1142,30 @@ fun WishlistScreen(
                                 )
                             }
                         }
-                        items(sortWishes(items, sort), key = { it.id }) { wish ->
-                            WishCard(wish, this@AnimatedContent) { setOpened(wish.id) }
+                        // Held wishes drop to their own block at the foot of the list
+                        // rather than vanishing: the whole point of a hold is to come
+                        // back to the thing, and something you cannot find again was
+                        // deleted rather than postponed.
+                        val (watched, held) = partitionByHold(items, today.toEpochDay())
+                        items(sortWishes(watched, sort), key = { it.id }) { wish ->
+                            WishCard(wish, this@AnimatedContent, today.toEpochDay()) {
+                                setOpened(wish.id)
+                            }
+                        }
+                        if (held.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    "Відкладено — ${positionsLabel(held.size)}",
+                                    Modifier.padding(top = Space.xl, bottom = Space.sm),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            items(sortWishes(held, sort), key = { it.id }) { wish ->
+                                WishCard(wish, this@AnimatedContent, today.toEpochDay()) {
+                                    setOpened(wish.id)
+                                }
+                            }
                         }
                     }
                     CollapsingTitle("Мої бажання", gridState, trailing = refreshAction)
@@ -1052,7 +1173,12 @@ fun WishlistScreen(
             }
         }
     }
-    if (adding) AddWishSheet({ setAdding(false) }, { wish -> save(items + wish); setAdding(false) })
+    if (adding) {
+        AddWishSheet({ setAdding(false) }, store.fxRate().first) { wish ->
+            save(items + wish)
+            setAdding(false)
+        }
+    }
     editing?.let { selected ->
         EditWishSheet(selected, { editing = null }) { changed ->
             save(items.map { if (it.id == changed.id) changed else it })
@@ -1062,7 +1188,7 @@ fun WishlistScreen(
 }
 
 @Composable
-fun AddWishSheet(close: () -> Unit, add: (Wish) -> Unit) {
+fun AddWishSheet(close: () -> Unit, rate: FxRate = FxRate(), add: (Wish) -> Unit) {
     var link by remember { mutableStateOf("") }
     var target by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Інше") }
@@ -1082,7 +1208,8 @@ fun AddWishSheet(close: () -> Unit, add: (Wish) -> Unit) {
                 link.trim(),
                 System.currentTimeMillis().toString(),
                 offer,
-                LocalDate.now().toEpochDay()
+                LocalDate.now().toEpochDay(),
+                rate
             ).copy(
                 targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
                 category = category
@@ -1159,13 +1286,29 @@ fun EditWishSheet(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
     var name by remember { mutableStateOf(wish.name) }
     var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
     var category by remember { mutableStateOf(wish.category) }
+    var price by remember { mutableStateOf(amountText(wish.price)) }
+    val today = remember { LocalDate.now().toEpochDay() }
     FormSheet(
         title = "Редагувати товар",
         confirmLabel = "Зберегти",
         confirmEnabled = true,
         onConfirm = {
-            save(
+            val typed = parseAmount(price)
+            // A price the user typed is the deliberate fallback for a page that
+            // cannot be read, so it is marked as hand-entered rather than passed off
+            // as a reading: the card then stops promising it is being watched.
+            val priced = if (typed > 0.0 && typed != wish.price) {
                 wish.copy(
+                    price = typed,
+                    history = appendPrice(wish.history, typed, today),
+                    checkedDay = today,
+                    freshness = Freshness.MANUAL
+                )
+            } else {
+                wish
+            }
+            save(
+                priced.copy(
                     name = name.ifBlank { wish.name },
                     targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
                     category = category.ifBlank { "Інше" }
@@ -1175,6 +1318,17 @@ fun EditWishSheet(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
         onDismiss = close
     ) {
         OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
+        NumberField("Ціна, ₴", price) { price = it }
+        if (isStale(wish.freshness)) {
+            Text(
+                "Сторінка зараз не читається. Вписана вручну ціна лишає бажання живим — " +
+                    "план накопичення і ціль працюють далі.",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+        }
         NumberField("Цільова ціна, ₴", target) { target = it }
         OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
     }
@@ -1241,10 +1395,15 @@ fun SharedTransitionScope.WishDetailScreen(
     // Which end of the plan is known: the monthly sum, or the date.
     var byDate by remember(wish.id) { mutableStateOf(wish.deadline > 0L) }
     var pickingDate by remember { mutableStateOf(false) }
+    var pickingHold by remember { mutableStateOf(false) }
     var buying by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    // Hryvnia until asked otherwise. The dollar view is the answer to a question,
+    // and a chart that opens on it would be answering one nobody asked.
+    var inUsd by remember(wish.id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val store = remember(context) { Store(context) }
 
     val today = remember { LocalDate.now() }
     val goal = wishGoal(wish)
@@ -1257,6 +1416,12 @@ fun SharedTransitionScope.WishDetailScreen(
     }
     val change = priceChangePercent(wish)
     val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
+    val stale = isStale(wish.freshness)
+    // A verdict is a claim about a price that can be paid. While the reading is
+    // doubtful there is no such price, so the app says nothing rather than judging
+    // a figure the shop has stopped standing behind.
+    val verdict = if (stale) BuyVerdict.UNKNOWN else insight.verdict
+    val held = onHold(wish, today.toEpochDay())
 
     // Persist only when something the user typed or picked actually changed.
     LaunchedEffect(savedText, monthlyText, deadlineDay) {
@@ -1295,13 +1460,15 @@ fun SharedTransitionScope.WishDetailScreen(
                     modifier = Modifier.padding(horizontal = Space.screen),
                     height = 240.dp,
                     overlayNumber = "%+.0f%%".format(change)
-                    .takeIf { change <= -1.0 && wish.history.size > 1 },
-                    chip = verdictLabel(insight.verdict)
-                        .takeIf { insight.verdict != BuyVerdict.UNKNOWN },
-                    chipIcon = Icons.Default.Bolt,
-                    chipColor = when (insight.verdict) {
-                        BuyVerdict.GOOD -> Accent
-                        BuyVerdict.POOR -> Negative
+                    .takeIf { change <= -1.0 && wish.history.size > 1 && !stale },
+                    chip = freshnessLabel(wish.freshness)
+                        ?: verdictLabel(verdict).takeIf { verdict != BuyVerdict.UNKNOWN },
+                    chipIcon = if (stale) Icons.Default.ErrorOutline else Icons.Default.Bolt,
+                    chipColor = when {
+                        stale -> Negative
+                        wish.freshness == Freshness.MANUAL -> TextPrimary
+                        verdict == BuyVerdict.GOOD -> Accent
+                        verdict == BuyVerdict.POOR -> Negative
                         else -> TextPrimary
                     }
                 ) { imageModifier ->
@@ -1331,18 +1498,50 @@ fun SharedTransitionScope.WishDetailScreen(
                     FigureWithTarget(
                         value = money(wish.price),
                         target = wish.targetPrice.takeIf { it > 0 }?.let { "ціль ${money(it)}" },
-                        valueSize = Type.heroSize
+                        valueSize = Type.heroSize,
+                        color = if (stale) TextSecondary else TextPrimary
                     )
-                    Spacer(Modifier.width(Space.md))
+                    if (!stale) {
+                        Spacer(Modifier.width(Space.md))
+                        Text(
+                            "%+.1f%%".format(change),
+                            color = if (change <= 0) Accent else Negative,
+                            fontSize = Type.captionSize,
+                            fontWeight = Type.strong,
+                            modifier = Modifier.padding(bottom = Space.sm)
+                        )
+                    }
+                }
+                // Why the figure above is the colour it is, in one sentence. The
+                // card can only carry a two-word badge; this is where it is explained.
+                freshnessNote(wish.freshness)?.let { note ->
                     Text(
-                        "%+.1f%%".format(change),
-                        color = if (change <= 0) Accent else Negative,
+                        note,
+                        color = if (stale) Negative else TextSecondary,
                         fontSize = Type.captionSize,
-                        fontWeight = Type.strong,
-                        modifier = Modifier.padding(bottom = Space.sm)
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(top = Space.sm)
+                    )
+                }
+                // How long this has been wanted. The one number a wishlist owes the
+                // person keeping it, and the app had the date all along without
+                // ever putting it on screen.
+                wantedLabel(wish, today.toEpochDay())?.let { age ->
+                    Text(
+                        age,
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.xs)
                     )
                 }
             }
+
+            HoldBlock(
+                wish = wish,
+                today = today,
+                onPick = { pickingHold = true },
+                onRelease = { onChange(wish.copy(holdUntil = 0L)) }
+            )
 
             SectionTitle("План накопичення")
             Column(Modifier.padding(horizontal = Space.screen)) {
@@ -1496,11 +1695,55 @@ fun SharedTransitionScope.WishDetailScreen(
                     shape = Radius.md
                 ) {
                     Column(Modifier.padding(Space.lg)) {
-                        PriceBars(wish.history, Modifier.fillMaxWidth().height(120.dp))
+                        val usdPoints = remember(wish.history) { inDollars(wish.history) }
+                        val showUsd = inUsd && usdPoints.size >= 2
+                        PriceBars(
+                            if (showUsd) usdPoints else wish.history,
+                            Modifier.fillMaxWidth().height(120.dp)
+                        )
+                        // Offered only once two points carry a rate. One converted
+                        // point is a number, not a history, and the switch would draw
+                        // a single bar saying nothing about direction.
+                        if (hasDollarHistory(wish.history)) {
+                            Spacer(Modifier.height(Space.md))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                                FilterChip(
+                                    !inUsd,
+                                    { inUsd = false },
+                                    { Text("₴", fontSize = Type.captionSize) }
+                                )
+                                FilterChip(
+                                    inUsd,
+                                    { inUsd = true },
+                                    { Text("$", fontSize = Type.captionSize) }
+                                )
+                            }
+                            if (showUsd) {
+                                Text(
+                                    "Зараз ${dollars(usdPoints.last().price)} " +
+                                        "· курс записано з кожною ціною",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                            // The line the two-currency history exists to write: a
+                            // flat hryvnia price that has quietly got cheaper, or a
+                            // rise that was only ever the rate moving.
+                            currencyMoveNote(wish.history)?.let { note ->
+                                Text(
+                                    note,
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(Space.md))
                         Text(
-                            verdictLabel(insight.verdict),
-                            color = when (insight.verdict) {
+                            verdictLabel(verdict),
+                            color = when (verdict) {
                                 BuyVerdict.GOOD -> Accent
                                 BuyVerdict.POOR -> Negative
                                 else -> TextSecondary
@@ -1509,25 +1752,55 @@ fun SharedTransitionScope.WishDetailScreen(
                             fontWeight = Type.medium
                         )
                         Text(
-                            when (insight.verdict) {
-                                BuyVerdict.UNKNOWN ->
+                            when {
+                                stale -> "Поки ціна не читається, оцінювати нічого"
+                                verdict == BuyVerdict.UNKNOWN ->
                                     "Потрібно щонайменше два тижні спостережень і дві зміни ціни"
-                                BuyVerdict.GOOD ->
-                                    if (insight.atLowest) "Це найнижча ціна за весь час спостережень"
-                                    else "Ціна в нижній частині свого діапазону"
-                                BuyVerdict.FAIR -> "Ціна в середині свого діапазону"
-                                BuyVerdict.POOR ->
-                                    "Раніше ціна опускалась на ${"%.0f".format(insight.offHighest)}% нижче за максимум"
+                                verdict == BuyVerdict.GOOD ->
+                                    if (insight.atReferenceLow)
+                                        "Це найнижча ціна за останні ${daysLabel(insight.referenceDays)}"
+                                    else "Ціна в нижній частині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                verdict == BuyVerdict.FAIR ->
+                                    "Ціна в середині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                else ->
+                                    "За останні ${daysLabel(insight.referenceDays)} ціна опускалась " +
+                                        "на ${"%.0f".format(insight.offHighest)}% нижче"
                             },
                             color = TextSecondary,
                             fontSize = Type.captionSize,
                             lineHeight = Type.captionLine,
                             modifier = Modifier.padding(top = Space.xs)
                         )
+                        // The shop's own discount, checked against the app's record of
+                        // what the price actually was before it. This is the figure EU
+                        // law makes a shop quote, and the reason the rule exists.
+                        if (!stale) {
+                            priorLowNote(insight)?.let { claim ->
+                                Text(
+                                    claim,
+                                    color = Negative,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                        }
+                        // The reference the verdict is actually measured against, as a
+                        // figure rather than a description of one.
+                        referenceWindowNote(insight)?.let { reference ->
+                            Text(
+                                reference,
+                                color = TextPrimary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                fontWeight = Type.medium,
+                                modifier = Modifier.padding(top = Space.sm)
+                            )
+                        }
                         if (insight.changes > 1) {
                             val lowDay = lowestPointDay(wish.history)
                             Text(
-                                "Найнижча ${money(insight.lowest)}" +
+                                "За весь час: найнижча ${money(insight.lowest)}" +
                                     (lowDay?.let { " — ${formatDate(LocalDate.ofEpochDay(it))}" } ?: "") +
                                     " · найвища ${money(insight.highest)}",
                                 color = TextSecondary,
@@ -1549,14 +1822,29 @@ fun SharedTransitionScope.WishDetailScreen(
 
                 Spacer(Modifier.height(Space.xl))
                 // Buying is what the whole page is for, so it gets the filled button
-                // and the full width. Everything else here is secondary.
-                Button(
-                    { buying = true },
-                    Modifier.fillMaxWidth(),
-                    shape = Radius.sm
-                ) {
-                    Icon(Icons.Default.ShoppingCartCheckout, null)
-                    Text("  Я купив це")
+                // and the full width. Everything else here is secondary — except on
+                // a wish deliberately on hold, where a one-tap buy is the thing the
+                // hold was set up to stand in the way of, so it goes quiet instead.
+                if (held) {
+                    OutlinedButton(
+                        { buying = true },
+                        Modifier.fillMaxWidth(),
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                    ) {
+                        Icon(Icons.Default.ShoppingCartCheckout, null)
+                        Text("  Я купив це")
+                    }
+                } else {
+                    Button(
+                        { buying = true },
+                        Modifier.fillMaxWidth(),
+                        shape = Radius.sm
+                    ) {
+                        Icon(Icons.Default.ShoppingCartCheckout, null)
+                        Text("  Я купив це")
+                    }
                 }
                 Spacer(Modifier.height(Space.md))
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
@@ -1565,16 +1853,22 @@ fun SharedTransitionScope.WishDetailScreen(
                             scope.launch {
                                 refreshing = true
                                 message = null
-                                runCatching { refreshed(wish) }
-                                    .onSuccess { updated ->
-                                        if (updated == null) {
-                                            message = "Цей варіант більше не вказано на сторінці"
-                                        } else {
-                                            onChange(updated)
-                                            message = "Ціну оновлено"
-                                        }
+                                when (
+                                    val reading =
+                                        refreshed(wish, today.toEpochDay(), store.fxRate().first)
+                                ) {
+                                    is Reading.Priced -> {
+                                        onChange(reading.wish)
+                                        message = "Ціну оновлено"
                                     }
-                                    .onFailure { message = "Не вдалося прочитати сторінку" }
+                                    // The wish is saved even though no price came
+                                    // back: the new freshness is itself the news.
+                                    is Reading.Stale -> {
+                                        onChange(reading.wish)
+                                        message = freshnessNote(reading.wish.freshness)
+                                    }
+                                    Reading.Failed -> message = "Не вдалося прочитати сторінку"
+                                }
                                 refreshing = false
                             }
                         },
@@ -1642,6 +1936,94 @@ fun SharedTransitionScope.WishDetailScreen(
             DatePicker(state)
         }
     }
+
+    if (pickingHold) {
+        val millisPerDay = 86_400_000L
+        val state = rememberDatePickerState(
+            // A month out by default: long enough for the urge to pass, short
+            // enough that picking it does not feel like giving the thing up.
+            initialSelectedDateMillis = today.plusMonths(1).toEpochDay() * millisPerDay,
+            selectableDates = object : SelectableDates {
+                // A hold that ended before it began is not a hold.
+                override fun isSelectableDate(utcTimeMillis: Long) =
+                    utcTimeMillis / millisPerDay > today.toEpochDay()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickingHold = false },
+            confirmButton = {
+                TextButton({
+                    state.selectedDateMillis?.let {
+                        onChange(wish.copy(holdUntil = it / millisPerDay))
+                    }
+                    pickingHold = false
+                }) { Text("Відкласти") }
+            },
+            dismissButton = { TextButton({ pickingHold = false }) { Text("Скасувати") } }
+        ) {
+            DatePicker(state)
+        }
+    }
+}
+
+/**
+ * The deliberate pause, and the question waiting at the end of it.
+ *
+ * A wishlist's job is to put distance between the urge and the decision. The list
+ * on its own does not do that — it keeps everything equally present for ever — so
+ * this is the app using time as the tool: out of the way and silent until the day
+ * comes, then back with the only question that matters.
+ */
+@Composable
+fun HoldBlock(wish: Wish, today: LocalDate, onPick: () -> Unit, onRelease: () -> Unit) {
+    val day = today.toEpochDay()
+    val held = onHold(wish, day)
+    val ended = holdEnded(wish, day)
+    if (!held && !ended) {
+        Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
+            TextButton(onPick, contentPadding = PaddingValues(0.dp)) {
+                Icon(Icons.Default.Snooze, null, tint = TextSecondary)
+                Text("  Відкласти до дати", color = TextSecondary, fontSize = Type.captionSize)
+            }
+        }
+        return
+    }
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = Space.screen).padding(top = Space.lg),
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.sm
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Text(
+                if (ended) "Ще хочеш?" else "Відкладено",
+                fontSize = Type.cardTitleSize,
+                fontWeight = Type.medium,
+                color = if (ended) Accent else TextPrimary
+            )
+            Text(
+                if (ended) {
+                    "Пауза скінчилась. Якщо річ і досі потрібна — це вже рішення, а не порив."
+                } else {
+                    "Картка не турбуватиме до ${formatDate(LocalDate.ofEpochDay(wish.holdUntil))}."
+                },
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+            Row(
+                Modifier.padding(top = Space.sm),
+                horizontalArrangement = Arrangement.spacedBy(Space.md)
+            ) {
+                TextButton(onRelease, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (ended) "Так, хочу" else "Повернути в список")
+                }
+                TextButton(onPick, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (ended) "Ще почекаю" else "Інша дата", color = TextSecondary)
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -1656,10 +2038,14 @@ fun SharedTransitionScope.WishDetailScreen(
 fun SharedTransitionScope.WishCard(
     wish: Wish,
     visibility: AnimatedVisibilityScope,
+    today: Long,
     onOpen: () -> Unit
 ) {
     val change = priceChangePercent(wish)
     val plan = savingsPlan(wishGoal(wish), wish.saved, wish.monthlyPlan)
+    val stale = isStale(wish.freshness)
+    val held = onHold(wish, today)
+    val holdText = holdLabel(wish, today)
     Card(
         onClick = onOpen,
         modifier = Modifier.fillMaxWidth(),
@@ -1687,13 +2073,19 @@ fun SharedTransitionScope.WishCard(
                 Box(
                     Modifier
                         .matchParentSize()
-                        .background(AppBackground.copy(alpha = 0.14f))
+                        // A held wish is faded rather than hidden: it should read as
+                        // set aside on purpose, not as something the app has lost.
+                        .background(
+                            AppBackground.copy(alpha = if (held || stale) 0.55f else 0.14f)
+                        )
                 )
             } else {
                 Box(Modifier.fillMaxWidth().aspectRatio(1f).background(SurfaceRaised))
             }
             // The one thing worth knowing without opening the item: it got cheaper.
-            if (wish.history.size > 1 && change <= -1.0) {
+            // Withheld while the reading is doubtful, because a fall computed from a
+            // price the shop no longer states is a claim about nothing.
+            if (wish.history.size > 1 && change <= -1.0 && !stale && !held) {
                 Text(
                     "%+.0f%%".format(change),
                     color = AccentInk,
@@ -1706,6 +2098,21 @@ fun SharedTransitionScope.WishCard(
                         .padding(horizontal = Space.sm, vertical = 2.dp)
                 )
             }
+            freshnessLabel(wish.freshness)?.takeIf { stale }?.let { warning ->
+                Text(
+                    warning,
+                    color = TextPrimary,
+                    fontSize = Type.overlineSize,
+                    fontWeight = Type.medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(Space.sm)
+                        .background(SurfaceHigh, Radius.pill)
+                        .padding(horizontal = Space.sm, vertical = 2.dp)
+                )
+            }
         }
         Column(Modifier.padding(Space.md)) {
             Text(
@@ -1713,18 +2120,35 @@ fun SharedTransitionScope.WishCard(
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine,
                 maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                overflow = TextOverflow.Ellipsis,
+                color = if (held) TextSecondary else TextPrimary
             )
             Spacer(Modifier.height(Space.xs))
-            Text(money(wish.price), fontSize = Type.cardTitleSize, fontWeight = Type.strong)
-            if (wish.targetPrice > 0) {
+            Text(
+                money(wish.price),
+                fontSize = Type.cardTitleSize,
+                fontWeight = Type.strong,
+                // A price nobody can currently buy at must not carry the weight of
+                // one that was read this morning.
+                color = if (stale || held) TextDisabled else TextPrimary
+            )
+            if (holdText != null) {
+                Text(
+                    holdText,
+                    color = if (held) TextSecondary else Accent,
+                    fontSize = Type.overlineSize,
+                    fontWeight = if (held) Type.regular else Type.medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            } else if (wish.targetPrice > 0) {
                 Text(
                     "ціль ${money(wish.targetPrice)}",
                     color = TextSecondary,
                     fontSize = Type.overlineSize
                 )
             }
-            if (wish.saved > 0 || wish.monthlyPlan > 0) {
+            if (!held && (wish.saved > 0 || wish.monthlyPlan > 0)) {
                 Spacer(Modifier.height(Space.sm))
                 PillProgress(plan.progress, height = 4.dp)
             }

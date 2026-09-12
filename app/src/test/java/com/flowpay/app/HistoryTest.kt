@@ -112,8 +112,8 @@ class HistoryTest {
     @Test
     fun `the middle of the range is neither`() {
         val history = listOf(
-            PricePoint(500.0, day - 90),
-            PricePoint(1_500.0, day - 45),
+            PricePoint(500.0, day - 20),
+            PricePoint(1_500.0, day - 10),
             PricePoint(1_000.0, day - 2)
         )
 
@@ -121,6 +121,33 @@ class HistoryTest {
 
         assertEquals(BuyVerdict.FAIR, insight.verdict)
         assertEquals(0.5, insight.position, 0.001)
+    }
+
+    @Test
+    fun `a freak price from last year no longer colours today's verdict`() {
+        // The whole reason for the window. Watched for a year, with one clearance
+        // price long gone; against the full range today sits near the top and reads
+        // as "дорого" for ever, though against the last month it is the cheapest yet.
+        val history = listOf(
+            PricePoint(400.0, day - 300),
+            PricePoint(1_800.0, day - 250),
+            PricePoint(1_600.0, day - 200),
+            PricePoint(1_500.0, day - 20),
+            PricePoint(1_200.0, day - 3)
+        )
+
+        val insight = priceInsight(history, 1_200.0, day)
+
+        assertEquals(BuyVerdict.GOOD, insight.verdict)
+        assertEquals(1_200.0, insight.referenceLow, 0.001)
+        // 1 600 was the price in force on the day the window opened, so it belongs
+        // to the window even though its point is dated long before it.
+        assertEquals(1_600.0, insight.referenceHigh, 0.001)
+        // The all-time figures are still reported; they just no longer judge.
+        assertEquals(400.0, insight.lowest, 0.001)
+        assertEquals(1_800.0, insight.highest, 0.001)
+        assertFalse(insight.atLowest)
+        assertTrue(insight.atReferenceLow)
     }
 
     @Test
@@ -156,6 +183,199 @@ class HistoryTest {
         assertEquals(BuyVerdict.UNKNOWN, insight.verdict)
         assertEquals(0.0, insight.position, 0.001)
         assertEquals(0, insight.changes)
+    }
+
+    // ------------------------------------------------- the thirty-day reference
+
+    @Test
+    fun `a price held since before the window still counts on every day of it`() {
+        // Only changes are recorded, so a price set long ago has no point inside the
+        // window at all — yet it is what the item cost on every one of those days.
+        val history = listOf(PricePoint(900.0, day - 200))
+
+        val prices = windowPrices(history, current = 900.0, today = day).map { it.price }
+
+        assertEquals(listOf(900.0, 900.0), prices)
+    }
+
+    @Test
+    fun `the window carries in the last reading before it opened, and no earlier one`() {
+        val history = listOf(
+            PricePoint(500.0, day - 90),
+            PricePoint(800.0, day - 40),
+            PricePoint(1_000.0, day - 5)
+        )
+
+        val prices = windowPrices(history, current = 1_000.0, today = day).map { it.price }
+
+        // 800 was in force when the window opened; 500 had been gone for weeks.
+        assertEquals(listOf(800.0, 1_000.0, 1_000.0), prices)
+    }
+
+    @Test
+    fun `fewer than thirty days of history measures only what it has`() {
+        val history = listOf(PricePoint(1_000.0, day - 11), PricePoint(850.0, day - 4))
+
+        val insight = priceInsight(history, 850.0, day)
+
+        // Eleven days of watching plus the day itself, and it says so rather than
+        // captioning twelve days of readings as a month.
+        assertEquals(12, insight.referenceDays)
+        assertEquals("Найнижча за 12 днів 850 ₴", referenceWindowNote(insight))
+        assertEquals(BuyVerdict.GOOD, insight.verdict)
+    }
+
+    @Test
+    fun `a full window says thirty days rather than the whole tracked span`() {
+        val history = listOf(PricePoint(1_000.0, day - 400), PricePoint(900.0, day - 40))
+
+        val insight = priceInsight(history, 900.0, day)
+
+        assertEquals(REFERENCE_WINDOW_DAYS, insight.referenceDays)
+        assertEquals("Найнижча за 30 днів 900 ₴", referenceWindowNote(insight))
+    }
+
+    @Test
+    fun `a price equal to the thirty-day low is a good moment, not a middling one`() {
+        val history = listOf(
+            PricePoint(1_000.0, day - 60),
+            PricePoint(800.0, day - 20),
+            PricePoint(1_100.0, day - 10),
+            PricePoint(800.0, day - 2)
+        )
+
+        val insight = priceInsight(history, 800.0, day)
+
+        assertTrue(insight.atReferenceLow)
+        assertEquals(800.0, insight.referenceLow, 0.001)
+        assertEquals(0.0, insight.position, 0.001)
+        assertEquals(BuyVerdict.GOOD, insight.verdict)
+    }
+
+    @Test
+    fun `an undated history cannot place a window and offers no verdict`() {
+        val legacy = listOf(PricePoint(1_000.0, 0L), PricePoint(900.0, 0L))
+
+        val insight = priceInsight(legacy, 900.0, 0L)
+
+        assertEquals(0, insight.referenceDays)
+        assertNull(referenceWindowNote(insight))
+        assertEquals(BuyVerdict.UNKNOWN, insight.verdict)
+    }
+
+    // ------------------------------------------- the price before the discount
+
+    @Test
+    fun `a price raised inside the window and then cut is named for what it is`() {
+        // The pattern EU law exists to catch: 900 for weeks, up to 1 500, then a
+        // "discount" to 1 200 that is still dearer than the price it replaced.
+        val history = listOf(
+            PricePoint(900.0, day - 25),
+            PricePoint(1_500.0, day - 8),
+            PricePoint(1_200.0, day - 1)
+        )
+
+        val insight = priceInsight(history, 1_200.0, day)
+
+        assertEquals(900.0, insight.priorLow?.price)
+        assertEquals(day - 25, insight.priorLow?.day)
+        val note = priorLowNote(insight)!!
+        assertTrue(note.contains(money(1_500.0)))
+        assertTrue(note.contains(money(900.0)))
+    }
+
+    @Test
+    fun `an honest sale makes no such claim`() {
+        // Fallen to the cheapest of the window: there is no earlier low to quote.
+        val history = listOf(PricePoint(1_500.0, day - 20), PricePoint(1_200.0, day - 1))
+
+        val insight = priceInsight(history, 1_200.0, day)
+
+        assertNull(insight.priorLow)
+        assertNull(priorLowNote(insight))
+    }
+
+    @Test
+    fun `a price still climbing is not accused of a fake discount`() {
+        // Cheaper earlier in the window, but nothing has been cut: no claim to check.
+        val history = listOf(PricePoint(900.0, day - 20), PricePoint(1_300.0, day - 1))
+
+        val insight = priceInsight(history, 1_300.0, day)
+
+        assertNull(insight.priorLow)
+    }
+
+    // ------------------------------------------------------- price in dollars
+
+    @Test
+    fun `a rate is recorded beside the price it was read with`() {
+        val history = appendPrice(emptyList(), 1_000.0, day, 41.0, SOURCE_MONOBANK)
+
+        assertEquals(41.0, history.single().rate, 0.001)
+        assertEquals(SOURCE_MONOBANK, history.single().rateSource)
+    }
+
+    @Test
+    fun `points recorded before the rate existed are left out rather than converted`() {
+        // Dividing a year-old hryvnia price by this morning's dollar is not what the
+        // item cost then, and it would draw exactly the flat line the chart exists
+        // to disprove.
+        val history = listOf(
+            PricePoint(1_000.0, day - 40),
+            PricePoint(1_000.0, day - 20, 40.0, SOURCE_NBU),
+            PricePoint(1_000.0, day - 1, 50.0, SOURCE_NBU)
+        )
+
+        val converted = inDollars(history)
+
+        assertEquals(2, converted.size)
+        assertEquals(25.0, converted.first().price, 0.001)
+        assertEquals(20.0, converted.last().price, 0.001)
+    }
+
+    @Test
+    fun `a flat hryvnia price that got cheaper in dollars says so`() {
+        val history = listOf(
+            PricePoint(1_000.0, day - 20, 40.0, SOURCE_NBU),
+            PricePoint(1_000.0, day - 1, 50.0, SOURCE_NBU)
+        )
+
+        val move = currencyMove(history)!!
+
+        assertEquals(0.0, move.hryvniaPercent, 0.001)
+        assertEquals(-20.0, move.dollarPercent, 0.001)
+        assertEquals("У гривні +0,0%, у доларі −20,0% — різницю зробив курс", currencyMoveNote(history))
+    }
+
+    @Test
+    fun `when both currencies tell the same story the second figure is not printed`() {
+        val history = listOf(
+            PricePoint(1_000.0, day - 20, 40.0, SOURCE_NBU),
+            PricePoint(800.0, day - 1, 40.0, SOURCE_NBU)
+        )
+
+        assertNull(currencyMoveNote(history))
+    }
+
+    @Test
+    fun `a missing rate leaves the dollar view unavailable rather than wrong`() {
+        val history = listOf(PricePoint(1_000.0, day - 20), PricePoint(900.0, day - 1))
+
+        assertTrue(inDollars(history).isEmpty())
+        assertFalse(hasDollarHistory(history))
+        assertNull(currencyMove(history))
+        assertNull(currencyMoveNote(history))
+    }
+
+    @Test
+    fun `one converted point is a number rather than a history`() {
+        val history = listOf(
+            PricePoint(1_000.0, day - 20),
+            PricePoint(900.0, day - 1, 41.0, SOURCE_MONOBANK)
+        )
+
+        assertFalse(hasDollarHistory(history))
+        assertNull(currencyMove(history))
     }
 
     // ----------------------------------------------------------------- labels
