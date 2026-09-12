@@ -352,6 +352,64 @@ class Store(context: Context) {
 
     fun saveLastReminderDay(day: Long) = prefs.edit { putLong("reminded", day) }
 
+    /**
+     * When a background pass last got all the way through, as epoch millis.
+     *
+     * Zero on every phone that updated into this version, which reads as "ще не
+     * виконувалась" until the first pass lands. That is the honest answer: nothing
+     * before this recorded a run, so claiming one would be inventing it.
+     */
+    fun lastRunAt(key: String): Long = prefs.getLong("run_$key", 0L)
+
+    fun saveLastRunAt(key: String, atMillis: Long) = prefs.edit { putLong("run_$key", atMillis) }
+
+    /**
+     * Every pass and its last success, for the health panel.
+     *
+     * The weekly backup is deliberately not one of them. It does nothing at all
+     * until a folder has been chosen, so on most phones it would sit in the panel
+     * reading "ще не виконувалась" for ever — an alarm about a feature that was
+     * never switched on. Its own freshness is on the backup row, where the folder
+     * that explains it also is.
+     */
+    fun workRuns(): List<WorkRun> =
+        listOf(WORK_PRICES, WORK_DIGEST).map { WorkRun(it, lastRunAt(it)) }
+
+    /** The hour the daily digest is sent at. */
+    fun digestHour(): Int =
+        prefs.getInt("digest_h", DEFAULT_DIGEST_HOUR).coerceIn(0, 23)
+
+    fun saveDigestHour(hour: Int) = prefs.edit { putInt("digest_h", hour.coerceIn(0, 23)) }
+
+    /**
+     * Ukraine's public holidays for one year, as epoch days.
+     *
+     * Empty whenever the cache is for another year or was never filled, and empty
+     * is a working answer: the weekend rule stands on its own and the holidays
+     * only sharpen it.
+     */
+    fun holidays(year: Int): Set<Long> = runCatching {
+        val cached = JSONObject(prefs.getString("hol", "{}") ?: "{}")
+        if (cached.optInt("y") != year) return emptySet()
+        val days = cached.optJSONArray("d") ?: return emptySet()
+        (0 until days.length()).map { days.getLong(it) }.toSet()
+    }.getOrDefault(emptySet())
+
+    fun saveHolidays(year: Int, days: Set<Long>) = prefs.edit {
+        putString(
+            "hol",
+            JSONObject()
+                .put("y", year)
+                .put("d", JSONArray().apply { days.sorted().forEach { put(it) } })
+                .toString()
+        )
+    }
+
+    /** Which figure the Quick Settings tile is currently showing. */
+    fun tileFace(): String = prefs.getString("tile", TILE_RATE) ?: TILE_RATE
+
+    fun saveTileFace(face: String) = prefs.edit { putString("tile", face) }
+
     /** How the wishlist is ordered, remembered between sessions. */
     fun wishSort(): WishSort = wishSortFrom(prefs.getString("wish_sort", "") ?: "")
 
@@ -1036,6 +1094,22 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         bin = store.bin()
     }
 
+    // Read afresh every time the overview is opened rather than once per session:
+    // "last run" is only worth anything as this second's answer, and the reasons
+    // the system is holding a job change with the battery and the network.
+    var health by remember { mutableStateOf<WorkHealth?>(null) }
+    var healthOpen by remember { mutableStateOf(false) }
+    var digestHour by remember { mutableIntStateOf(store.digestHour()) }
+    LaunchedEffect(tab) {
+        if (tab != TAB_OVERVIEW) return@LaunchedEffect
+        health = WorkHealth(
+            runs = store.workRuns(),
+            pendingReasons = pendingJobReasons(context),
+            apiLevel = android.os.Build.VERSION.SDK_INT,
+            nowMillis = System.currentTimeMillis()
+        )
+    }
+
     // The bar is chrome, and chrome should yield to content. It moves all the
     // way or not at all: following the finger left it resting half off screen,
     // with its labels cut and its icons crowding the system buttons.
@@ -1198,24 +1272,60 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             setAdding = { adding = it },
                             onDelete = { deleteOrder(it) }
                         )
-                        else -> SettingsScreen(
-                            summary = overview(wishes, pays, orders, monthBudget.income, usdSell),
-                            store = store,
-                            months = monthRecords(pays, paid, today, usdSell),
-                            pays = pays,
-                            paid = paid,
-                            onTogglePaid = { pay, month ->
-                                val marks = togglePaid(paid, pay, month)
-                                paid = marks
-                                store.savePaidMarks(marks)
-                            },
-                            bin = bin,
-                            onRestore = { id -> store.restoreFromBin(id); reload() },
-                            onDropFromBin = { id -> store.dropFromBin(id); bin = store.bin() },
-                            onEmptyBin = { store.emptyBin(); bin = store.bin() },
-                            onImported = { reload() }
-                        )
+                        // The overview is where "how am I doing" is asked, and every
+                        // figure on it is only as true as the last background pass.
+                        // So the pass says for itself whether it is still running,
+                        // above the screen rather than buried in it.
+                        else -> Column(Modifier.fillMaxSize()) {
+                            WorkHealthStrip(health?.let { healthLine(it) }) { healthOpen = true }
+                            Box(Modifier.weight(1f)) {
+                                SettingsScreen(
+                                    summary = overview(
+                                        wishes,
+                                        pays,
+                                        orders,
+                                        monthBudget.income,
+                                        usdSell
+                                    ),
+                                    store = store,
+                                    months = monthRecords(pays, paid, today, usdSell),
+                                    pays = pays,
+                                    paid = paid,
+                                    onTogglePaid = { pay, month ->
+                                        val marks = togglePaid(paid, pay, month)
+                                        paid = marks
+                                        store.savePaidMarks(marks)
+                                    },
+                                    bin = bin,
+                                    onRestore = { id -> store.restoreFromBin(id); reload() },
+                                    onDropFromBin = { id ->
+                                        store.dropFromBin(id)
+                                        bin = store.bin()
+                                    },
+                                    onEmptyBin = { store.emptyBin(); bin = store.bin() },
+                                    onImported = { reload() }
+                                )
+                            }
+                        }
                     }
+                }
+            }
+            if (healthOpen) {
+                health?.let { current ->
+                    WorkHealthSheet(
+                        health = current,
+                        digestHour = digestHour,
+                        onHour = { hour ->
+                            digestHour = hour
+                            store.saveDigestHour(hour)
+                            // The enqueued request carries the old time of day in its
+                            // initial delay, so the schedule has to be replaced rather
+                            // than left to notice.
+                            ReminderWorker.reschedule(context)
+                        },
+                        onOpenSettings = { openBackgroundSettings(context) },
+                        onClose = { healthOpen = false }
+                    )
                 }
             }
         }
@@ -2729,6 +2839,9 @@ fun PaymentsScreen(
     val today = remember { LocalDate.now() }
     val thisMonth = monthKey(today)
     val record = monthRecord(items, paid, thisMonth, today, rate.sell)
+    // Empty until a background pass has fetched the year, and empty is a working
+    // state: the weekend rule stands on its own without it.
+    val holidays = remember { store.holidays(today.year) }
     val listState = rememberLazyListState()
     Box {
         LazyColumn(
@@ -2869,6 +2982,18 @@ fun PaymentsScreen(
                                 fontSize = Type.captionSize,
                                 fontWeight = Type.medium
                             )
+                            // A day of the month is a lie four or five times a year.
+                            // When the charge lands on a weekend or a holiday the row
+                            // says so and names the day the money actually has to be
+                            // there by — which is the day the reminder already counts to.
+                            paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
+                                Text(
+                                    note,
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
                             group.positions.forEach { position ->
                                 val pay = items[position]
                                 Row(

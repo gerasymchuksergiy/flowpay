@@ -20,13 +20,21 @@ import java.time.ZoneId
 import java.util.concurrent.TimeUnit
 
 /**
- * Tells you a standing payment is coming, as far ahead as that payment asks for.
+ * The one message a day.
  *
- * It used to look only at tomorrow. A day is right for a bill you have to find
- * money for, but wrong for a subscription: by the time the charge is a day away
- * there is nothing left to decide, and the only way not to pay for another year is
- * to cancel before the renewal. So the notice period lives on the expense, and
- * everything whose window has opened goes into one message a day.
+ * This used to be the payment reminder alone, and it sat beside a price channel
+ * and a parcel channel that each rang whenever a background pass happened to
+ * finish. Three unrelated interruptions, none of them urgent, is how a person
+ * learns to swipe a notification away before reading it.
+ *
+ * Now everything ordinary is collected here and said once, at an hour the user
+ * picked. The immediate alerts that remain live in [PriceWorker] and are only the
+ * two that a morning would be too late for.
+ *
+ * The class keeps its old name on purpose. WorkManager stores the worker's class
+ * name in its own database against the enqueued request, so a phone that is killed
+ * between the rename and the next [schedule] would be left with a periodic job
+ * pointing at a class that no longer exists.
  */
 class ReminderWorker(context: Context, parameters: WorkerParameters) :
     CoroutineWorker(context, parameters) {
@@ -36,19 +44,31 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         val today = LocalDate.now()
 
         // Periodic work has no guaranteed time of day and can be run more than once,
-        // so the last reminded day is recorded and the same day is never repeated.
+        // so the last digested day is recorded and the same day is never repeated.
         if (store.lastReminderDay() == today.toEpochDay()) return Result.success()
 
-        val due = remindersDue(store.pays(), today)
-        if (due.isNotEmpty()) notify(reminderTitle(due), reminderText(due))
+        val summary = digest(
+            wishes = store.wishes(),
+            pays = store.pays(),
+            orders = store.orders(),
+            today = today,
+            usdSellRate = store.fxRate().first.sell,
+            income = store.income(),
+            holidays = store.holidays(today.year)
+        )
+        // Nothing happened, so nothing is sent. A daily message saying there is no
+        // news is a daily interruption carrying no information.
+        if (!summary.empty) notify(summary.title, summary.body)
+
         store.saveLastReminderDay(today.toEpochDay())
+        store.saveLastRunAt(WORK_DIGEST, System.currentTimeMillis())
         return Result.success()
     }
 
     private fun notify(title: String, text: String) {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Нагадування про платежі", NotificationManager.IMPORTANCE_DEFAULT)
+            NotificationChannel(CHANNEL, "Щоденне зведення", NotificationManager.IMPORTANCE_DEFAULT)
         )
         val allowed = android.os.Build.VERSION.SDK_INT < 33 ||
             applicationContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
@@ -70,17 +90,34 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
     companion object {
         private const val CHANNEL = "payment_reminders"
 
-        /** Roughly when a reminder is worth reading. */
-        private val REMIND_AT = LocalTime.of(10, 0)
+        /**
+         * Schedules the digest for the hour the user chose.
+         *
+         * Called again whenever that hour changes: the initial delay is what puts
+         * the run at the right time of day, and a periodic request that is already
+         * enqueued keeps its old delay until it is replaced.
+         */
+        fun schedule(context: Context) = enqueue(context, ExistingPeriodicWorkPolicy.UPDATE)
 
-        fun schedule(context: Context) {
+        /**
+         * Moves the digest after the user picked a different hour.
+         *
+         * Cancels rather than updates, because an update keeps the period the
+         * existing request is already counting and would leave the new hour taking
+         * effect a day late, or not at all.
+         */
+        fun reschedule(context: Context) =
+            enqueue(context, ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE)
+
+        private fun enqueue(context: Context, policy: ExistingPeriodicWorkPolicy) {
+            val hour = Store(context).digestHour()
             val request = PeriodicWorkRequestBuilder<ReminderWorker>(1, TimeUnit.DAYS)
-                .setInitialDelay(millisUntilNext(REMIND_AT), TimeUnit.MILLISECONDS)
+                .setInitialDelay(millisUntilNext(LocalTime.of(hour, 0)), TimeUnit.MILLISECONDS)
                 // No network needed: this only reads what is already on the phone.
                 .setConstraints(Constraints.Builder().build())
                 .build()
             WorkManager.getInstance(context)
-                .enqueueUniquePeriodicWork("payment-reminders", ExistingPeriodicWorkPolicy.UPDATE, request)
+                .enqueueUniquePeriodicWork(WORK_DIGEST, policy, request)
         }
 
         /** Delay that lands the first run on the next occurrence of [time]. */

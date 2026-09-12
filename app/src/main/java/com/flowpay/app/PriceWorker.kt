@@ -56,6 +56,11 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                     // the phone about a thing you decided not to think about until
                     // March is the app overruling a decision the user already made.
                     if (!onHold(previous, today)) {
+                        // Two of the four still interrupt, and both for the same
+                        // reason: they are windows that close. A target that was
+                        // asked for by name, and stock that came back and can go
+                        // again by morning. A new low and an ordinary fall are good
+                        // news that keeps, so they go into the digest instead.
                         when (alert.kind) {
                             AlertKind.TARGET_REACHED -> notify(
                                 previous.name,
@@ -69,21 +74,11 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                                 CHANNEL_PRICES,
                                 "Зміни цін"
                             )
-                            AlertKind.NEW_LOW -> notify(
-                                previous.name,
-                                "Найнижча ціна за весь час: ${money(current.price)}",
-                                CHANNEL_PRICES,
-                                "Зміни цін"
-                            )
-                            AlertKind.DROP -> notify(
-                                previous.name,
-                                "Ціна впала: ${money(previous.price)} → ${money(current.price)}",
-                                CHANNEL_PRICES,
-                                "Зміни цін"
-                            )
-                            AlertKind.NONE -> Unit
+                            AlertKind.NEW_LOW, AlertKind.DROP, AlertKind.NONE -> Unit
                         }
                     }
+                    // Still recorded for the falls that are no longer announced: it
+                    // is the benchmark the next target decision is measured against.
                     current.copy(notifiedPrice = alert.notifyPrice)
                 }
             }
@@ -105,35 +100,47 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             if (detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA) return@map order
             val status = runCatching { parcelStatus(order.tracking) }.getOrNull() ?: return@map order
             parcelsRead++
-            // Only a genuine change is worth a notification. Re-announcing the same
-            // stage twice a day would train you to ignore the channel.
-            if (status.stage.isNotBlank() && status.stage != order.status) {
-                notify(order.name, statusLine(status), CHANNEL_PARCELS, "Статус посилок")
-            }
-            // The one number here that costs money to ignore.
+            // A parcel changing stage is news, not an emergency: it goes into the
+            // morning digest, which says which parcel needs collecting rather than
+            // narrating every leg of its journey.
             val left = freeStorageDaysLeft(status.paidStorageFrom, java.time.LocalDate.now())
-            if (left != null && left in 0..2 && status.stage == AT_BRANCH) {
-                notify(
-                    order.name,
-                    if (left == 0) "Безкоштовне зберігання закінчилось"
-                    else "Безкоштовне зберігання ще ${daysLabel(left)}",
-                    CHANNEL_PARCELS,
-                    "Статус посилок"
-                )
+            // Storage running out tomorrow is the exception, because by the next
+            // digest it is already being billed.
+            if (status.stage == AT_BRANCH && left != null && storageIsUrgent(left)) {
+                notify(order.name, urgentStorageText(left), CHANNEL_PARCELS, "Статус посилок")
             }
             applyStatus(order, status, checkedAt)
         }
         if (trackable.isNotEmpty()) store.saveOrders(freshParcels)
 
+        // Once a year, and never in a way that can fail the pass. The payment
+        // reminder shifts off weekends with or without this; the calendar only
+        // adds the days a weekend rule cannot know about.
+        val year = java.time.LocalDate.now().year
+        if (store.holidays(year).isEmpty()) {
+            runCatching { fetchHolidays(year) }.getOrNull()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { store.saveHolidays(year, it) }
+        }
+
         // The widget reads the same store, so it is stale the moment this pass
         // writes to it, and nothing else would wake it before its half-hourly turn.
         FlowPayWidget().updateAll(applicationContext)
+        FlowPayTileService.refresh(applicationContext)
 
         // Retry only when there was something to fetch and none of it arrived,
         // which is what a dropped connection looks like from here.
         val hadWork = old.isNotEmpty() || trackable.isNotEmpty()
         val gotSomething = pricesRead > 0 || parcelsRead > 0
-        if (hadWork && !gotSomething) Result.retry() else Result.success()
+        if (hadWork && !gotSomething) {
+            // Not stamped: a pass that fetched nothing is exactly the pass the
+            // health panel exists to make visible, and recording it as a success
+            // would paper over the silence it is meant to expose.
+            Result.retry()
+        } else {
+            store.saveLastRunAt(WORK_PRICES, System.currentTimeMillis())
+            Result.success()
+        }
     }
 
     private fun notify(name: String, text: String, channelId: String, channelName: String) {
@@ -170,7 +177,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()
             WorkManager.getInstance(context)
-                .enqueueUniquePeriodicWork("prices", ExistingPeriodicWorkPolicy.UPDATE, request)
+                .enqueueUniquePeriodicWork(WORK_PRICES, ExistingPeriodicWorkPolicy.UPDATE, request)
         }
     }
 }

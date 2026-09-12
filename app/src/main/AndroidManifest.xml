@@ -27,6 +27,23 @@
    </intent-filter>
    <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
   </activity>
+  <!-- One figure in the notification shade, reachable without leaving whatever
+       is on screen. Exported because Quick Settings binds it from the system
+       process; the BIND permission is what keeps anything else out. -->
+  <service
+   android:name=".FlowPayTileService"
+   android:exported="true"
+   android:icon="@drawable/ic_tile"
+   android:label="@string/tile_label"
+   android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+   <intent-filter>
+    <action android:name="android.service.quicksettings.action.QS_TILE"/>
+   </intent-filter>
+   <!-- A long press opens the app; a short press swaps which figure is shown. -->
+   <meta-data
+    android:name="android.service.quicksettings.ACTIVITY_NAME"
+    android:value="com.flowpay.app.MainActivity"/>
+  </service>
   <receiver
    android:name=".FlowPayWidgetReceiver"
    android:exported="false"

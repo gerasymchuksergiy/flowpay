@@ -246,7 +246,18 @@ fun warnLabel(days: Int): String = when {
 }
 
 /** An expense whose warning window has opened, and how long is left before it is charged. */
-data class DueReminder(val pay: Pay, val daysAway: Int)
+data class DueReminder(
+    val pay: Pay,
+    /** Days until the money has to move, which is not always the day it is charged. */
+    val daysAway: Int,
+    /**
+     * The charge date, when the reminder was pulled earlier off a day off.
+     *
+     * Null whenever nothing moved, so the note explaining the move only appears
+     * where the date the user wrote down differs from the one being talked about.
+     */
+    val movedFrom: LocalDate? = null
+)
 
 /**
  * Everything worth saying on [today], soonest first.
@@ -255,12 +266,25 @@ data class DueReminder(val pay: Pay, val daysAway: Int)
  * week out, while the electricity bill set to nought appears only on the morning
  * it is taken. Everything found here goes into one notification, so a long notice
  * period costs a line in a daily message rather than a week of separate alarms.
+ *
+ * [holidays] is allowed to be empty and usually is on the first run of a year.
+ * With it, a charge falling on a weekend or a public holiday counts from the last
+ * working day before it, because that is the day the money actually has to move.
  */
-fun remindersDue(items: List<Pay>, today: LocalDate): List<DueReminder> =
+fun remindersDue(
+    items: List<Pay>,
+    today: LocalDate,
+    holidays: Set<Long> = emptySet()
+): List<DueReminder> =
     items.mapNotNull { pay ->
+        val charged = nextDateFor(pay, today)
+        val day = paymentDay(charged, holidays)
+        // Clamped at nought: a working day already behind us means "today", and
+        // "через -1 день" is not a thing to put in front of a person.
         val daysAway = java.time.temporal.ChronoUnit
-            .DAYS.between(today, nextDateFor(pay, today)).toInt()
-        DueReminder(pay, daysAway).takeIf { daysAway <= pay.warnDays.coerceAtLeast(0) }
+            .DAYS.between(today, day.payOn).toInt().coerceAtLeast(0)
+        DueReminder(pay, daysAway, charged.takeIf { day.moved })
+            .takeIf { daysAway <= pay.warnDays.coerceAtLeast(0) }
     }.sortedBy { it.daysAway }
 
 /** The line a daily reminder leads with. */
