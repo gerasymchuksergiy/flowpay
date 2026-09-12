@@ -129,6 +129,98 @@ suspend fun backupNow(context: Context, store: Store): Boolean = withContext(Dis
 }
 
 /**
+ * What came of a spreadsheet export, so the screen can tell the two failures apart.
+ *
+ * A year that holds nothing yet and a folder that would not take the file are the
+ * same thing from the outside — no file appeared — and they need opposite answers
+ * from the user, so they are never reported as one.
+ */
+data class CsvExport(
+    /** The file that was written, or null when none was. */
+    val name: String?,
+    /** Data rows in it, header excluded. Zero means the year is empty. */
+    val rows: Int
+)
+
+/**
+ * Writes the year's spending as a spreadsheet into the folder already granted.
+ *
+ * Deliberately the same document tree as the weekly copy rather than a second
+ * picker. The user has already said where this app may write, and asking again for
+ * a folder they have already chosen is how a person ends up with their data in two
+ * places and a backup in neither.
+ *
+ * Blocking. The caller moves to [Dispatchers.IO] first.
+ */
+fun writeExpenseCsv(context: Context, store: Store, today: LocalDate): CsvExport {
+    val pays = store.pays()
+    val marks = store.paidMarks(today)
+    val orders = store.orders()
+    val rate = store.fxRate().first.sell
+    val rows = expenseRows(pays, marks, orders, today.year, rate)
+    // A file holding nothing but column names is worse than no file: it looks like
+    // the export worked and the year was empty, and only one of those is true.
+    if (rows.isEmpty()) return CsvExport(null, 0)
+
+    val name = expenseCsvFileName(today.year)
+    val written = runCatching {
+        val tree = store.backupFolder().toUri()
+        val parent = DocumentsContract.buildDocumentUriUsingTree(
+            tree,
+            DocumentsContract.getTreeDocumentId(tree)
+        )
+        // Replaced rather than added to. Left to name the second one itself, the
+        // provider would write "flowpay-витрати-2026 (1).csv" and the folder would
+        // hold two versions of one year with nothing saying which is current.
+        findDocument(context, tree, name)?.let {
+            DocumentsContract.deleteDocument(context.contentResolver, it)
+        }
+        val file = DocumentsContract.createDocument(
+            context.contentResolver,
+            parent,
+            "text/csv",
+            name
+        ) ?: error("тека не приймає файл")
+        context.contentResolver.openOutputStream(file)?.use { stream ->
+            // Encoded explicitly. The byte order mark at the head of the text is
+            // only worth writing if the bytes after it are actually UTF-8.
+            stream.write(
+                expenseCsv(pays, marks, orders, today.year, rate).toByteArray(Charsets.UTF_8)
+            )
+        } ?: error("тека недоступна для запису")
+    }.isSuccess
+    return CsvExport(name.takeIf { written }, rows.size)
+}
+
+/** Writes the spreadsheet now, off the main thread. */
+suspend fun exportExpensesNow(
+    context: Context,
+    store: Store,
+    today: LocalDate = LocalDate.now()
+): CsvExport = withContext(Dispatchers.IO) { writeExpenseCsv(context, store, today) }
+
+/** The document in [tree] with exactly this name, or null when the folder has none. */
+private fun findDocument(context: Context, tree: Uri, name: String): Uri? {
+    val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+        tree,
+        DocumentsContract.getTreeDocumentId(tree)
+    )
+    val projection = arrayOf(
+        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+        DocumentsContract.Document.COLUMN_DISPLAY_NAME
+    )
+    return context.contentResolver.query(children, projection, null, null, null)?.use { cursor ->
+        while (cursor.moveToNext()) {
+            val id = cursor.getString(0) ?: continue
+            if (cursor.getString(1) == name) {
+                return@use DocumentsContract.buildDocumentUriUsingTree(tree, id)
+            }
+        }
+        null
+    }
+}
+
+/**
  * The copies already in the folder, as document uri and name.
  *
  * Only files this app named are returned. The folder belongs to the user and may

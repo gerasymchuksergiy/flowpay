@@ -4459,6 +4459,8 @@ fun SettingsScreen(
     var backupFolder by remember { mutableStateOf(store.backupFolder()) }
     var lastBackup by remember { mutableLongStateOf(store.lastBackupAt()) }
     var backingUp by remember { mutableStateOf(false) }
+    var exportingCsv by remember { mutableStateOf(false) }
+    val thisYear = remember { LocalDate.now().year }
     val backupPermitted = remember(backupFolder, lastBackup) {
         holdsBackupPermission(context, backupFolder)
     }
@@ -5035,6 +5037,57 @@ fun SettingsScreen(
                                 enabled = !backingUp
                             ) {
                                 Text(if (backup == BackupState.OFF) "Вибрати теку" else "Змінити")
+                            }
+                        }
+                    }
+                )
+                // Written into the folder the weekly copy already uses, so the
+                // spreadsheet lands beside the backups instead of asking for a
+                // second folder the user would have to remember choosing.
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            Icons.Default.TableChart,
+                            null,
+                            tint = if (backup == BackupState.READY) Accent else TextDisabled
+                        )
+                    },
+                    headlineContent = { Text("Витрати за $thisYear рік", fontWeight = FontWeight.Bold) },
+                    supportingContent = {
+                        Text(
+                            if (backup == BackupState.READY) {
+                                "Сплачене, підписки та закриті покупки — таблиця для Excel"
+                            } else {
+                                "Спершу виберіть теку для копій — таблиця ляже туди ж"
+                            }
+                        )
+                    },
+                    trailingContent = {
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    exportingCsv = true
+                                    val done = exportExpensesNow(context, store)
+                                    message = when {
+                                        done.name != null ->
+                                            "Збережено ${done.name} · ${done.rows} рядків"
+                                        done.rows == 0 ->
+                                            "За $thisYear рік ще нічого не записано"
+                                        else -> "Не вдалося записати таблицю у теку"
+                                    }
+                                    exportingCsv = false
+                                }
+                            },
+                            enabled = backup == BackupState.READY && !exportingCsv
+                        ) {
+                            if (exportingCsv) {
+                                CircularProgressIndicator(
+                                    Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Accent
+                                )
+                            } else {
+                                Icon(Icons.Default.ChevronRight, "Зберегти таблицю")
                             }
                         }
                     }
