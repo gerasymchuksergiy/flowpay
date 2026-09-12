@@ -494,8 +494,8 @@ fun currencyMoveNote(history: List<PricePoint>): String? {
 }
 
 /** "+5%" / "−3%", with the minus sign Ukrainian typography actually uses. */
-fun signedPercent(value: Double): String {
-    val rounded = "%.1f".format(kotlin.math.abs(value))
+fun signedPercent(value: Double, decimals: Int = 1): String {
+    val rounded = figure(kotlin.math.abs(value), decimals)
     return if (value < 0) "−$rounded%" else "+$rounded%"
 }
 

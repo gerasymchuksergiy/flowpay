@@ -104,7 +104,9 @@ fun timeLabel(epochMillis: Long): String {
     val time = java.time.Instant.ofEpochMilli(epochMillis)
         .atZone(java.time.ZoneId.systemDefault())
         .toLocalTime()
-    return "%02d:%02d".format(time.hour, time.minute)
+    // Locale.ROOT rather than the phone's: a clock face is ASCII digits
+    // everywhere, and a locale with its own numerals would render this unreadable.
+    return String.format(java.util.Locale.ROOT, "%02d:%02d", time.hour, time.minute)
 }
 
 /**

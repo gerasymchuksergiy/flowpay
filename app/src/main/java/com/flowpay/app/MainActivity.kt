@@ -1941,7 +1941,7 @@ fun SharedTransitionScope.WishDetailScreen(
                     description = wish.name,
                     modifier = Modifier.padding(horizontal = Space.screen),
                     height = 240.dp,
-                    overlayNumber = "%+.0f%%".format(change)
+                    overlayNumber = signedPercent(change, 0)
                     .takeIf { change <= -1.0 && wish.history.size > 1 && !stale },
                     chip = freshnessLabel(wish.freshness)
                         ?: verdictLabel(verdict).takeIf { verdict != BuyVerdict.UNKNOWN },
@@ -1990,7 +1990,7 @@ fun SharedTransitionScope.WishDetailScreen(
                     if (!stale) {
                         Spacer(Modifier.width(Space.md))
                         Text(
-                            "%+.1f%%".format(change),
+                            signedPercent(change),
                             color = if (change <= 0) Accent else Negative,
                             fontSize = Type.captionSize,
                             fontWeight = Type.strong,
@@ -2302,7 +2302,7 @@ fun SharedTransitionScope.WishDetailScreen(
                                     "Ціна в середині діапазону останніх ${daysLabel(insight.referenceDays)}"
                                 else ->
                                     "За останні ${daysLabel(insight.referenceDays)} ціна опускалась " +
-                                        "на ${"%.0f".format(insight.offHighest)}% нижче"
+                                        "на ${figure(insight.offHighest, 0)}% нижче"
                             },
                             color = TextSecondary,
                             fontSize = Type.captionSize,
@@ -2625,7 +2625,7 @@ fun SharedTransitionScope.WishCard(
             // price the shop no longer states is a claim about nothing.
             if (wish.history.size > 1 && change <= -1.0 && !stale && !held) {
                 Text(
-                    "%+.0f%%".format(change),
+                    signedPercent(change, 0),
                     color = AccentInk,
                     fontSize = Type.captionSize,
                     fontWeight = Type.strong,
@@ -2816,7 +2816,7 @@ fun CalculatorScreen(store: Store) {
                             Spacer(Modifier.height(Space.lg))
                             HeroPanel(
                                 label = if (hryvniaToDollar) "У доларах" else "У гривнях",
-                                value = if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
+                                value = if (hryvniaToDollar) "${figure(converted, 2)} USD" else money(converted),
                                 muted = converted == 0.0,
                                 // A short number left the right half of the panel empty.
                                 // The rate it was converted at belongs there: it is the
@@ -2902,7 +2902,7 @@ fun CalculatorScreen(store: Store) {
                     }
                     SummaryCard(
                         "Результат",
-                        NumberFormat.getNumberInstance(Locale("uk", "UA")).format(total),
+                        NumberFormat.getNumberInstance(UK).format(total),
                         total == 0.0,
                         hero = false
                     )
@@ -3860,7 +3860,7 @@ fun SettingsScreen(
                                         money(0.0)
                                     } else {
                                         "${money(kotlin.math.abs(moved.change))} · " +
-                                            "%+.1f%%".format(moved.changePercent)
+                                            signedPercent(moved.changePercent)
                                     },
                                     fontSize = Type.sectionSize,
                                     lineHeight = Type.sectionLine,
@@ -3905,7 +3905,7 @@ fun SettingsScreen(
                                             modifier = Modifier.weight(1f).padding(end = Space.sm)
                                         )
                                         Text(
-                                            "%+.1f%%".format(moved.biggestDropPercent),
+                                            signedPercent(moved.biggestDropPercent),
                                             color = Accent,
                                             fontSize = Type.captionSize,
                                             fontWeight = Type.strong
@@ -3928,7 +3928,7 @@ fun SettingsScreen(
                                             modifier = Modifier.weight(1f).padding(end = Space.sm)
                                         )
                                         Text(
-                                            "%+.1f%%".format(moved.biggestRisePercent),
+                                            signedPercent(moved.biggestRisePercent),
                                             color = Negative,
                                             fontSize = Type.captionSize,
                                             fontWeight = Type.strong

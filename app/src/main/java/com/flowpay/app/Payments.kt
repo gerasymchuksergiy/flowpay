@@ -317,7 +317,17 @@ fun reminderText(reminders: List<DueReminder>): String {
     }
 }
 
-private val UK = Locale("uk", "UA")
+internal val UK = Locale("uk", "UA")
+
+/**
+ * A number in the app's own language, whatever language the phone is set to.
+ *
+ * `"%.1f".format(x)` reads the phone's default locale, so on an English phone
+ * the app wrote "3.2%" next to "2 199,50 ₴" — two conventions inside one
+ * sentence. Every word in this app is Ukrainian, so every figure is too.
+ */
+fun figure(value: Double, decimals: Int = 1): String =
+    String.format(UK, "%.${decimals}f", value)
 
 /**
  * Two decimal places at most, and none when the amount is whole.
@@ -419,7 +429,10 @@ fun freeCashLine(month: Budget): String = when {
  * on the 28th are both August. Zero-padded so sorting the keys as text sorts them
  * as time, which is the whole of the ordering the overview needs.
  */
-fun monthKey(date: LocalDate): String = "%04d-%02d".format(date.year, date.monthValue)
+// A storage key, not a label: Locale.ROOT, because a phone set to a locale with
+// its own numerals would otherwise write a key nothing can read back.
+fun monthKey(date: LocalDate): String =
+    String.format(Locale.ROOT, "%04d-%02d", date.year, date.monthValue)
 
 /** The first day of the month a key names, or null when the string is not a key. */
 fun monthKeyDate(key: String): LocalDate? = runCatching {

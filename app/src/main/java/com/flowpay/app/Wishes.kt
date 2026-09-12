@@ -367,7 +367,7 @@ fun purchaseVerdictDetail(review: PurchaseReview): String = when (review.verdict
 
     PurchaseVerdict.HASTY ->
         "Заплачено ${money(review.paid)}, а найнижча була ${money(review.lowestSeen)}. " +
-            "Переплата ${money(review.overpaid)} — це ${"%.0f".format(review.overpaidPercent)}%"
+            "Переплата ${money(review.overpaid)} — це ${figure(review.overpaidPercent, 0)}%"
 
     PurchaseVerdict.UNJUDGED ->
         if (review.paid <= 0.0) {
@@ -450,8 +450,8 @@ fun reviewsLabel(count: Int): String {
  */
 fun ratingLine(about: ProductAbout): String = when {
     about.rating <= 0 -> ""
-    about.ratingCount > 0 -> "%.1f / 5 · %s".format(about.rating, reviewsLabel(about.ratingCount))
-    else -> "%.1f / 5".format(about.rating)
+    about.ratingCount > 0 -> "${figure(about.rating)} / 5 · ${reviewsLabel(about.ratingCount)}"
+    else -> "${figure(about.rating)} / 5"
 }
 
 /** Ukrainian plural for how many specifications a shop published. */

@@ -671,4 +671,57 @@ class PaidRecordTest {
         assertEquals(MonthState.UNRECORDED, records[1].state)
         assertEquals(MonthState.PARTIAL, records[2].state)
     }
+
+    // ------------------------------- the app's language, not the phone's
+
+    /**
+     * Runs a block with the JVM's default locale temporarily set elsewhere.
+     *
+     * The build server runs in en-US and this machine in uk-UA, which is how a
+     * figure formatted against the default locale got all the way to a release
+     * tag before anything noticed.
+     */
+    private fun <T> inLocale(locale: java.util.Locale, block: () -> T): T {
+        val previous = java.util.Locale.getDefault()
+        java.util.Locale.setDefault(locale)
+        try {
+            return block()
+        } finally {
+            java.util.Locale.setDefault(previous)
+        }
+    }
+
+    @Test
+    fun `figures keep the comma when the phone is set to English`() {
+        inLocale(java.util.Locale.US) {
+            assertEquals("3,2", figure(3.24))
+            assertEquals("44,80", figure(44.8, 2))
+            assertEquals("12", figure(12.4, 0))
+        }
+    }
+
+    @Test
+    fun `money and percentages do not change with the phone's language`() {
+        val hryvnia = inLocale(java.util.Locale.US) { shown(money(2_199.5)) }
+        val percent = inLocale(java.util.Locale.US) { signedPercent(-3.24) }
+        val rate = inLocale(java.util.Locale.US) { rateFigure(44.8) }
+
+        assertEquals("2 199,5 ₴", hryvnia)
+        assertEquals("−3,2%", percent)
+        assertEquals("44,80", rate)
+    }
+
+    @Test
+    fun `a month key is the same string in every locale`() {
+        // It is a storage key: a locale with its own numerals would write one that
+        // nothing can read back, and a year of paid marks would vanish.
+        val here = monthKey(LocalDate.of(2026, 3, 9))
+        val elsewhere = inLocale(java.util.Locale.forLanguageTag("ar-EG")) {
+            monthKey(LocalDate.of(2026, 3, 9))
+        }
+
+        assertEquals("2026-03", here)
+        assertEquals(here, elsewhere)
+    }
+
 }
