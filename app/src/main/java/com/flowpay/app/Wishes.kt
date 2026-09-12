@@ -95,10 +95,12 @@ sealed interface Reading {
 
 enum class WishSort(val label: String) {
     ADDED("За додаванням"),
+    NEWEST("Найновіші"),
     BIGGEST_DROP("Найбільше падіння"),
     CHEAPEST("Дешевші"),
     DEAREST("Дорожчі"),
-    CLOSEST("Ближче до цілі")
+    CLOSEST("Ближче до цілі"),
+    NAME("За назвою")
 }
 
 /**
@@ -495,10 +497,14 @@ fun wishProgress(wish: Wish): Double {
  */
 fun sortWishes(items: List<Wish>, sort: WishSort): List<Wish> = when (sort) {
     WishSort.ADDED -> items
+    // Undatable wishes carry day nought, which puts them last rather than at the
+    // top pretending to be the oldest thing on the list.
+    WishSort.NEWEST -> items.sortedByDescending { addedDay(it) }
     WishSort.BIGGEST_DROP -> items.sortedBy { priceChangePercent(it) }
     WishSort.CHEAPEST -> items.sortedBy { it.price }
     WishSort.DEAREST -> items.sortedByDescending { it.price }
     WishSort.CLOSEST -> items.sortedByDescending { wishProgress(it) }
+    WishSort.NAME -> items.sortedWith(wishNameOrder())
 }
 
 /** Reads a stored sort name back, falling back to the default if it is unknown. */

@@ -30,6 +30,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -1459,6 +1461,11 @@ fun WishlistScreen(
     var sort by remember { mutableStateOf(store.wishSort()) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    var searching by remember { mutableStateOf(false) }
+    // Which chip is down. Null is "Усі", and it is also where a category goes when
+    // its last wish is renamed or deleted out from under the selection.
+    var chosenCategory by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     // Read once, so a session that crosses midnight cannot change its mind about
     // which wishes are still on hold halfway down the list.
@@ -1502,8 +1509,21 @@ fun WishlistScreen(
                     }
                 )
             } else {
-                // The same control in the large header and in the compact bar, so
-                // refreshing prices stays reachable once you are down the grid.
+                val categories = remember(items) { knownCategories(items) }
+                val totals = remember(items) { categoryTotals(items) }
+                // Derived rather than corrected in an effect: a category whose last
+                // wish was deleted simply stops being selected on the next frame,
+                // instead of leaving the grid filtered on a name nothing carries.
+                val category = chosenCategory?.takeIf { chosen ->
+                    categories.any { categoryKey(it) == categoryKey(chosen) }
+                }
+                val shown = remember(items, category, query) { filterWishes(items, category, query) }
+
+                // The same controls in the large header and in the compact bar, so
+                // refreshing and searching stay reachable once you are down the grid
+                // — which is exactly where a list long enough to need searching puts
+                // you. A field pinned to the top of the grid would scroll away with
+                // the header and have to be scrolled back to.
                 val refreshAction: @Composable () -> Unit = {
                     IconButton(
                         onClick = {
@@ -1530,7 +1550,32 @@ fun WishlistScreen(
                         }
                     }
                 }
+                val headerActions: @Composable () -> Unit = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (items.size > 1) {
+                            IconButton(
+                                onClick = {
+                                    searching = !searching
+                                    // Closing the box has to clear what was in it, or
+                                    // the grid stays filtered by a query with nothing
+                                    // on screen to explain why.
+                                    if (!searching) query = ""
+                                }
+                            ) {
+                                Icon(
+                                    if (searching) Icons.Default.Close else Icons.Default.Search,
+                                    if (searching) "Закрити пошук" else "Пошук за назвою",
+                                    tint = if (query.isNotBlank()) Accent else TextSecondary
+                                )
+                            }
+                        }
+                        refreshAction()
+                    }
+                }
                 val gridState = rememberLazyGridState()
+                // The box is item one, so opening it from the compact bar would
+                // otherwise put the field somewhere thirty cards above the screen.
+                LaunchedEffect(searching) { if (searching) gridState.animateScrollToItem(0) }
                 Box {
                     // Two columns, the way a shop lists goods. One wish per full-width
                     // row meant a photograph, a chart and four lines of text for every
@@ -1558,8 +1603,30 @@ fun WishlistScreen(
                                 subtitle = "Ціна, ціль та історія в одному місці",
                                 // The grid already supplies the screen margin.
                                 inset = 0.dp,
-                                trailing = refreshAction
+                                trailing = headerActions
                             )
+                        }
+                        if (searching) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                WishSearchField(query, { query = it }) {
+                                    searching = false
+                                    query = ""
+                                }
+                            }
+                        }
+                        if (showsCategoryRow(items)) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                CategoryChips(
+                                    totals = totals,
+                                    everything = allCategoriesTotal(items),
+                                    selected = category
+                                ) { tapped ->
+                                    // Tapping the chip that is already down clears it,
+                                    // so getting back to the whole list never needs the
+                                    // row to be scrolled back to its first chip.
+                                    chosenCategory = if (tapped == category) null else tapped
+                                }
+                            }
                         }
                         message?.let { text ->
                             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -1603,7 +1670,15 @@ fun WishlistScreen(
                                     DropdownMenu(sortOpen, { sortOpen = false }) {
                                         WishSort.entries.forEach { option ->
                                             DropdownMenuItem(
-                                                text = { Text(option.label) },
+                                                text = {
+                                                    Text(
+                                                        option.label,
+                                                        // The trigger line names the
+                                                        // current order, but not once
+                                                        // the menu covers it.
+                                                        color = if (option == sort) Accent else TextPrimary
+                                                    )
+                                                },
                                                 onClick = {
                                                     sort = option
                                                     store.saveWishSort(option)
@@ -1624,11 +1699,22 @@ fun WishlistScreen(
                                 )
                             }
                         }
+                        if (items.isNotEmpty() && shown.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    browseEmptyNote(query, category),
+                                    Modifier.padding(top = Space.lg, bottom = Space.lg),
+                                    color = TextSecondary,
+                                    fontSize = Type.bodySize,
+                                    lineHeight = Type.bodyLine
+                                )
+                            }
+                        }
                         // Held wishes drop to their own block at the foot of the list
                         // rather than vanishing: the whole point of a hold is to come
                         // back to the thing, and something you cannot find again was
                         // deleted rather than postponed.
-                        val (watched, held) = partitionByHold(items, today.toEpochDay())
+                        val (watched, held) = partitionByHold(shown, today.toEpochDay())
                         items(sortWishes(watched, sort), key = { it.id }) { wish ->
                             WishCard(wish, this@AnimatedContent, today.toEpochDay()) {
                                 setOpened(wish.id)
@@ -1650,30 +1736,156 @@ fun WishlistScreen(
                             }
                         }
                     }
-                    CollapsingTitle("Мої бажання", gridState, trailing = refreshAction)
+                    CollapsingTitle("Мої бажання", gridState, trailing = headerActions)
                 }
             }
         }
     }
     if (adding) {
-        AddWishSheet({ setAdding(false) }, store.fxRate().first) { wish ->
+        AddWishSheet({ setAdding(false) }, store.fxRate().first, knownCategories(items)) { wish ->
             save(items + wish)
             setAdding(false)
         }
     }
     editing?.let { selected ->
-        EditWishSheet(selected, { editing = null }) { changed ->
+        EditWishSheet(selected, knownCategories(items), { editing = null }) { changed ->
             save(items.map { if (it.id == changed.id) changed else it })
             editing = null
         }
     }
 }
 
+/**
+ * The search box, which only exists while it is being used.
+ *
+ * It takes focus the moment it appears, because it was opened by tapping a
+ * magnifier and anything else would ask for a second tap to do the obvious thing.
+ */
 @Composable
-fun AddWishSheet(close: () -> Unit, rate: FxRate = FxRate(), add: (Wish) -> Unit) {
+fun WishSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    OutlinedTextField(
+        query,
+        onQuery,
+        Modifier
+            .fillMaxWidth()
+            .padding(bottom = Space.lg)
+            .focusRequester(focus),
+        label = { Text("Пошук за назвою") },
+        singleLine = true,
+        leadingIcon = { Icon(Icons.Default.Search, null, tint = TextSecondary) },
+        trailingIcon = {
+            IconButton(onClick = { if (query.isBlank()) onClose() else onQuery("") }) {
+                Icon(Icons.Default.Close, "Очистити", tint = TextSecondary)
+            }
+        }
+    )
+}
+
+/**
+ * One chip per category, each carrying what it is holding.
+ *
+ * The money is the point of the row as much as the filter is: "Техніка" says
+ * nothing you did not know, while "Техніка · 62 000 ₴" answers the question a
+ * wishlist is really being asked. On the chip rather than in the overview because
+ * that puts every category's figure beside every other one, which is the only way
+ * the number means anything — a total alone is a number, four totals side by side
+ * is where the money went.
+ */
+@Composable
+fun CategoryChips(
+    totals: List<CategoryTotal>,
+    everything: Double,
+    selected: String?,
+    onSelect: (String?) -> Unit
+) {
+    LazyRow(
+        Modifier.padding(bottom = Space.lg),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+    ) {
+        item {
+            CategoryChip("Усі", approxMoney(everything), selected == null) { onSelect(null) }
+        }
+        items(totals, key = { it.name }) { total ->
+            CategoryChip(
+                total.name,
+                approxMoney(total.total),
+                categoryKey(total.name) == selected?.let(::categoryKey)
+            ) { onSelect(total.name) }
+        }
+    }
+}
+
+@Composable
+private fun CategoryChip(label: String, amount: String, active: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(Radius.pill)
+            .background(if (active) Accent else SurfaceHigh)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.lg, vertical = Space.sm)
+    ) {
+        Text(
+            label,
+            color = if (active) AccentInk else TextPrimary,
+            fontSize = Type.captionSize,
+            fontWeight = Type.medium,
+            maxLines = 1
+        )
+        Text(
+            amount,
+            // Two thirds opacity rather than a second colour: on the lime chip any
+            // muted grey from the palette turns muddy against it.
+            color = if (active) AccentInk.copy(alpha = 0.7f) else TextSecondary,
+            fontSize = Type.overlineSize,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * The categories already in use, offered rather than imposed.
+ *
+ * The field stays free text — a fixed list would be wrong about this person's
+ * things within a week — but typing "техніка" a second time is how one category
+ * quietly becomes two, and tapping is both faster and exact.
+ */
+@Composable
+fun CategorySuggestions(known: List<String>, chosen: String, onPick: (String) -> Unit) {
+    if (known.isEmpty()) return
+    LazyRow(
+        Modifier.padding(top = Space.sm),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+    ) {
+        items(known, key = { it }) { name ->
+            val active = categoryKey(name) == categoryKey(chosen)
+            Text(
+                name,
+                Modifier
+                    .clip(Radius.pill)
+                    .background(if (active) AccentSoft else SurfaceHigh)
+                    .clickable { onPick(name) }
+                    .padding(horizontal = Space.md, vertical = Space.sm),
+                color = if (active) Accent else TextSecondary,
+                fontSize = Type.captionSize,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+@Composable
+fun AddWishSheet(
+    close: () -> Unit,
+    rate: FxRate = FxRate(),
+    /** The spellings already in use, so a new wish joins a category instead of forking it. */
+    known: List<String> = emptyList(),
+    add: (Wish) -> Unit
+) {
     var link by remember { mutableStateOf("") }
     var target by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("Інше") }
+    var category by remember { mutableStateOf(OTHER_CATEGORY) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // The page is held between the two steps, so choosing an edition does not
@@ -1694,7 +1906,7 @@ fun AddWishSheet(close: () -> Unit, rate: FxRate = FxRate(), add: (Wish) -> Unit
                 rate
             ).copy(
                 targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
-                category = category
+                category = canonicalCategory(category, known)
             )
         )
     }
@@ -1758,13 +1970,20 @@ fun AddWishSheet(close: () -> Unit, rate: FxRate = FxRate(), add: (Wish) -> Unit
             OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
             NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
             OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+            CategorySuggestions(known, category) { category = it }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
         }
     }
 }
 
 @Composable
-fun EditWishSheet(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
+fun EditWishSheet(
+    wish: Wish,
+    /** The spellings already in use, so an edit joins a category instead of forking it. */
+    known: List<String> = emptyList(),
+    close: () -> Unit,
+    save: (Wish) -> Unit
+) {
     var name by remember { mutableStateOf(wish.name) }
     var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
     var category by remember { mutableStateOf(wish.category) }
@@ -1793,7 +2012,7 @@ fun EditWishSheet(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
                 priced.copy(
                     name = name.ifBlank { wish.name },
                     targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
-                    category = category.ifBlank { "Інше" }
+                    category = canonicalCategory(category, known)
                 )
             )
         },
@@ -1813,6 +2032,7 @@ fun EditWishSheet(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
         }
         NumberField("Цільова ціна, ₴", target) { target = it }
         OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+        CategorySuggestions(known, category) { category = it }
     }
 }
 
