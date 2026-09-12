@@ -70,6 +70,156 @@ fun cleanProductTitle(raw: String): String {
 }
 
 /**
+ * What a page says about the thing, beyond its price.
+ *
+ * Every field is optional and blank when the page did not state it, because the
+ * honest answer for most shops is that they did not. Nothing here is guessed from
+ * the visible text: a description scraped out of layout is a paragraph of markup,
+ * and a specification table has a different shape in every shop. Only what the
+ * page declares about itself in a standard place is read.
+ */
+data class ProductAbout(
+    val description: String = "",
+    val brand: String = "",
+    /** Out of five, as shops state it. Zero when there is no rating. */
+    val rating: Double = 0.0,
+    val ratingCount: Int = 0,
+    /** Name and value pairs the shop itself published as structured data. */
+    val specs: List<Pair<String, String>> = emptyList()
+) {
+    val isEmpty: Boolean
+        get() = description.isBlank() && brand.isBlank() && rating <= 0 && specs.isEmpty()
+}
+
+// Long enough to be worth reading, short enough not to become the page itself.
+private const val DESCRIPTION_LIMIT = 600
+
+/** Collapses a scraped run of text into one readable paragraph. */
+private fun tidyText(raw: String): String {
+    val text = decodeEntities(raw).replace(Regex("""<[^>]+>"""), " ")
+        .replace(Regex("""\s+"""), " ")
+        .trim()
+    if (text.length <= DESCRIPTION_LIMIT) return text
+    // Cut at a sentence if one is near the limit, otherwise at a word.
+    val window = text.take(DESCRIPTION_LIMIT)
+    val sentence = window.lastIndexOfAny(charArrayOf('.', '!', '?', '…'))
+    val cut = if (sentence > DESCRIPTION_LIMIT / 2) sentence + 1 else window.lastIndexOf(' ')
+    return window.take(if (cut > 0) cut else DESCRIPTION_LIMIT).trim() + "…"
+}
+
+/**
+ * Everything the page declares about the thing itself.
+ *
+ * og:description is the one field nearly every shop fills, because it decides how
+ * their link looks when someone pastes it into a messenger. The rest — brand,
+ * rating, specifications — is filled only by shops that want Google to show it,
+ * so those blocks are absent far more often than present, and the screen has to
+ * be built for their absence rather than around their presence.
+ */
+fun extractAbout(html: String): ProductAbout {
+    val fromJsonLd = aboutFromJsonLd(html)
+    val description = listOf(
+        metaContent(html, "og:description"),
+        fromJsonLd.description,
+        metaContent(html, "description")
+    ).firstOrNull { it.isNotBlank() }.orEmpty()
+
+    val microRating = priceNumber(
+        Regex("""itemprop=["']ratingValue["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(html)?.groupValues?.get(1).orEmpty()
+    ) ?: 0.0
+    val microCount = priceNumber(
+        Regex("""itemprop=["'](?:reviewCount|ratingCount)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(html)?.groupValues?.get(1).orEmpty()
+    )?.toInt() ?: 0
+
+    return ProductAbout(
+        description = tidyText(description),
+        brand = tidyText(fromJsonLd.brand),
+        rating = fromJsonLd.rating.takeIf { it > 0 } ?: microRating,
+        ratingCount = fromJsonLd.ratingCount.takeIf { it > 0 } ?: microCount,
+        specs = fromJsonLd.specs
+    )
+}
+
+private fun aboutFromJsonLd(html: String): ProductAbout {
+    var about = ProductAbout()
+    Regex(
+        """<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    ).findAll(html).map { it.groupValues[1].trim() }.forEach { block ->
+        runCatching {
+            val root: Any = when {
+                block.startsWith("[") -> JSONArray(block)
+                block.startsWith("{") -> org.json.JSONObject(block)
+                else -> return@runCatching
+            }
+            about = aboutInNode(root, about, depth = 0)
+        }
+    }
+    return about
+}
+
+private fun aboutInNode(node: Any?, found: ProductAbout, depth: Int): ProductAbout {
+    if (depth > 6) return found
+    var about = found
+    when (node) {
+        is JSONArray -> (0 until node.length()).forEach {
+            about = aboutInNode(node.opt(it), about, depth + 1)
+        }
+        is org.json.JSONObject -> {
+            if (about.description.isBlank()) {
+                node.optString("description").takeIf { it.isNotBlank() }
+                    ?.let { about = about.copy(description = it) }
+            }
+            if (about.brand.isBlank()) {
+                val brand = node.opt("brand")
+                val name = when (brand) {
+                    is org.json.JSONObject -> brand.optString("name")
+                    is String -> brand
+                    else -> ""
+                }
+                if (name.isNotBlank()) about = about.copy(brand = name)
+            }
+            if (about.rating <= 0 && node.has("ratingValue")) {
+                val value = priceNumber(node.opt("ratingValue").toString()) ?: 0.0
+                val count = priceNumber(
+                    node.opt("reviewCount")?.toString().orEmpty().ifBlank {
+                        node.opt("ratingCount")?.toString().orEmpty()
+                    }
+                )?.toInt() ?: 0
+                if (value > 0) about = about.copy(rating = value, ratingCount = count)
+            }
+            // additionalProperty is the only place a shop states a specification in
+            // a shape every shop states it the same way.
+            if (about.specs.isEmpty() && node.has("additionalProperty")) {
+                val list = mutableListOf<Pair<String, String>>()
+                fun collect(value: Any?) {
+                    when (value) {
+                        is JSONArray -> (0 until value.length()).forEach { collect(value.opt(it)) }
+                        is org.json.JSONObject -> {
+                            val name = value.optString("name")
+                            val text = value.opt("value")?.toString().orEmpty()
+                            if (name.isNotBlank() && text.isNotBlank() && text != "null") {
+                                list.add(decodeEntities(name) to decodeEntities(text))
+                            }
+                        }
+                    }
+                }
+                collect(node.opt("additionalProperty"))
+                if (list.isNotEmpty()) about = about.copy(specs = list)
+            }
+            node.keys().forEach { key ->
+                if (key != "additionalProperty") {
+                    about = aboutInNode(node.opt(key), about, depth + 1)
+                }
+            }
+        }
+    }
+    return about
+}
+
+/**
  * One price a page states, and whatever the page called it.
  *
  * A page rarely has a single price. Editions of a game, sizes of a shoe, storage

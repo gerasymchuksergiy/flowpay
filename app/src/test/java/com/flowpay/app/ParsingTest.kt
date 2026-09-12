@@ -1,6 +1,7 @@
 package com.flowpay.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -108,6 +109,108 @@ class ParsingTest {
         """.trimIndent()
 
         assertEquals(1500.0, extractPrice(html), 0.001)
+    }
+
+    // ------------------------------------- what a page says about the thing
+
+    @Test
+    fun `the description comes from the tag every shop actually fills`() {
+        // og:description decides how a link looks pasted into a messenger, which is
+        // why shops fill it even when they fill nothing else.
+        val html = """<meta property="og:description" content="Ласкаво просимо до World"/>"""
+
+        assertEquals("Ласкаво просимо до World", extractAbout(html).description)
+    }
+
+    @Test
+    fun `structured data is preferred over the plain meta description`() {
+        val html = """
+            <script type="application/ld+json">
+            {"@type":"Product","description":"Демісезонні кросівки з сіткою"}
+            </script>
+            <meta name="description" content="Купуйте зі знижкою в нашому магазині"/>
+        """.trimIndent()
+
+        assertEquals("Демісезонні кросівки з сіткою", extractAbout(html).description)
+    }
+
+    @Test
+    fun `brand, rating and its count are read when the shop declares them`() {
+        val html = """
+            <script type="application/ld+json">
+            {"@type":"Product","brand":{"@type":"Brand","name":"ASICS"},
+             "aggregateRating":{"ratingValue":"4.7","reviewCount":"128"}}
+            </script>
+        """.trimIndent()
+
+        val about = extractAbout(html)
+
+        assertEquals("ASICS", about.brand)
+        assertEquals(4.7, about.rating, 0.001)
+        assertEquals(128, about.ratingCount)
+    }
+
+    @Test
+    fun `a rating stated in attributes is read too`() {
+        val html = """
+            <span itemprop="ratingValue" content="4.2"></span>
+            <span itemprop="reviewCount" content="31"></span>
+        """.trimIndent()
+
+        val about = extractAbout(html)
+
+        assertEquals(4.2, about.rating, 0.001)
+        assertEquals(31, about.ratingCount)
+    }
+
+    @Test
+    fun `specifications are read only where the shop published them as data`() {
+        val html = """
+            <script type="application/ld+json">
+            {"@type":"Product","additionalProperty":[
+              {"@type":"PropertyValue","name":"Матеріал","value":"Текстиль"},
+              {"@type":"PropertyValue","name":"Сезон","value":"Демісезон"}]}
+            </script>
+        """.trimIndent()
+
+        val specs = extractAbout(html).specs
+
+        assertEquals(2, specs.size)
+        assertEquals("Матеріал" to "Текстиль", specs[0])
+        assertEquals("Сезон" to "Демісезон", specs[1])
+    }
+
+    @Test
+    fun `a page that declares nothing about itself yields nothing invented`() {
+        // Most shops are this page: the specification table is markup, not data,
+        // and guessing a description out of it produces a paragraph of tags.
+        val about = extractAbout("<html><body><table><tr><td>Колір</td></tr></table></body></html>")
+
+        assertTrue(about.isEmpty)
+        assertEquals("", about.description)
+        assertEquals(0, about.ratingCount)
+    }
+
+    @Test
+    fun `a very long description is cut at a sentence rather than mid-word`() {
+        val sentence = "Це дуже довгий опис товару з великою кількістю слів. "
+        val html = """<meta property="og:description" content="${sentence.repeat(20)}"/>"""
+
+        val description = extractAbout(html).description
+
+        assertTrue(description.length <= 620)
+        assertTrue(description.endsWith("…"))
+        assertFalse(description.contains("  "))
+    }
+
+    @Test
+    fun `markup and entities inside a description do not reach the screen`() {
+        // Escaped tags and a non-breaking space are how shops actually write this.
+        // Entities are decoded once, not repeatedly: text that arrives double
+        // escaped stays as the shop wrote it rather than being unwrapped twice.
+        val html = """<meta property="og:description" content="&lt;b&gt;Нове&lt;/b&gt;&nbsp; взуття"/>"""
+
+        assertEquals("Нове взуття", extractAbout(html).description)
     }
 
     @Test
