@@ -3813,6 +3813,57 @@ fun CalculatorScreen(store: Store) {
 }
 
 /**
+ * A subscription's own price history, two or three points wide, in its row.
+ *
+ * A step rather than a slope: a subscription's price does not drift, it is held
+ * and then changed, and a line sloping between two figures would draw six months
+ * of a rise that happened on one morning.
+ *
+ * Deliberately local and deliberately small. The shared chart primitives are
+ * being rewritten in Components.kt, including a step chart of their own, and a
+ * second one competing with it is how two charts in one app end up disagreeing
+ * about what a step looks like. This draws the row's worth and nothing more, and
+ * should be deleted in favour of the shared primitive the moment it lands.
+ */
+@Composable
+fun AmountStep(points: List<PricePoint>, modifier: Modifier = Modifier) {
+    val prices = points.map { it.price }.filter { it > 0.0 }
+    // The last move decides the colour. A raise is the fact worth noticing, and it
+    // is a fact about the subscription rather than about the person paying it.
+    val raised = prices.size >= 2 && prices.last() > prices[prices.size - 2]
+    Canvas(modifier) {
+        if (prices.size < 2) return@Canvas
+        val low = prices.min()
+        val high = prices.max()
+        val range = (high - low).takeIf { it > 0.0 } ?: 1.0
+        val width = 2.dp.toPx()
+        val usable = (size.height - width * 2).coerceAtLeast(1f)
+        val slot = size.width / prices.size
+        fun height(price: Double) =
+            width + usable * (1f - ((price - low) / range).toFloat())
+
+        var x = 0f
+        var previous = height(prices.first())
+        prices.forEachIndexed { index, price ->
+            val y = height(price)
+            val last = index == prices.size - 1
+            val ink = when {
+                !last -> TextDisabled
+                raised -> Negative
+                else -> Accent
+            }
+            // The riser first, so the tread that follows caps it cleanly.
+            if (index > 0) {
+                drawLine(ink, Offset(x, previous), Offset(x, y), width, StrokeCap.Round)
+            }
+            drawLine(ink, Offset(x, y), Offset(x + slot, y), width, StrokeCap.Round)
+            x += slot
+            previous = y
+        }
+    }
+}
+
+/**
  * The month as one bar: what the standing costs take, and what survives them.
  *
  * One shape and one colour, because at five subscriptions a palette would be
@@ -4127,6 +4178,31 @@ fun PaymentsScreen(
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis
                                             )
+                                        }
+                                        // What it used to cost, on the row rather
+                                        // than a screen away. A subscription earns
+                                        // by raising its price quietly, and the
+                                        // whole defence is the old figure sitting
+                                        // beside the new one where it is read. An
+                                        // expense the app has only ever seen at
+                                        // one price says nothing at all here.
+                                        val steps = amountStepPoints(pay)
+                                        amountMoveLine(pay)?.let { move ->
+                                            Spacer(Modifier.height(Space.xs))
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                AmountStep(
+                                                    steps,
+                                                    Modifier.width(28.dp).height(14.dp)
+                                                )
+                                                Spacer(Modifier.width(Space.sm))
+                                                Text(
+                                                    move,
+                                                    color = TextSecondary,
+                                                    fontSize = Type.captionSize,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
                                     }
                                     Column(horizontalAlignment = Alignment.End) {

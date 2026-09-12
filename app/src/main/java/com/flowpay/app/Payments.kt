@@ -406,6 +406,48 @@ fun amountHistoryNote(pay: Pay): String? {
     return "Було ${amountLabel(change.from, pay.currency)} · ${signedPercent(change.percent, 0)}$since"
 }
 
+/**
+ * How many recorded amounts the row's step line draws.
+ *
+ * Two or three. Four is a chart, and a chart inside a list row is a thing people
+ * squint at rather than read. The interesting shape is always the last move.
+ */
+const val STEP_POINTS = 3
+
+/**
+ * The last few recorded amounts, for the step line on the expense's own row.
+ *
+ * Empty below two points, and that is the honest refusal: one figure is what the
+ * expense costs, not a history, and a line drawn through a single point would be
+ * a flat rule implying the price had been watched and had held.
+ *
+ * Every subscription tracker worth checking sends an alert about a raise and then
+ * shows a list of charges; none of them draws the series it already stores. The
+ * data has been on the phone since amounts started being recorded.
+ */
+fun amountStepPoints(pay: Pay, limit: Int = STEP_POINTS): List<PricePoint> {
+    val trail = amountTrail(pay)
+    if (trail.size < 2) return emptyList()
+    return trail.takeLast(limit.coerceAtLeast(2))
+}
+
+/**
+ * The move in words, which is the half of it that carries the figures.
+ *
+ * "було 199 → стало 249 ₴, +25%" — both prices, because a percentage alone is
+ * unactionable and a new price alone is the thing that got past you in the first
+ * place. Dated where the app knows the date, silent about it where it does not:
+ * a point written before the app dated them did not happen on any day it can name.
+ */
+fun amountMoveLine(pay: Pay): String? {
+    val change = lastAmountChange(pay) ?: return null
+    val since = change.day.takeIf { it > 0L }
+        ?.let { " · з ${dayMonth(LocalDate.ofEpochDay(it))}" }
+        .orEmpty()
+    return "було ${bareAmount(change.from)} → стало ${amountLabel(change.to, pay.currency)}, " +
+        "${signedPercent(change.percent, 0)}$since"
+}
+
 /** How many recorded amounts the sheet lists before it stops being a history and starts being a wall. */
 const val TRAIL_LINES = 6
 
