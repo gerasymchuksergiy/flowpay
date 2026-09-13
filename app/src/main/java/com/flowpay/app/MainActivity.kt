@@ -219,7 +219,22 @@ data class Wish(
      * and the chart all assume a single line, and three lines would leave the
      * verdict measuring nothing in particular.
      */
-    val sources: List<WishSource> = emptyList()
+    val sources: List<WishSource> = emptyList(),
+    /**
+     * What to look this thing up as elsewhere, when the person has corrected it.
+     *
+     * Empty on every wish nobody has corrected, and emphatically not "not set up
+     * yet": empty means [builtSearchTerms] decides, which is what should happen
+     * for all but the handful of things the app gets wrong. Storing the built
+     * query here as well would freeze each wish against the builder it was added
+     * under, so that fixing the builder fixed nothing that already existed.
+     *
+     * Real data rather than a view preference — it is a sentence the person wrote
+     * about their own thing and losing it in a restore would be losing their work
+     * — so unlike the folded sections it belongs in [Store.exportJson], which it
+     * reaches by being part of [wishJson].
+     */
+    val searchQuery: String = ""
 )
 
 data class Pay(
@@ -732,6 +747,9 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
         "src",
         JSONArray().apply { wish.sources.forEach { put(sourceJson(it)) } }
     )
+    // Written even when empty, like the array above, so that what comes back out
+    // of the bin is exactly what went in.
+    .put("sq", wish.searchQuery)
 
 /**
  * One shop, stored.
@@ -839,7 +857,11 @@ fun wishOf(o: JSONObject): Wish {
         // place that turns that single address into the one source it always was.
         sources = (0 until stored.length()).mapNotNull { index ->
             stored.optJSONObject(index)?.let(::sourceOf)
-        }.filter { it.url.isNotBlank() }
+        }.filter { it.url.isNotBlank() },
+        // Absent on every wish saved before the search existed, which reads back as
+        // empty — and empty is precisely right for them: nobody has corrected the
+        // query for a wish that never had one.
+        searchQuery = o.optString("sq")
     )
 }
 
@@ -2767,6 +2789,70 @@ fun SourceRow(
 }
 
 /**
+ * Where to look when the thing cannot be bought where it is being watched.
+ *
+ * **Why it sits under the price rather than at the bottom of the page.** He
+ * pictured scrolling down to it, and said in the same breath that he did not know
+ * where it would fit. The constraint that decides it is not layout but timing: the
+ * question "who else has it" is formed by reading «Магазин зараз не продає це»,
+ * and that sentence is the caption under the price at the top of the screen. A
+ * button four sections below it is a button he has to already know about, and the
+ * one moment it would have been useful is the moment he closed the page. So it
+ * goes where the bad news is delivered, which is also the only place on this
+ * screen that is guaranteed to be on his display when the question occurs to him.
+ *
+ * **Why the query is shown and not merely sent.** A search with the wrong words
+ * comes back with junk and gives no hint whose fault that was — he would be left
+ * deciding whether hotline has the thing or the app asked it the wrong question.
+ * Printing the words turns a black box into something with a visible mistake in
+ * it, and making them editable turns a visible mistake into a fixed one. The fix
+ * is stored on the wish, so it holds.
+ */
+@Composable
+fun ElsewhereCard(
+    wish: Wish,
+    terms: String,
+    onTerms: (String) -> Unit,
+    onSearch: () -> Unit
+) {
+    Card(
+        Modifier.fillMaxWidth().padding(top = Space.lg).litEdge(Radius.md),
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.md
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Text(
+                compareNote(wish),
+                fontSize = Type.bodySize,
+                lineHeight = Type.bodyLine
+            )
+            OutlinedTextField(
+                terms,
+                onTerms,
+                Modifier.fillMaxWidth().padding(top = Space.md),
+                label = { Text("Що шукати") },
+                singleLine = true
+            )
+            Text(
+                "Запит можна виправити — він збережеться для цього бажання.",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+            OutlinedButton(
+                onSearch,
+                Modifier.fillMaxWidth().padding(top = Space.md),
+                enabled = terms.isNotBlank(),
+                shape = Radius.sm,
+                border = BorderStroke(1.dp, HairLine),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+            ) { Text("Шукати на Hotline ↗") }
+        }
+    }
+}
+
+/**
  * Adds a second shop for the same thing.
  *
  * The page is read before the shop is kept, because a source that cannot produce
@@ -3166,6 +3252,9 @@ fun SharedTransitionScope.WishDetailScreen(
     var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
     var monthlyText by remember(wish.id) { mutableStateOf(amountText(wish.monthlyPlan)) }
     var deadlineDay by remember(wish.id) { mutableLongStateOf(wish.deadline) }
+    // Seeded from whatever this wish will actually be searched with, which is the
+    // built query until the day he changes it and his own words afterwards.
+    var searchText by remember(wish.id) { mutableStateOf(wishSearchTerms(wish)) }
     // Which end of the plan is known: the monthly sum, or the date.
     var byDate by remember(wish.id) { mutableStateOf(wish.deadline > 0L) }
     var pickingDate by remember { mutableStateOf(false) }
@@ -3250,6 +3339,16 @@ fun SharedTransitionScope.WishDetailScreen(
         byDate && monthsLeft == 0 -> "Потрібно ${money(plan.remaining)} одразу"
         plan.needsRate -> "Щомісячну суму ще не вказано"
         else -> "${money(plan.monthly)} на місяць · ${monthsLabel(plan.months)}"
+    }
+
+    // Only a query that differs from the built one is stored. Typing the app's own
+    // suggestion back in leaves the field empty, so a later improvement to
+    // [searchTerms] still reaches this wish — a wish is pinned to his words only
+    // where they are his.
+    LaunchedEffect(searchText) {
+        val typed = searchText.trim()
+        val kept = if (typed == builtSearchTerms(wish)) "" else typed
+        if (kept != wish.searchQuery) onChange(wish.copy(searchQuery = kept))
     }
 
     // Persist only when something the user typed or picked actually changed.
@@ -3402,6 +3501,24 @@ fun SharedTransitionScope.WishDetailScreen(
                         color = TextSecondary,
                         fontSize = Type.captionSize,
                         modifier = Modifier.padding(top = Space.xs)
+                    )
+                }
+
+                // Only where there is nothing to buy. See [ElsewhereCard] for why
+                // it is here and not further down, and [cannotBeBought] for why it
+                // is not on every wish: a price-comparison row on a thing that is
+                // sitting in a shop right now is a row answering a question nobody
+                // asked, on the screen he already called too crowded.
+                if (worthComparing(wish)) {
+                    ElsewhereCard(
+                        wish = wish,
+                        terms = searchText,
+                        onTerms = { searchText = it },
+                        onSearch = {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, hotlineSearch(searchText).toUri())
+                            )
+                        }
                     )
                 }
             }
