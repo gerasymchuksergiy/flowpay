@@ -21,7 +21,8 @@ class TargetHitTest {
     private fun wish(
         price: Double,
         target: Double,
-        checked: LocalDate? = today
+        checked: LocalDate? = today,
+        freshness: Freshness = Freshness.OK
     ) = Wish(
         id = "w1",
         name = "Sony WH-1000XM5",
@@ -30,7 +31,8 @@ class TargetHitTest {
         price = price,
         targetPrice = target,
         history = emptyList(),
-        checkedDay = checked?.toEpochDay() ?: 0L
+        checkedDay = checked?.toEpochDay() ?: 0L,
+        freshness = freshness
     )
 
     @Test
@@ -70,6 +72,30 @@ class TargetHitTest {
         // it since, so the app stops claiming it is true now.
         assertFalse(targetHit(wish(price = 9000.0, target = 9500.0, checked = today.minusDays(2)), day))
         assertFalse(targetHit(wish(price = 9000.0, target = 9500.0, checked = null), day))
+    }
+
+    @Test
+    fun `a reading that came back with nothing usable does not count either`() {
+        // Read today, so the day clause is satisfied — and the page said the thing
+        // is not for sale. The price standing on the card is the last one anybody
+        // saw, and "досягнуто ціль" over it is the app sending you to a shop for
+        // something that is not there, which is the whole bug this closes.
+        listOf(Freshness.OUT_OF_STOCK, Freshness.UNREADABLE, Freshness.GONE).forEach { state ->
+            assertFalse(
+                state.name,
+                targetHit(wish(price = 9000.0, target = 9500.0, freshness = state), day)
+            )
+        }
+    }
+
+    @Test
+    fun `a price typed by hand still reaches its target`() {
+        // The deliberate exception. A hand-entered figure is exactly as current as
+        // the person who typed it, and lowering a price by hand to a target has to
+        // go on lighting the pill.
+        assertTrue(
+            targetHit(wish(price = 9000.0, target = 9500.0, freshness = Freshness.MANUAL), day)
+        )
     }
 
     @Test

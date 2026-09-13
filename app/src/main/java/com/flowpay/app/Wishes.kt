@@ -640,11 +640,20 @@ fun wantedLabel(wish: Wish, today: Long): String? {
  * answering keeps its last price, so without it a thing that dipped under its
  * target once, months ago, would sit in the reached state for ever — and a state
  * nothing ever leaves is not information.
+ *
+ * That clause is two halves, and the second was missing. How recently the page was
+ * looked at is not the same question as whether anything usable came back: the
+ * checked day moves on every reading, including the ones that found no price, so a
+ * wish whose only shop has declared the thing sold out was still announcing its
+ * target as reached — on a figure nobody could pay, on the pill that most directly
+ * means "go and buy it now". A hand-typed price is deliberately not stale and still
+ * lights it, which is the case that clause has to keep working.
  */
 fun targetHit(wish: Wish, today: Long): Boolean =
     wish.targetPrice > 0.0 &&
         wish.price > 0.0 &&
         wish.price <= wish.targetPrice &&
+        !isStale(wish.freshness) &&
         wish.checkedDay >= today - TARGET_FRESH_DAYS
 
 // ------------------------------------------------------------ deliberate holds
