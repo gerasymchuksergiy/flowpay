@@ -4,44 +4,83 @@ import android.content.Context
 import android.content.Intent
 import android.content.BroadcastReceiver
 import android.content.IntentFilter
-import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.Settings
 import android.app.DownloadManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.BackHandler
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
+import androidx.core.net.toUri
+import androidx.lifecycle.lifecycleScope
+import androidx.glance.appwidget.updateAll
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.SharedTransitionLayout
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -49,20 +88,177 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.NumberFormat
+import java.time.LocalDate
 import java.util.Locale
+
+/**
+ * One shop a wish is watched at.
+ *
+ * The same headphones sit in Rozetka, Comfy and Allo, and as three separate
+ * wishes they were three separate histories that only a person comparing them by
+ * eye could put together. A source is a place to read, with everything that is
+ * true of that place and not of the others: its own followed variant, its own
+ * freshness, its own money.
+ *
+ * [price] is always hryvnia, converted where the shop priced it in something
+ * else, so the wish can pick a cheapest without comparing dollars against
+ * hryvnia. [amount] and [currency] keep what the shop actually printed, because
+ * once converted a figure cannot say whether it moved or the rate did.
+ */
+data class WishSource(
+    val url: String,
+    /** Hryvnia, converted where needed. Zero when this shop has no readable price. */
+    val price: Double = 0.0,
+    /** Which of this page's prices is followed here. Pages differ, so this is per shop. */
+    val variant: String = "",
+    /**
+     * How much this one shop's figure is worth believing.
+     *
+     * Per shop rather than per wish, which is the point of the whole change: one
+     * shop dropping the page must not put a warning on a wish that two others are
+     * still answering for.
+     */
+    val freshness: Freshness = Freshness.OK,
+    /** Epoch day this shop was last read. Zero means never. */
+    val checkedDay: Long = 0L,
+    /** The figure the shop printed, in its own money. */
+    val amount: Double = 0.0,
+    /** ISO code of [amount]. Hryvnia unless the page said otherwise. */
+    val currency: String = UAH,
+    /** Hryvnia per unit of [currency] when [price] was worked out. One for hryvnia. */
+    val rate: Double = 0.0
+)
 
 data class Wish(
     val id: String,
     val name: String,
+    /**
+     * The shop the price standing now came from.
+     *
+     * Kept alongside [sources] rather than replaced by it: this is what "До
+     * магазину" opens and what a shared link is matched against, and on a wish
+     * watched in three shops the answer is the one that is currently cheapest.
+     */
     val url: String,
     val image: String,
     val price: Double,
     val targetPrice: Double = 0.0,
     val category: String = "Інше",
-    val history: List<Double>
+    val history: List<PricePoint>,
+    /** Epoch day the price was last checked, so time spans can be stated honestly. */
+    val checkedDay: Long = 0L,
+    /** Money already put aside for this item. */
+    val saved: Double = 0.0,
+    /** What the plan is to add each month. */
+    val monthlyPlan: Double = 0.0,
+    /** Buy-by date as an epoch day. Zero means the plan runs from a monthly sum. */
+    val deadline: Long = 0L,
+    /** The last price a notification announced, so the next one has to beat it. */
+    val notifiedPrice: Double = 0.0,
+    /**
+     * Which of a page's prices this wish follows, by the name the shop gave it.
+     *
+     * Empty on a page that states one price, which is most of them. On a page of
+     * editions or sizes it is the anchor that keeps later checks on the same one.
+     */
+    val variant: String = "",
+    /**
+     * What the shop says about the thing: description, brand, rating, specs.
+     *
+     * Empty for most wishes, and emphatically not a failure — only what a page
+     * declares about itself in a standard place is read, and plenty of shops
+     * declare nothing. Refreshed with the price, because a shop that starts
+     * filling these in should not need the wish to be added again.
+     */
+    val about: ProductAbout = ProductAbout(),
+    /**
+     * How much the price above is currently worth believing.
+     *
+     * Defaults to [Freshness.OK] so that every wish saved before this existed reads
+     * back the way it was last seen: those were all read from a page successfully,
+     * and starting them as doubtful would put a warning on a whole healthy list.
+     */
+    val freshness: Freshness = Freshness.OK,
+    /**
+     * Epoch day this wish was added. Zero on wishes saved before it was recorded;
+     * [addedDay] recovers those from the first price ever taken for them.
+     */
+    val addedDay: Long = 0L,
+    /**
+     * Epoch day a deliberate hold runs out. Zero means no hold.
+     *
+     * A wishlist's job is to put distance between the urge and the decision, and
+     * the list alone does not do that — this is the app using time as the tool.
+     */
+    val holdUntil: Long = 0L,
+    /**
+     * Every shop this thing is watched in, cheapest wins.
+     *
+     * Empty on a wish saved before a wish could have more than one shop, and on
+     * one built in code from a single address. [wishSources] is what everything
+     * reads, and it makes that single address look like the one source it always
+     * was, so nothing downstream has to know which kind it is holding.
+     *
+     * The price history stays one series whatever this holds: it records the best
+     * price on each day, because [priceInsight], the thirty-day reference window
+     * and the chart all assume a single line, and three lines would leave the
+     * verdict measuring nothing in particular.
+     */
+    val sources: List<WishSource> = emptyList()
 )
 
-data class Pay(val name: String, val amount: Double, val day: Int = 1)
+data class Pay(
+    val name: String,
+    val amount: Double,
+    val day: Int = 1,
+    /** "UAH" or "USD". Rent is commonly quoted and paid in dollars. */
+    val currency: String = UAH,
+    /**
+     * Days of notice before the charge. Nought means the morning of.
+     *
+     * A reminder that arrives on the day a subscription renews is too late to do
+     * anything about it, which is the one thing a subscription tracker is for.
+     */
+    val warnDays: Int = DEFAULT_WARN_DAYS,
+    /**
+     * What this has cost before now, oldest first, ending at [amount].
+     *
+     * A subscription that raises its price quietly is how a subscription earns,
+     * and an expense remembering only today's figure cannot see it happen: 269
+     * was simply overwritten by 309 and nothing was left to compare against. The
+     * same [PricePoint] a wish records its prices with, because the question is
+     * the same one and a second shape for it would need a second chart, a second
+     * mapping and a second set of bugs.
+     *
+     * Empty on every expense saved before this existed, and on one that has never
+     * been edited — nothing fetches these, so a point is written only when a
+     * person types a different number.
+     */
+    val amounts: List<PricePoint> = emptyList(),
+    /**
+     * Epoch day a free trial runs out. Zero means there is no trial.
+     *
+     * A subscription that starts free is the one whose first real charge nobody
+     * remembers, because the moment worth remembering is a month after the moment
+     * you signed up. The expense is real from the day it is added — it belongs on
+     * the list and on the calendar — but it takes nothing until this day comes.
+     */
+    val trialEnd: Long = 0L,
+    /**
+     * Month of the year an annual charge lands in, 1..12. Zero means every month.
+     *
+     * One field rather than a period enum with an anchor beside it, because those
+     * two can disagree — "раз на рік" with no month is a state nothing could
+     * render — and this app has exactly two rhythms to tell apart. Zero is what
+     * every expense already on the phone reads as, and that is the truth about
+     * all of them: nothing here could express an annual charge before now.
+     *
+     * The blind spot it closes: an annual subscription charges once in twelve
+     * months, so every "наступні 30 днів" view hid it eleven months out of twelve
+     * while [yearlyCost] quietly multiplied it by twelve on top.
+     */
+    val billingMonth: Int = 0
+)
 data class Order(
     val id: String,
     val name: String,
@@ -70,62 +266,390 @@ data class Order(
     val status: String,
     val tracking: String = "",
     val image: String = "",
-    val price: Double = 0.0
+    val price: Double = 0.0,
+    /** The carrier's own wording plus where it saw the parcel last. */
+    val statusDetail: String = "",
+    /** When the carrier was last asked, as epoch millis. Zero means never. */
+    val checkedAt: Long = 0L,
+    /** The carrier reported a refusal, a return, or a number it does not know. */
+    val problem: Boolean = false,
+    /** Epoch day free storage ends. Zero means the carrier has not said. */
+    val paidStorageFrom: Long = 0L,
+    /** Epoch day the carrier expects to deliver. Zero means unknown. */
+    val scheduledDelivery: Long = 0L,
+    /** Cash on delivery still owed. */
+    val amountToPay: Double = 0.0,
+    /**
+     * What was actually handed over, which is not always [price].
+     *
+     * The shop's listed price is what the tracker watched; a promo code, a sale
+     * that never reached the page, or a different shop entirely is what you paid.
+     * Judging the wait against the listed price instead of this one would grade
+     * the tracker on its own homework. Zero means it has not been recorded.
+     */
+    val paid: Double = 0.0,
+    /**
+     * The lowest price ever recorded for this thing while it was still a wish.
+     *
+     * Copied across at the moment of purchase, because the wish is deleted then
+     * and its history goes with it. Zero means there was no history to judge.
+     */
+    val lowestSeen: Double = 0.0,
+    /** How many times the thing has actually been used. Zero means uncounted. */
+    val uses: Int = 0,
+    /** Epoch day the purchase was closed and filed. Zero means it is still open. */
+    val archivedDay: Long = 0L
 )
 
 class MainActivity : ComponentActivity() {
+    /**
+     * What the app was opened to do, once. Held as state rather than read from
+     * [getIntent] inside the composition, because a share that arrives while the
+     * app is already open comes through [onNewIntent] and nothing would recompose.
+     */
+    private var command by mutableStateOf<AppCommand?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
+        command = commandOf(intent)
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
+        val notificationsGranted = android.os.Build.VERSION.SDK_INT < 33 ||
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!notificationsGranted) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 7)
         }
         PriceWorker.schedule(this)
-        setContent { FlowPayApp(this) }
+        ReminderWorker.schedule(this)
+        // Enqueued whether or not a folder has been chosen: the worker checks, and
+        // scheduling only once a folder exists would mean a folder chosen while the
+        // app was already running never got a job at all.
+        BackupWorker.schedule(this)
+        setContent { FlowPayApp(this, command) { command = null } }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        command = commandOf(intent)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Leaving the app is the moment the home screen is about to be looked at,
+        // and by then anything edited in this session has already been saved.
+        lifecycleScope.launch { FlowPayWidget().updateAll(this@MainActivity) }
+    }
+
+    // Read as a CharSequence: a text/html share arrives as a styled Spanned, and
+    // getStringExtra answers null for one rather than the text inside it.
+    private fun commandOf(intent: Intent?): AppCommand? =
+        appCommand(intent?.action, intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
 }
 
 class Store(context: Context) {
     private val prefs = context.getSharedPreferences("flowpay", Context.MODE_PRIVATE)
 
-    fun wishes(): List<Wish> = jsonList("w") { o ->
-        val history = o.optJSONArray("h") ?: JSONArray()
-        Wish(
-            id = o.optString("id", System.currentTimeMillis().toString()),
-            name = o.optString("n", "Товар"),
-            url = o.optString("u"),
-            image = o.optString("i"),
-            price = o.optDouble("p", 0.0),
-            targetPrice = o.optDouble("t", 0.0),
-            category = o.optString("c", "Інше"),
-            history = (0 until history.length()).map { history.optDouble(it) }.filter { it > 0 }
+    fun wishes(): List<Wish> = jsonList("w", ::wishOf)
+
+    fun saveWishes(items: List<Wish>) = save("w", items.map(::wishJson))
+
+    fun pays(): List<Pay> = jsonList("pay", ::payOf)
+
+    fun savePays(items: List<Pay>) = save("pay", items.map(::payJson))
+
+    fun orders(): List<Order> = jsonList("orders", ::orderOf)
+
+    fun saveOrders(items: List<Order>) = save("orders", items.map(::orderJson))
+
+    /**
+     * What has actually been paid, month by month.
+     *
+     * Pruned on the way out rather than on a schedule: nothing else runs often
+     * enough to be trusted with it, and reading is the only moment the list is
+     * certain to be looked at.
+     */
+    fun paidMarks(today: LocalDate = LocalDate.now()): List<PaidMark> =
+        prunePaidMarks(
+            jsonList("paid") {
+                PaidMark(
+                    it.optString("n"),
+                    it.optString("m"),
+                    it.optDouble("a", 0.0),
+                    it.optString("cur", UAH).ifBlank { UAH }
+                )
+            },
+            today
+        )
+
+    fun savePaidMarks(items: List<PaidMark>, today: LocalDate = LocalDate.now()) =
+        save("paid", prunePaidMarks(items, today).map {
+            JSONObject().put("n", it.name).put("m", it.month)
+                .put("a", it.amount).put("cur", it.currency)
+        })
+
+    /** Deleted items, with anything past its thirty days already dropped. */
+    fun bin(today: Long = LocalDate.now().toEpochDay()): List<BinEntry> = pruneBin(
+        jsonList("bin") {
+            BinEntry(
+                id = it.optString("id"),
+                kind = it.optString("k"),
+                title = it.optString("t"),
+                detail = it.optString("d"),
+                payload = it.optString("p"),
+                day = it.optLong("day", 0L)
+            )
+        },
+        today
+    )
+
+    fun saveBin(items: List<BinEntry>, today: Long = LocalDate.now().toEpochDay()) =
+        save("bin", pruneBin(items, today).map {
+            JSONObject().put("id", it.id).put("k", it.kind).put("t", it.title)
+                .put("d", it.detail).put("p", it.payload).put("day", it.day)
+        })
+
+    /**
+     * Puts a deleted item in the bin and returns what the bin now holds.
+     *
+     * The payload is the item in the very shape [saveWishes] and its siblings
+     * write, so restoring is a move rather than a reconstruction.
+     */
+    fun recycle(entry: BinEntry): List<BinEntry> {
+        val next = pruneBin(bin() + entry, entry.day)
+        saveBin(next, entry.day)
+        return next
+    }
+
+    /**
+     * Puts one entry back where it came from.
+     *
+     * Appends rather than restoring a position, because the position a wish had in
+     * a list sorted by price is not a property of the wish. The item itself comes
+     * back whole, which is the part that cannot be typed again.
+     */
+    fun restoreFromBin(id: String) {
+        val entry = bin().firstOrNull { it.id == id } ?: return
+        runCatching {
+            val json = JSONObject(entry.payload)
+            when (entry.kind) {
+                BIN_WISH -> saveWishes(wishes() + wishOf(json))
+                BIN_PAY -> savePays(pays() + payOf(json))
+                BIN_ORDER -> saveOrders(orders() + orderOf(json))
+                // An entry of a kind this version does not know is left in the bin
+                // rather than dropped: a newer build may be able to restore it.
+                else -> return
+            }
+        }.onSuccess { dropFromBin(id) }
+    }
+
+    fun dropFromBin(id: String) = saveBin(bin().filterNot { it.id == id })
+
+    fun emptyBin() = saveBin(emptyList())
+
+    /** The folder the weekly copy is written into, as a tree uri. Blank means none. */
+    fun backupFolder(): String = prefs.getString("bk_dir", "").orEmpty()
+
+    fun saveBackupFolder(uri: String) = prefs.edit { putString("bk_dir", uri) }
+
+    /** When the last automatic or on-demand copy was written. Zero means never. */
+    fun lastBackupAt(): Long = prefs.getLong("bk_at", 0L)
+
+    fun saveLastBackupAt(millis: Long) = prefs.edit { putLong("bk_at", millis) }
+    /** Epoch day the payment reminder last ran, so a day is never repeated. */
+    fun lastReminderDay(): Long = prefs.getLong("reminded", 0L)
+
+    fun saveLastReminderDay(day: Long) = prefs.edit { putLong("reminded", day) }
+
+    /**
+     * When a background pass last got all the way through, as epoch millis.
+     *
+     * Zero on every phone that updated into this version, which reads as "ще не
+     * виконувалась" until the first pass lands. That is the honest answer: nothing
+     * before this recorded a run, so claiming one would be inventing it.
+     */
+    fun lastRunAt(key: String): Long = prefs.getLong("run_$key", 0L)
+
+    fun saveLastRunAt(key: String, atMillis: Long) = prefs.edit { putLong("run_$key", atMillis) }
+
+    /**
+     * Every pass and its last success, for the health panel.
+     *
+     * The weekly backup is deliberately not one of them. It does nothing at all
+     * until a folder has been chosen, so on most phones it would sit in the panel
+     * reading "ще не виконувалась" for ever — an alarm about a feature that was
+     * never switched on. Its own freshness is on the backup row, where the folder
+     * that explains it also is.
+     */
+    fun workRuns(): List<WorkRun> =
+        listOf(WORK_PRICES, WORK_DIGEST).map { WorkRun(it, lastRunAt(it)) }
+
+    /** The hour the daily digest is sent at. */
+    fun digestHour(): Int =
+        prefs.getInt("digest_h", DEFAULT_DIGEST_HOUR).coerceIn(0, 23)
+
+    fun saveDigestHour(hour: Int) = prefs.edit { putInt("digest_h", hour.coerceIn(0, 23)) }
+
+    /**
+     * Ukraine's public holidays for one year, as epoch days.
+     *
+     * Empty whenever the cache is for another year or was never filled, and empty
+     * is a working answer: the weekend rule stands on its own and the holidays
+     * only sharpen it.
+     */
+    fun holidays(year: Int): Set<Long> = runCatching {
+        val cached = JSONObject(prefs.getString("hol", "{}") ?: "{}")
+        if (cached.optInt("y") != year) return emptySet()
+        val days = cached.optJSONArray("d") ?: return emptySet()
+        (0 until days.length()).map { days.getLong(it) }.toSet()
+    }.getOrDefault(emptySet())
+
+    fun saveHolidays(year: Int, days: Set<Long>) = prefs.edit {
+        putString(
+            "hol",
+            JSONObject()
+                .put("y", year)
+                .put("d", JSONArray().apply { days.sorted().forEach { put(it) } })
+                .toString()
         )
     }
 
-    fun saveWishes(items: List<Wish>) = save("w", items.map {
-        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url).put("i", it.image)
-            .put("p", it.price).put("t", it.targetPrice).put("c", it.category).put("h", JSONArray(it.history))
-    })
+    /**
+     * The last month whose recap was actually opened. Blank means none ever was.
+     *
+     * A preference rather than part of [exportJson], for the same reason the rate
+     * target is: it says what this phone has already shown its owner, and
+     * restoring a year-old file should not make five months of recaps queue up
+     * again. Only one is ever waiting anyway — the month that has just ended.
+     */
+    fun recapSeen(): String = prefs.getString("recap", "").orEmpty()
 
-    fun pays(): List<Pay> = jsonList("pay") { Pay(it.optString("n"), it.optDouble("a"), it.optInt("d", 1)) }
-    fun savePays(items: List<Pay>) = save("pay", items.map { JSONObject().put("n", it.name).put("a", it.amount).put("d", it.day) })
+    fun saveRecapSeen(month: String) = prefs.edit { putString("recap", month) }
 
-    fun orders(): List<Order> = jsonList("orders") {
-        Order(
-            it.optString("id"), it.optString("n"), it.optString("u"),
-            it.optString("s", "Замовлено"), it.optString("t"),
-            it.optString("i"), it.optDouble("p", 0.0)
-        )
+    /**
+     * Whether a foldable section on the wish page is left open.
+     *
+     * One answer per section for the whole app rather than one per wish: the
+     * choice being made is "do I want to see the price history when I open a
+     * thing", and someone who has answered that once should not be asked again on
+     * the next wish. It is also why this is not a field on [Wish] — nothing about
+     * a pair of headphones says whether their owner likes charts.
+     *
+     * Out of [exportJson] for the same reason the rate target and the recap mark
+     * are: it describes how this phone is being looked at rather than what is on
+     * it, and restoring a year-old file should not reach across and refold the
+     * screen.
+     *
+     * [key] is one of the ASCII constants beside [CollapsibleSection], so the
+     * stored name never passes through a locale-sensitive case change.
+     */
+    fun sectionOpen(key: String): Boolean = prefs.getBoolean("sec_$key", false)
+
+    fun saveSectionOpen(key: String, open: Boolean) =
+        prefs.edit { putBoolean("sec_$key", open) }
+
+    /** Which figure the Quick Settings tile is currently showing. */
+    fun tileFace(): String = prefs.getString("tile", TILE_RATE) ?: TILE_RATE
+
+    fun saveTileFace(face: String) = prefs.edit { putString("tile", face) }
+
+    /** How the wishlist is ordered, remembered between sessions. */
+    fun wishSort(): WishSort = wishSortFrom(prefs.getString("wish_sort", "") ?: "")
+
+    fun saveWishSort(sort: WishSort) = prefs.edit { putString("wish_sort", sort.name) }
+
+    /** Monthly income, used to work out what is free after the standing costs. */
+    fun income(): Double = prefs.getFloat("income", 0f).toDouble()
+
+    fun saveIncome(value: Double) = prefs.edit { putFloat("income", value.toFloat()) }
+
+    /**
+     * Last known exchange rate and when it was fetched.
+     *
+     * Monobank allows roughly one request a minute per address, so asking on every
+     * visit to the tab earns a rejection and the screen went blank. The last good
+     * rate is kept and shown with its timestamp instead.
+     */
+    fun fxRate(): Pair<FxRate, Long> {
+        val buy = prefs.getFloat("fx_buy", 0f).toDouble()
+        val sell = prefs.getFloat("fx_sell", 0f).toDouble()
+        if (sell <= 0.0) return FxRate() to 0L
+        // A rate saved before the app knew about sources can only have come from
+        // Monobank, which is the only feed there was.
+        val source = prefs.getString("fx_src", SOURCE_MONOBANK) ?: SOURCE_MONOBANK
+        return FxRate(buy, sell, source, prefs.getString("fx_day", "").orEmpty()) to
+            prefs.getLong("fx_at", 0L)
     }
-    fun saveOrders(items: List<Order>) = save("orders", items.map {
-        JSONObject().put("id", it.id).put("n", it.name).put("u", it.url)
-            .put("s", it.status).put("t", it.tracking).put("i", it.image).put("p", it.price)
+
+    fun saveFxRate(rate: FxRate, atMillis: Long) = prefs.edit {
+        putFloat("fx_buy", rate.buy.toFloat())
+        putFloat("fx_sell", rate.sell.toFloat())
+        putString("fx_src", rate.source)
+        putString("fx_day", rate.date)
+        putLong("fx_at", atMillis)
+    }
+
+    /**
+     * One exchange-rate reading per day, for the chart on the currency screen.
+     *
+     * Kept apart from [fxRate], which is the current figure and is overwritten on
+     * every refresh. Nothing recorded a series before this, so on every existing
+     * phone this starts empty and the screen says so.
+     */
+    fun rateHistory(): List<PricePoint> =
+        jsonList("fxh") { PricePoint(it.optDouble("p", 0.0), it.optLong("d", 0L)) }
+            .filter { it.price > 0 }
+
+    fun saveRateHistory(points: List<PricePoint>) = save("fxh", points.map {
+        JSONObject().put("p", it.price).put("d", it.day)
     })
 
+    /**
+     * The rate the user asked to be told about, or null when none is set.
+     *
+     * A preference rather than part of [exportJson], alongside the income and the
+     * digest hour. It is a standing instruction to this phone about what the rate
+     * is doing now, and a year-old file restoring a threshold that was met last
+     * March would announce a crossing that is no longer happening.
+     */
+    fun rateTarget(): RateTarget? {
+        val value = prefs.getFloat("fxt", 0f).toDouble()
+        if (value <= 0.0) return null
+        return RateTarget(value, prefs.getBoolean("fxt_up", true), prefs.getLong("fxt_hit", 0L))
+    }
+
+    fun saveRateTarget(target: RateTarget?) = prefs.edit {
+        if (target == null) {
+            // Cleared rather than zeroed: a stored nought and an absent key would
+            // both have to read as "no target", and two spellings of one state is
+            // how the direction ends up remembered for a target nobody set.
+            remove("fxt")
+            remove("fxt_up")
+            remove("fxt_hit")
+        } else {
+            putFloat("fxt", target.rate.toFloat())
+            putBoolean("fxt_up", target.above)
+            putLong("fxt_hit", target.hitDay)
+        }
+    }
+
+    /**
+     * Everything worth losing, as one file.
+     *
+     * Version 2 adds the paid record and the bin. The number is not read back on
+     * import — an older file simply lacks those keys and an older build simply
+     * ignores them — so it is here to say what a file is rather than to gate it.
+     */
     fun exportJson(): String = JSONObject()
-        .put("version", 1)
+        .put("version", 2)
         .put("wishes", JSONArray(prefs.getString("w", "[]")))
         .put("payments", JSONArray(prefs.getString("pay", "[]")))
         .put("orders", JSONArray(prefs.getString("orders", "[]")))
+        .put("paid", JSONArray(prefs.getString("paid", "[]")))
+        .put("bin", JSONArray(prefs.getString("bin", "[]")))
         .toString(2)
 
     fun importJson(text: String) {
@@ -133,11 +657,19 @@ class Store(context: Context) {
         val wishes = root.getJSONArray("wishes")
         val payments = root.optJSONArray("payments") ?: JSONArray()
         val orders = root.optJSONArray("orders") ?: JSONArray()
-        prefs.edit()
-            .putString("w", wishes.toString())
-            .putString("pay", payments.toString())
-            .putString("orders", orders.toString())
-            .apply()
+        // A backup written before these existed carries no opinion about them, so
+        // it leaves what is on the phone alone. Reading a missing key as an empty
+        // list would let restoring a year-old file silently destroy a year of
+        // payment records that the file never claimed to replace.
+        val paid = root.optJSONArray("paid")
+        val bin = root.optJSONArray("bin")
+        prefs.edit {
+            putString("w", wishes.toString())
+            putString("pay", payments.toString())
+            putString("orders", orders.toString())
+            paid?.let { putString("paid", it.toString()) }
+            bin?.let { putString("bin", it.toString()) }
+        }
     }
 
     private fun <T> jsonList(key: String, map: (JSONObject) -> T): List<T> = runCatching {
@@ -146,48 +678,450 @@ class Store(context: Context) {
     }.getOrDefault(emptyList())
 
     private fun save(key: String, values: List<JSONObject>) {
-        prefs.edit().putString(key, JSONArray(values).toString()).apply()
+        prefs.edit { putString(key, JSONArray(values).toString()) }
     }
 }
 
-suspend fun product(link: String): Wish = withContext(Dispatchers.IO) {
-    val connection = URL(link).openConnection() as HttpURLConnection
+/**
+ * The stored shape of each kind of item, written once.
+ *
+ * These were inline in [Store] until the bin needed them too. A second copy of the
+ * mapping is how a restored wish comes back without its history: the two spellings
+ * of "h" drift apart and nothing fails loudly enough to notice.
+ */
+
+fun wishJson(wish: Wish): JSONObject = JSONObject()
+    .put("id", wish.id).put("n", wish.name).put("u", wish.url).put("i", wish.image)
+    .put("p", wish.price).put("t", wish.targetPrice).put("c", wish.category)
+    .put(
+        "h",
+        JSONArray().apply {
+            wish.history.forEach { point ->
+                put(
+                    JSONObject().put("p", point.price).put("d", point.day)
+                        .put("r", point.rate).put("rs", point.rateSource)
+                )
+            }
+        }
+    )
+    .put("cd", wish.checkedDay)
+    .put("s", wish.saved).put("m", wish.monthlyPlan).put("dl", wish.deadline)
+    .put("np", wish.notifiedPrice).put("v", wish.variant)
+    .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil)
+    .put("ab", aboutJson(wish.about))
+    // Written exactly as held, empty included, so that what comes back out of the
+    // bin is what went in. A wish that predates the list is not filled in here:
+    // [wishSources] is what turns its single address into the one source it always
+    // was, and doing it there means one rule rather than two that can drift.
+    .put(
+        "src",
+        JSONArray().apply { wish.sources.forEach { put(sourceJson(it)) } }
+    )
+
+/**
+ * One shop, stored.
+ *
+ * A nested object rather than parallel arrays of urls and prices: a wish whose
+ * shops and prices got out of step by one would compare Rozetka's price under
+ * Comfy's name, and nothing on screen would look wrong.
+ */
+fun sourceJson(source: WishSource): JSONObject = JSONObject()
+    .put("u", source.url).put("p", source.price).put("v", source.variant)
+    .put("fr", source.freshness.name).put("cd", source.checkedDay)
+    .put("a", source.amount).put("cur", source.currency).put("r", source.rate)
+
+fun sourceOf(o: JSONObject): WishSource = WishSource(
+    url = o.optString("u"),
+    price = o.optDouble("p", 0.0),
+    variant = o.optString("v"),
+    freshness = freshnessFrom(o.optString("fr")),
+    checkedDay = o.optLong("cd", 0L),
+    amount = o.optDouble("a", 0.0),
+    // A price stored before currencies existed is hryvnia, which is what every
+    // shop the app could read at the time was pricing in.
+    currency = o.optString("cur", UAH).ifBlank { UAH },
+    rate = o.optDouble("r", 0.0)
+)
+
+/**
+ * The page's own words, stored beside the wish.
+ *
+ * A nested object rather than five more top-level keys, so the bin's restore and
+ * the backup file carry it whole or not at all — a half-restored description is
+ * harder to notice than a missing one.
+ */
+fun aboutJson(about: ProductAbout): JSONObject = JSONObject()
+    .put("d", about.description).put("b", about.brand)
+    .put("r", about.rating).put("rc", about.ratingCount)
+    .put(
+        "s",
+        JSONArray().apply {
+            about.specs.forEach { (name, value) ->
+                put(JSONObject().put("n", name).put("v", value))
+            }
+        }
+    )
+
+fun aboutOf(o: JSONObject?): ProductAbout {
+    if (o == null) return ProductAbout()
+    val specs = o.optJSONArray("s") ?: JSONArray()
+    return ProductAbout(
+        description = o.optString("d"),
+        brand = o.optString("b"),
+        rating = o.optDouble("r", 0.0),
+        ratingCount = o.optInt("rc", 0),
+        specs = (0 until specs.length()).mapNotNull { index ->
+            specs.optJSONObject(index)?.let { it.optString("n") to it.optString("v") }
+        }.filter { it.first.isNotBlank() && it.second.isNotBlank() }
+    )
+}
+
+fun wishOf(o: JSONObject): Wish {
+    val recorded = o.optJSONArray("h") ?: JSONArray()
+    val stored = o.optJSONArray("src") ?: JSONArray()
+    return Wish(
+        id = o.optString("id", System.currentTimeMillis().toString()),
+        name = cleanProductTitle(o.optString("n", "Товар")).ifBlank { "Товар" },
+        url = o.optString("u"),
+        image = o.optString("i"),
+        price = o.optDouble("p", 0.0),
+        targetPrice = o.optDouble("t", 0.0),
+        category = o.optString("c", "Інше"),
+        // Histories written before dates existed are bare numbers. They are read
+        // as points with an unknown day rather than being thrown away, and the
+        // same goes for points written before the rate travelled with them.
+        history = (0 until recorded.length()).mapNotNull { index ->
+            recorded.optJSONObject(index)?.let { point ->
+                PricePoint(
+                    point.optDouble("p", 0.0),
+                    point.optLong("d", 0L),
+                    point.optDouble("r", 0.0),
+                    point.optString("rs")
+                )
+            } ?: recorded.optDouble(index, 0.0).takeIf { it > 0 }?.let { PricePoint(it, 0L) }
+        }.filter { it.price > 0 },
+        checkedDay = o.optLong("cd", 0L),
+        notifiedPrice = o.optDouble("np", 0.0),
+        variant = o.optString("v"),
+        saved = o.optDouble("s", 0.0),
+        monthlyPlan = o.optDouble("m", 0.0),
+        deadline = o.optLong("dl", 0L),
+        // Anything saved before freshness existed was last seen being read from a
+        // page, so that is the honest default rather than a fresh doubt.
+        freshness = freshnessFrom(o.optString("fr")),
+        addedDay = o.optLong("ad", 0L),
+        holdUntil = o.optLong("hu", 0L),
+        about = aboutOf(o.optJSONObject("ab")),
+        // A wish saved with only `u` has no array here at all, and stays empty
+        // rather than being filled in on the way past: [wishSources] is the one
+        // place that turns that single address into the one source it always was.
+        sources = (0 until stored.length()).mapNotNull { index ->
+            stored.optJSONObject(index)?.let(::sourceOf)
+        }.filter { it.url.isNotBlank() }
+    )
+}
+
+/**
+ * An expense's amount history, written whole.
+ *
+ * The rate a wish records beside each price has no meaning here: an expense is
+ * billed in one currency and stays in it, so only the figure and the day it took
+ * effect are stored. Reading tolerates anything that is not an object, because a
+ * half-written array must come back as a shorter history rather than as a crash
+ * that costs the whole expense.
+ */
+fun amountsJson(points: List<PricePoint>): JSONArray = JSONArray().apply {
+    points.forEach { point -> put(JSONObject().put("a", point.price).put("d", point.day)) }
+}
+
+fun amountsOf(array: JSONArray?): List<PricePoint> {
+    if (array == null) return emptyList()
+    return (0 until array.length()).mapNotNull { index ->
+        array.optJSONObject(index)?.let { PricePoint(it.optDouble("a", 0.0), it.optLong("d", 0L)) }
+    }.filter { it.price > 0.0 }
+}
+
+fun payJson(pay: Pay): JSONObject = JSONObject()
+    .put("n", pay.name).put("a", pay.amount).put("d", pay.day)
+    .put("cur", pay.currency).put("wd", pay.warnDays)
+    // All three have to travel, or the bin restores a subscription that has
+    // forgotten it was ever cheaper, a backup imports a trial as a live charge,
+    // and an annual domain fee comes back as a monthly one twelve times the size.
+    .put("am", amountsJson(pay.amounts)).put("te", pay.trialEnd)
+    .put("bm", pay.billingMonth)
+
+fun payOf(o: JSONObject): Pay = Pay(
+    o.optString("n"),
+    o.optDouble("a"),
+    o.optInt("d", 1),
+    // Entries saved before currencies existed were all hryvnia.
+    o.optString("cur", UAH).ifBlank { UAH },
+    // Entries saved before the warning existed got a day's notice from the worker
+    // itself, so that is what they keep.
+    o.optInt("wd", DEFAULT_WARN_DAYS),
+    // An expense saved before any of this comes back with no history at all, which
+    // is the truth: nothing was watching what it used to cost.
+    amountsOf(o.optJSONArray("am")),
+    // Nought is no trial, which is what every expense on the phone already is.
+    o.optLong("te", 0L),
+    // Nought is "every month", which is what every expense saved before this
+    // genuinely was — there was no other rhythm to save. Anything outside 1..12
+    // is read the same way rather than trusted, since a month of 13 would put a
+    // charge on a date [LocalDate] refuses to build.
+    o.optInt("bm", 0).takeIf { it in 1..MONTHS_IN_YEAR } ?: 0
+)
+
+fun orderJson(order: Order): JSONObject = JSONObject()
+    .put("id", order.id).put("n", order.name).put("u", order.url)
+    .put("s", order.status).put("t", order.tracking).put("i", order.image)
+    .put("p", order.price).put("sd", order.statusDetail).put("ca", order.checkedAt)
+    .put("pr", order.problem).put("ps", order.paidStorageFrom)
+    .put("sdl", order.scheduledDelivery).put("atp", order.amountToPay)
+    // The record of the purchase itself travels with the parcel, which is what
+    // lets a binned purchase come back still knowing what it cost and how the
+    // wait turned out. Left out here, a restore would return an empty parcel and
+    // nothing on screen would say the verdict had been thrown away.
+    .put("pd", order.paid).put("lw", order.lowestSeen)
+    .put("us", order.uses).put("ar", order.archivedDay)
+
+fun orderOf(o: JSONObject): Order = Order(
+    o.optString("id"), o.optString("n"), o.optString("u"),
+    o.optString("s", ORDERED), o.optString("t"),
+    o.optString("i"), o.optDouble("p", 0.0),
+    o.optString("sd"), o.optLong("ca", 0L),
+    o.optBoolean("pr", false), o.optLong("ps", 0L),
+    o.optLong("sdl", 0L), o.optDouble("atp", 0.0),
+    // Parcels saved before a purchase could be closed have none of this. Zero
+    // throughout reads as "not recorded", which is exactly what it is, so an old
+    // backup imports into an open parcel rather than one that claims to have been
+    // bought for nothing.
+    paid = o.optDouble("pd", 0.0),
+    lowestSeen = o.optDouble("lw", 0.0),
+    uses = o.optInt("us", 0),
+    archivedDay = o.optLong("ar", 0L)
+)
+
+/** A wish on its way to the bin, with enough on the row to recognise it by. */
+fun binEntryOf(wish: Wish, today: Long): BinEntry = BinEntry(
+    id = wish.id,
+    kind = BIN_WISH,
+    title = wish.name,
+    // The history is the part that cannot be fetched back, so the row says how
+    // much of it is at stake rather than restating the price.
+    detail = listOfNotNull(
+        money(wish.price).takeIf { wish.price > 0 },
+        changesLabel(wish.history.size).takeIf { wish.history.isNotEmpty() }
+    ).joinToString(" · "),
+    payload = wishJson(wish).toString(),
+    day = today
+)
+
+fun binEntryOf(pay: Pay, today: Long): BinEntry = BinEntry(
+    // A Pay has no id of its own, so the bin gives it one. Name and day alone
+    // would collide with a second copy of the same expense deleted later.
+    id = "pay-$today-${System.nanoTime()}",
+    kind = BIN_PAY,
+    title = pay.name,
+    detail = "${amountLabel(pay.amount, pay.currency)} · ${rhythmNote(pay)}",
+    payload = payJson(pay).toString(),
+    day = today
+)
+
+fun binEntryOf(order: Order, today: Long): BinEntry = BinEntry(
+    id = order.id,
+    kind = BIN_ORDER,
+    title = order.name,
+    detail = listOfNotNull(
+        order.status.takeIf { it.isNotBlank() },
+        order.tracking.takeIf { it.isNotBlank() }
+    ).joinToString(" · "),
+    payload = orderJson(order).toString(),
+    day = today
+)
+
+fun isSupportedWebUrl(value: String): Boolean = runCatching {
+    val url = URL(value.trim())
+    url.protocol in setOf("http", "https") && url.host.isNotBlank()
+}.getOrDefault(false)
+
+fun refreshedWish(
+    previous: Wish,
+    current: Wish,
+    today: Long = LocalDate.now().toEpochDay(),
+    rate: FxRate = FxRate()
+): Wish =
+    previous.copy(
+        image = current.image.ifBlank { previous.image },
+        price = current.price,
+        history = appendPrice(previous.history, current.price, today, rate.sell, rate.source),
+        checkedDay = today,
+        freshness = if (current.price > 0.0) Freshness.OK else previous.freshness,
+        // What the page says about the thing is most of what a wish with no price
+        // has to show, and this is the one path a shared link takes into the list.
+        // Without it the description read from the page was dropped on the floor
+        // exactly where it was needed most.
+        about = if (current.about.isEmpty) previous.about else current.about,
+        // The freshly read page knows what money it was priced in and what that
+        // converted to; the placeholder this is filling in knows only the address.
+        // Anything the new reading did not bring keeps what was there before.
+        sources = wishSources(current).ifEmpty { wishSources(previous) }
+    )
+
+/**
+ * Re-reads a page and follows the variant this wish was set to.
+ *
+ * The interesting cases are the two that are not a price. A page that lost the
+ * followed variant, and a page that lost its prices altogether, must both leave the
+ * stored figure alone rather than swap in a neighbouring edition — but they are no
+ * longer silent about it, because a stored figure that nobody can buy at is exactly
+ * what used to sit on the card looking current. The wish comes back carrying which
+ * of the two happened; only [Reading.Priced] touches the price or the history.
+ */
+fun readWish(
+    previous: Wish,
+    html: String,
+    today: Long = LocalDate.now().toEpochDay(),
+    rate: FxRate = FxRate()
+): Reading {
+    val sources = wishSources(previous)
+    if (sources.isEmpty()) return Reading.Failed
+    // Everything but the first shop is left exactly as it was, which is what a
+    // page that was never fetched deserves. One page can only answer for itself.
+    val readings = sources.mapIndexed { index, source ->
+        if (index == 0) readSource(source, html, today, rate) else SourceReading.Failed
+    }
+    return mergeSources(previous, readings, today, rate)
+}
+
+/**
+ * The shop answered that the page is not there.
+ *
+ * Distinct from a failed connection on purpose: a 404 is a fact about the item
+ * worth showing on its card, whereas a timeout is a fact about the phone and must
+ * leave every card exactly as it was.
+ */
+class PageGone(val code: Int) : java.io.IOException("Сторінка більше не відповідає ($code)")
+
+/** Fetches a shop page. Separate from parsing it, so both uses share one request. */
+suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
+    val normalizedLink = link.trim()
+    require(isSupportedWebUrl(normalizedLink)) { "Вкажіть коректне HTTP або HTTPS посилання" }
+    val connection = URL(normalizedLink).openConnection() as HttpURLConnection
     connection.instanceFollowRedirects = true
     connection.connectTimeout = 15_000
     connection.readTimeout = 15_000
     connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
-    val html = connection.inputStream.bufferedReader().use { it.readText() }
-    fun meta(key: String): String {
-        val patterns = listOf(
-            Regex("""<meta[^>]+(?:property|name)=["']${Regex.escape(key)}["'][^>]+content=["']([^"']+)""", RegexOption.IGNORE_CASE),
-            Regex("""<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${Regex.escape(key)}["']""", RegexOption.IGNORE_CASE)
-        )
-        return patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.get(1) }.orEmpty()
-    }
-    val rawPrice = meta("product:price:amount").ifBlank {
-        Regex("""\"price\"\s*:\s*[\"']?([0-9]+(?:[.,][0-9]+)?)""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1).orEmpty()
-    }
-    val price = rawPrice.replace(',', '.').toDoubleOrNull() ?: 0.0
-    require(price > 0) { "Не вдалося знайти ціну на сторінці" }
-    Wish(
-        id = System.currentTimeMillis().toString(),
-        name = meta("og:title").replace("&quot;", "\"").ifBlank { "Новий товар" },
-        url = link,
-        image = meta("og:image"),
-        price = price,
-        history = listOf(price)
-    )
+    // Checked rather than left to the stream, which throws the same
+    // FileNotFoundException for a 404 as for several failures that say nothing
+    // about the item. The card is allowed to claim the page is gone only here.
+    val code = connection.responseCode
+    if (code == 404 || code == 410) throw PageGone(code)
+    connection.inputStream.bufferedReader().use { it.readText() }
 }
 
-data class FxRate(val buy: Double = 0.0, val sell: Double = 0.0)
+/**
+ * How long to wait before asking a silent page a second time.
+ *
+ * Long enough that the shop is answering a fresh request rather than the same one
+ * again, short enough that a person holding the phone still reads it as the app
+ * working rather than as the app hanging.
+ */
+const val RETRY_PAUSE_MS = 1_500L
+
+/**
+ * Fetches a page, and fetches it once more when the first answer carried no price.
+ *
+ * Not a workaround for one shop. The same address, seconds apart, genuinely
+ * answers differently: a page comes back half its usual size with its price
+ * stripped out, and the next request returns the whole thing. Nothing in the
+ * response says which kind arrived, so the only way to tell is to look for a
+ * price and ask again when there is not one.
+ *
+ * Exactly one retry, and only on the path where a person is waiting for an
+ * answer. The twice-daily pass deliberately does not use this: there it would
+ * double the traffic at every shop on the list to rescue a reading that will be
+ * attempted again in twelve hours anyway.
+ */
+suspend fun pricedPageHtml(link: String): String {
+    val first = pageHtml(link)
+    if (extractOffers(first).isNotEmpty()) return first
+    delay(RETRY_PAUSE_MS)
+    // A second fetch that fails outright changes nothing: the first answer is
+    // still the best account of the page there is, and it is the one whose title
+    // and photograph the add sheet is about to offer.
+    val second = runCatching { pageHtml(link) }.getOrNull() ?: return first
+    return if (extractOffers(second).isNotEmpty()) second else first
+}
+
+/**
+ * Re-reads a wish's page and follows the variant it was set to.
+ *
+ * Never throws. Every outcome the fetch can tell apart is a [Reading], including
+ * the two that leave the price alone: silently adopting a neighbouring variant's
+ * price would corrupt the history a verdict is computed from, and nothing on screen
+ * would show it had happened. A page that answers 404 is the item's own news and
+ * reaches the card; anything else that fails is the network's, and changes nothing.
+ */
+suspend fun refreshed(previous: Wish, today: Long, rate: FxRate): Reading {
+    val sources = wishSources(previous)
+    // One at a time rather than in parallel: the pass already walks the whole
+    // wishlist this way, and three shops answering at once is a burst of requests
+    // at one shop's neighbours for no gain a background job can feel.
+    val readings = sources.map { source ->
+        val html = try {
+            pageHtml(source.url)
+        } catch (gone: PageGone) {
+            // This shop dropped the page. That is news about this shop and nothing
+            // at all about the others, which is why it lands on the row.
+            return@map SourceReading.Stale(
+                source.copy(checkedDay = today, freshness = Freshness.GONE)
+            )
+        } catch (failure: Exception) {
+            return@map SourceReading.Failed
+        }
+        readSource(source, html, today, rate)
+    }
+    return mergeSources(previous, readings, today, rate)
+}
+
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
 
+/**
+ * The rate, from whichever source will answer.
+ *
+ * Monobank is asked first because a bank's own buy and sell prices are what money
+ * actually changes hands at. But it allows roughly one request a minute per
+ * address and answers a 429 after that, and a rate tracker that goes blank the
+ * second time you open it is not a rate tracker. The National Bank publishes the
+ * official rate with no key and no limit, so it takes over — and the figure is
+ * labelled with where it came from, because the two are not the same number.
+ */
 suspend fun usdRate(): FxRate = withContext(Dispatchers.IO) {
-    val array = JSONArray(URL("https://api.monobank.ua/bank/currency").readText())
-    val item = (0 until array.length()).map { array.getJSONObject(it) }
-        .first { it.optInt("currencyCodeA") == 840 && it.optInt("currencyCodeB") == 980 }
-    FxRate(item.optDouble("rateBuy"), item.optDouble("rateSell"))
+    val market = runCatching { monobankRate() }.getOrNull()
+    if (market != null && market.sell > 0) return@withContext market
+    runCatching { nbuRate() }.getOrNull() ?: FxRate()
+}
+
+private fun monobankRate(): FxRate {
+    // Rate limited, so a hung request must not sit forever.
+    val connection = URL("https://api.monobank.ua/bank/currency").openConnection() as HttpURLConnection
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    // A 429 body is not a rate feed, and parsing it would throw rather than fall back.
+    if (connection.responseCode !in 200..299) return FxRate()
+    val body = connection.inputStream.bufferedReader().use { it.readText() }
+    return parseUsdRate(body)
+}
+
+private fun nbuRate(): FxRate {
+    val connection = URL(
+        "https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?valcode=USD&json"
+    ).openConnection() as HttpURLConnection
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    if (connection.responseCode !in 200..299) return FxRate()
+    val body = connection.inputStream.bufferedReader().use { it.readText() }
+    return parseNbuRate(body)
 }
 
 suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
@@ -199,28 +1133,74 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
     connection.setRequestProperty("User-Agent", "FlowPay-Android")
     if (connection.responseCode !in 200..299) return@withContext null
     val release = JSONObject(connection.inputStream.bufferedReader().use { it.readText() })
-    val code = Regex("""versionCode=(\d+)""").find(release.optString("body"))
-        ?.groupValues?.get(1)?.toIntOrNull() ?: return@withContext null
+    val tag = release.optString("tag_name")
+    val code = releaseVersionCode(release.optString("body"), tag) ?: return@withContext null
     val assets = release.optJSONArray("assets") ?: return@withContext null
-    val apk = (0 until assets.length()).map { assets.getJSONObject(it) }
-        .firstOrNull { it.optString("name").endsWith(".apk", true) } ?: return@withContext null
-    UpdateInfo(code, release.optString("tag_name", "нова версія"), apk.optString("browser_download_url"))
+    val all = (0 until assets.length()).map { assets.getJSONObject(it) }
+    val chosen = pickApkAsset(all.map { it.optString("name") }, tag) ?: return@withContext null
+    val apk = all.first { it.optString("name") == chosen }
+    val downloadUrl = apk.optString("browser_download_url")
+    val downloadUri = downloadUrl.toUri()
+    if (downloadUri.scheme != "https" || downloadUri.host != "github.com") return@withContext null
+    UpdateInfo(code, tag.ifBlank { "нова версія" }, downloadUrl)
+}
+
+/**
+ * Asks Nova Poshta where a parcel is.
+ *
+ * Their tracking method answers with an empty API key, so this needs no
+ * registration and no secret in the APK. Returns null when the number is not
+ * theirs or the call failed, which is deliberately different from a parcel that
+ * simply has not moved.
+ */
+suspend fun parcelStatus(number: String): ParcelStatus? = withContext(Dispatchers.IO) {
+    val clean = number.filter { !it.isWhitespace() }
+    if (detectCarrier(clean) != CARRIER_NOVA_POSHTA) return@withContext null
+    val body = JSONObject()
+        .put("apiKey", "")
+        .put("modelName", "TrackingDocument")
+        .put("calledMethod", "getStatusDocuments")
+        .put(
+            "methodProperties",
+            JSONObject().put(
+                "Documents",
+                JSONArray().put(JSONObject().put("DocumentNumber", clean).put("Phone", ""))
+            )
+        )
+        .toString()
+    val connection = URL("https://api.novaposhta.ua/v2.0/json/").openConnection() as HttpURLConnection
+    connection.requestMethod = "POST"
+    connection.doOutput = true
+    connection.connectTimeout = 15_000
+    connection.readTimeout = 15_000
+    connection.setRequestProperty("Content-Type", "application/json")
+    connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+    if (connection.responseCode !in 200..299) return@withContext null
+    parseNovaPoshtaStatus(connection.inputStream.bufferedReader().use { it.readText() })
 }
 
 fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
-    if (android.os.Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+    if (!context.packageManager.canRequestPackageInstalls()) {
         context.startActivity(
-            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+            Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, "package:${context.packageName}".toUri())
         )
         onMessage("Дозвольте встановлення для FlowPay і натисніть «Оновити» ще раз")
         return
     }
     val manager = context.getSystemService(DownloadManager::class.java)
-    val request = DownloadManager.Request(Uri.parse(url))
+    val downloadUri = url.toUri()
+    require(downloadUri.scheme == "https" && downloadUri.host == "github.com") {
+        "Некоректне джерело оновлення"
+    }
+    val request = DownloadManager.Request(downloadUri)
         .setTitle("Оновлення FlowPay")
         .setDescription("Завантаження нової версії")
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-        .setDestinationInExternalFilesDir(context, Environment.DIRECTORY_DOWNLOADS, "FlowPay-update.apk")
+        .setDestinationInExternalFilesDir(
+            context,
+            Environment.DIRECTORY_DOWNLOADS,
+            "FlowPay-update-${System.currentTimeMillis()}.apk"
+        )
     val id = manager.enqueue(request)
     onMessage("Завантаження почалося")
     val receiver = object : BroadcastReceiver() {
@@ -245,252 +1225,2817 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
     )
 }
 
-val Accent = Color(0xffd7ff63)
-val AppBackground = Color(0xff090a08)
-val CardBackground = Color(0xff1a1b18)
-private fun money(value: Double) = NumberFormat.getNumberInstance(Locale("uk", "UA")).format(value) + " ₴"
 
 @Composable
-fun FlowPayApp(context: Context) {
+fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: () -> Unit = {}) {
     val store = remember { Store(context) }
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by remember { mutableIntStateOf(TAB_WISHES) }
     var wishes by remember { mutableStateOf(store.wishes()) }
     var pays by remember { mutableStateOf(store.pays()) }
     var orders by remember { mutableStateOf(store.orders()) }
+    var adding by remember { mutableStateOf(false) }
+    var openedWish by remember { mutableStateOf<String?>(null) }
+    // Both read pruned: a month that fell out of the year, or an entry past its
+    // thirty days, is dropped on the way out of the store rather than lingering
+    // in memory until something happens to write the list back.
+    var paid by remember { mutableStateOf(store.paidMarks()) }
+    var bin by remember { mutableStateOf(store.bin()) }
 
-    LaunchedEffect(Unit) {
-        if (wishes.isEmpty()) runCatching {
-            product("https://prom.ua/ua/p2522203669-muzhskie-krossovki-asics.html")
-        }.onSuccess { wishes = listOf(it); store.saveWishes(wishes) }
+    // Both belong to whichever tab is showing, so leaving a tab clears them.
+    LaunchedEffect(tab) {
+        adding = false
+        openedWish = null
     }
 
-    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = AppBackground, surface = CardBackground)) {
-        Scaffold(containerColor = Color.Transparent, bottomBar = {
-            NavigationBar(containerColor = Color(0xff141512), tonalElevation = 0.dp) {
-                val tabs = listOf(
-                    Icons.Default.FavoriteBorder to "Бажання",
-                    Icons.Default.SwapVert to "Курс",
-                    Icons.Default.ReceiptLong to "Платежі",
-                    Icons.Default.LocalShipping to "Покупки",
-                    Icons.Default.MoreHoriz to "Ще"
-                )
-                tabs.forEachIndexed { index, item ->
-                    NavigationBarItem(
-                        selected = tab == index,
-                        onClick = { tab = index },
-                        icon = { Icon(item.first, item.second) },
-                        label = { Text(item.second, fontSize = 9.sp, maxLines = 1) },
-                        alwaysShowLabel = false
+    val notices = remember { SnackbarHostState() }
+    val noticeScope = rememberCoroutineScope()
+    // One line at a time: a share is a sequence of two or three of these, and
+    // queued snackbars would still be reporting the fetch after it finished.
+    fun say(text: String) = noticeScope.launch {
+        notices.currentSnackbarData?.dismiss()
+        notices.showSnackbar(text)
+    }
+
+    // Declared after the effect above so that when a command arrives on another
+    // tab, the tab switch clears that tab's dialogs first and this runs second.
+    LaunchedEffect(command, tab) {
+        if (command == null) return@LaunchedEffect
+        // Every command belongs to the wishlist. Switching costs a pass through
+        // this effect, which is why it returns and waits for the new tab.
+        if (tab != TAB_WISHES) {
+            tab = TAB_WISHES
+            return@LaunchedEffect
+        }
+        when (command) {
+            is AppCommand.AddWish -> adding = true
+            is AppCommand.RefreshPrices -> {
+                if (wishes.isEmpty()) {
+                    say(refreshMessage(0, 0))
+                } else {
+                    say("Перевіряю ціни…")
+                    val day = LocalDate.now().toEpochDay()
+                    val rate = store.fxRate().first
+                    val fetched = wishes.map { refreshed(it, day, rate) }
+                    val result = applyFollowed(wishes, fetched)
+                    wishes = result.wishes
+                    store.saveWishes(result.wishes)
+                    say(refreshMessage(result.updated, result.wishes.size))
+                    staleMessage(staleCount(result.wishes))?.let { say(it) }
+                }
+            }
+            is AppCommand.AddShared -> when (val link = sharedLink(command.text, wishes)) {
+                SharedLink.Missing -> say("У повідомленні немає посилання")
+                is SharedLink.Known -> say("«${link.wish.name}» вже у списку")
+                is SharedLink.New -> {
+                    // The link is saved before the page is read, so a shop that
+                    // blocks the fetch costs a name and a price, never the item.
+                    val id = System.currentTimeMillis().toString()
+                    val day = LocalDate.now().toEpochDay()
+                    val rate = store.fxRate().first
+                    val saved = wishes + placeholderWish(link.url, id, day)
+                    wishes = saved
+                    store.saveWishes(saved)
+                    say("Додано до бажань, шукаю ціну…")
+                    val read = runCatching {
+                        readForAdd(pricedPageHtml(link.url), link.url, id, day, rate)
+                    }.getOrNull()
+
+                    /** The shop's own title, photograph and words replace the
+                     * placeholder's, but the row keeps its id so nothing else has
+                     * to be told it changed. */
+                    fun fill(fetched: Wish) {
+                        val filled = wishes.map {
+                            if (it.id == id) {
+                                refreshedWish(it, fetched, day, rate).copy(name = fetched.name)
+                            } else {
+                                it
+                            }
+                        }
+                        wishes = filled
+                        store.saveWishes(filled)
+                    }
+
+                    when (read) {
+                        // No page at all, or one that named nothing. Either way
+                        // the link is safe in the list and the price is typed.
+                        null, PageAdd.Blank -> say("Сторінка не читається — впишіть ціну вручну")
+                        is PageAdd.Priced -> {
+                            fill(read.wish)
+                            say("Додано: ${read.wish.name}")
+                        }
+                        // The case the app used to throw away. The name, the
+                        // photograph and the description were all on the page;
+                        // only the number has to come from you.
+                        is PageAdd.Described -> {
+                            fill(read.wish)
+                            say("Додано: ${read.wish.name} — ціни на сторінці немає, впишіть її")
+                        }
+                    }
+                }
+            }
+        }
+        onCommandHandled()
+    }
+
+    // System back closes the item page before it leaves the app.
+    BackHandler(enabled = openedWish != null) { openedWish = null }
+
+    // Read once, so the pill cannot change its mind about what is due partway
+    // through a session that happens to cross midnight, and so the budget and the
+    // pill cannot disagree about which trials have run out.
+    val today = remember { LocalDate.now() }
+
+    // Recomputed whenever expenses change, so the wishlist plan and the expenses
+    // screen never disagree about what is free this month.
+    val usdSell = remember { store.fxRate().first }.sell
+    val monthBudget =
+        budget(remember(pays) { store.income() }, monthlyTotal(pays, usdSell, today))
+
+    val addLabel = when {
+        // An item page has its own actions, and the button would cover them.
+        openedWish != null -> null
+        tab == TAB_WISHES -> "Додати бажання"
+        tab == TAB_PAYMENTS -> "Додати витрату"
+        tab == TAB_ORDERS -> "Додати покупку"
+        else -> null
+    }
+
+    // Suppressed on an item page for the same reason as the action button: that
+    // page is one thing at a time, and the pill would be a second one.
+    val note = if (openedWish == null) statusNote(orders, pays, wishes, today, usdSell) else null
+
+    /**
+     * A deletion, with both ways back out of it.
+     *
+     * The bar covers the mistake noticed at once and the bin covers the one
+     * noticed a week later, and both go through here so that what the bar puts
+     * back is exactly what the bin would have: the stored item, whole.
+     */
+    fun recycle(entry: BinEntry, restore: () -> Unit) {
+        bin = store.recycle(entry)
+        noticeScope.launch {
+            notices.currentSnackbarData?.dismiss()
+            val answer = notices.showSnackbar(
+                message = binUndoMessage(entry),
+                actionLabel = "Повернути",
+                duration = SnackbarDuration.Long
+            )
+            if (answer == SnackbarResult.ActionPerformed) {
+                store.dropFromBin(entry.id)
+                bin = store.bin()
+                restore()
+            }
+        }
+    }
+
+    fun deleteWish(wish: Wish) {
+        val next = wishes.filterNot { it.id == wish.id }
+        wishes = next
+        store.saveWishes(next)
+        // Appended on the way back rather than slotted into its old index: the
+        // grid's order is the user's sort, not a property of the wish.
+        recycle(binEntryOf(wish, today.toEpochDay())) {
+            val back = wishes + wish
+            wishes = back
+            store.saveWishes(back)
+        }
+    }
+
+    /** By position, because two identical expenses are equal as values. */
+    fun deletePay(index: Int) {
+        val pay = pays.getOrNull(index) ?: return
+        val next = pays.filterIndexed { at, _ -> at != index }
+        pays = next
+        store.savePays(next)
+        recycle(binEntryOf(pay, today.toEpochDay())) {
+            val back = pays + pay
+            pays = back
+            store.savePays(back)
+        }
+    }
+
+    fun deleteOrder(order: Order) {
+        val next = orders.filterNot { it.id == order.id }
+        orders = next
+        store.saveOrders(next)
+        recycle(binEntryOf(order, today.toEpochDay())) {
+            val back = orders + order
+            orders = back
+            store.saveOrders(back)
+        }
+    }
+
+    /** Everything a restore can touch, re-read at once. */
+    fun reload() {
+        wishes = store.wishes()
+        pays = store.pays()
+        orders = store.orders()
+        paid = store.paidMarks()
+        bin = store.bin()
+    }
+
+    // Read afresh every time the overview is opened rather than once per session:
+    // "last run" is only worth anything as this second's answer, and the reasons
+    // the system is holding a job change with the battery and the network.
+    var health by remember { mutableStateOf<WorkHealth?>(null) }
+    var healthOpen by remember { mutableStateOf(false) }
+
+    /**
+     * The recap for the month that has ended, built silently and left waiting.
+     *
+     * No notification and no dialog on launch. It is assembled here because this
+     * is the one place that holds all four lists at once, and it sits on the
+     * overview until it is tapped — an artefact, not an announcement.
+     */
+    var recapSeen by remember { mutableStateOf(store.recapSeen()) }
+    var recapOpen by remember { mutableStateOf(false) }
+    val recap = remember(recapSeen, wishes, pays, orders, paid) {
+        recapDue(recapSeen, today)?.let { month ->
+            monthlyRecap(
+                wishes = wishes,
+                pays = pays,
+                orders = orders,
+                marks = paid,
+                month = month,
+                today = today,
+                income = monthBudget.income,
+                usdSellRate = usdSell
+            )
+            // A month with too little in it produces no ceremony at all, the same
+            // way a morning with no news sends no digest.
+        }?.takeUnless { it.empty }
+    }
+    var digestHour by remember { mutableIntStateOf(store.digestHour()) }
+    LaunchedEffect(tab) {
+        if (tab != TAB_OVERVIEW) return@LaunchedEffect
+        health = WorkHealth(
+            runs = store.workRuns(),
+            pendingReasons = pendingJobReasons(context),
+            apiLevel = android.os.Build.VERSION.SDK_INT,
+            nowMillis = System.currentTimeMillis()
+        )
+    }
+
+    // The bar is chrome, and chrome should yield to content. It moves all the
+    // way or not at all: following the finger left it resting half off screen,
+    // with its labels cut and its icons crowding the system buttons.
+    val density = LocalDensity.current
+    val barTravel = with(density) { Space.navBar.toPx() } +
+        WindowInsets.navigationBars.getBottom(density)
+    val barDown = remember { mutableStateOf(false) }
+    val barScroll = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // A threshold, so a stray pixel of movement does not flap the bar.
+                if (available.y < -8f) barDown.value = true
+                if (available.y > 8f) barDown.value = false
+                return Offset.Zero
+            }
+        }
+    }
+
+    FlowPayTheme {
+        // The deck replaces the app rather than floating over it. As a dialog it
+        // would be a second window, outside the box the theme paints the ground and
+        // the grain in, and it would have had to fill the whole screen with flat
+        // near-black — the one surface in the app that would then band. Composed
+        // here instead, the theme's ground is its ground, and the navigation bar
+        // and the action button are gone for the duration without being suppressed
+        // one condition at a time.
+        val deck = recap.takeIf { recapOpen }
+        if (deck != null) {
+            RecapDeck(deck) {
+                store.saveRecapSeen(deck.month)
+                recapSeen = deck.month
+                recapOpen = false
+                // Coming back from a screen that took over the whole phone is
+                // arriving somewhere, not continuing a scroll. Without this the
+                // chrome returns in whatever state the last flick left it in, and
+                // the deck closes onto a screen with no navigation bar and no
+                // action button until you happen to scroll upward.
+                barDown.value = false
+            }
+            return@FlowPayTheme
+        }
+        // The bar is computed below the deck's early return, so while the deck is
+        // up this animation is not in the composition at all. Coming back, it is
+        // composed afresh and animateFloatAsState starts at its target, so the bar
+        // is simply there rather than sliding in behind a screen that just closed.
+        // Inside the theme, not above it: LocalReducedMotion is provided by
+        // FlowPayTheme, and read one line higher it would quietly be the default
+        // rather than the phone's answer — which is the failure this whole audit is
+        // about, arrived at by accident.
+        //
+        // On a phone asked to stop animating, the bar simply stays. Snapping it in
+        // and out on every change of scroll direction would be worse than either
+        // answer: a navigation bar and a button that blink out of existence when you
+        // flick, and back when you flick the other way. The hiding exists only as a
+        // movement — chrome getting out of the way of content — so with the movement
+        // gone there is nothing left worth keeping, and the honest answer is to
+        // leave the chrome where it is.
+        val barGone = barDown.value && !LocalReducedMotion.current
+        val barHidden by animateFloatAsState(
+            if (barGone) barTravel else 0f,
+            Motion.spatial(),
+            label = "bottom bar"
+        )
+        Scaffold(
+            modifier = Modifier.nestedScroll(barScroll),
+            // Transparent, not AppBackground: the theme has already painted the
+            // ground and laid the grain over it, and a second opaque fill here
+            // would cover the grain up again.
+            containerColor = Color.Transparent,
+            contentColor = TextPrimary,
+            snackbarHost = { SnackbarHost(notices) },
+            floatingActionButton = {
+                addLabel?.let { label ->
+                    // Collapses to a plus once you scroll. Its full width was
+                    // covering the bottom of whichever card sat under it, three
+                    // separate times; the label is needed once, not always.
+                    ExtendedFloatingActionButton(
+                        onClick = { adding = true },
+                        expanded = !barGone,
+                        containerColor = Accent,
+                        contentColor = AccentInk,
+                        shape = Radius.pill,
+                        icon = { Icon(Icons.Default.Add, null) },
+                        text = { Text(label, fontWeight = Type.medium) }
+                    )
+                }
+            },
+            bottomBar = {
+                Column(Modifier.offset { IntOffset(0, barHidden.roundToInt()) }) {
+                    // An edge, because a translucent bar and the list showing
+                    // through it are otherwise one continuous grey.
+                    Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(HairLine))
+                    NavigationBar(
+                        // Translucent rather than a slab: the list keeps running
+                        // underneath, which is what says there is more of it.
+                        containerColor = SurfaceLow.copy(alpha = 0.82f),
+                        tonalElevation = 0.dp
+                    ) {
+                        val tabs = listOf(
+                            Icons.Default.FavoriteBorder to "Бажання",
+                            Icons.Default.SwapVert to "Курс",
+                            Icons.Default.ReceiptLong to "Платежі",
+                            Icons.Default.LocalShipping to "Покупки",
+                            Icons.Default.Insights to "Огляд"
+                        )
+                        tabs.forEachIndexed { index, item ->
+                            NavigationBarItem(
+                                selected = tab == index,
+                                onClick = { tab = index },
+                                icon = { Icon(item.first, item.second) },
+                                label = {
+                                    Text(
+                                        item.second,
+                                        fontSize = Type.navLabelSize,
+                                        letterSpacing = Type.navLabelTracking,
+                                        fontWeight = Type.medium,
+                                        maxLines = 1
+                                    )
+                                },
+                                // Labelling only the active tab makes the row change
+                                // width as you switch, which reads as a glitch.
+                                alwaysShowLabel = true,
+                                colors = NavigationBarItemDefaults.colors(
+                                    indicatorColor = AccentSoft,
+                                    selectedIconColor = Accent,
+                                    selectedTextColor = Accent,
+                                    unselectedIconColor = TextSecondary,
+                                    unselectedTextColor = TextSecondary
+                                )
+                            )
+                        }
+                    }
+                }
+            }
+        ) { padding ->
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    // Everything but the bottom. The navigation bar is translucent
+                    // and the lists run underneath it, so its height is left to
+                    // navClearance() inside each list rather than cut out here.
+                    .padding(
+                        top = padding.calculateTopPadding(),
+                        start = padding.calculateStartPadding(LocalLayoutDirection.current),
+                        end = padding.calculateEndPadding(LocalLayoutDirection.current)
+                    )
+            ) {
+                // Above the screen rather than over it: the pill and a screen's own
+                // compact title both want the top strip, and one covering the other
+                // would leave you unable to read either.
+                StatusPill(note) { target -> tab = target }
+                Box(Modifier.weight(1f)) {
+                    when (tab) {
+                        TAB_WISHES -> WishlistScreen(
+                            items = wishes,
+                            save = { wishes = it; store.saveWishes(it) },
+                            store = store,
+                            context = context,
+                            adding = adding,
+                            setAdding = { adding = it },
+                            opened = openedWish,
+                            setOpened = { openedWish = it },
+                            // A bought wish becomes a parcel, and the tab follows it
+                            // so the move is visible rather than something to go
+                            // looking for.
+                            freeCash = monthBudget.free,
+                            onDelete = { deleteWish(it) },
+                            onBought = { order, wish ->
+                                val next = orders + order
+                                orders = next
+                                store.saveOrders(next)
+                                val left = wishes.filterNot { it.id == wish.id }
+                                wishes = left
+                                store.saveWishes(left)
+                                // Binned, but without the undo bar: buying is a move
+                                // rather than a mistake, and "Видалено «…» Повернути"
+                                // over a tab that has just switched to Покупки would
+                                // be the app contradicting itself. The entry is still
+                                // there for thirty days, because a purchase recorded
+                                // by accident should not cost months of price history
+                                // — the parcel only carries the one figure the
+                                // verdict needs, not the whole series.
+                                bin = store.recycle(binEntryOf(wish, today.toEpochDay()))
+                                tab = TAB_ORDERS
+                            }
+                        )
+                        TAB_RATE -> CalculatorScreen(store)
+                        TAB_PAYMENTS -> PaymentsScreen(
+                            items = pays,
+                            save = { pays = it; store.savePays(it) },
+                            store = store,
+                            adding = adding,
+                            setAdding = { adding = it },
+                            paid = paid,
+                            setPaid = { marks -> paid = marks; store.savePaidMarks(marks) },
+                            onDelete = { deletePay(it) }
+                        )
+                        TAB_ORDERS -> OrdersScreen(
+                            items = orders,
+                            save = { orders = it; store.saveOrders(it) },
+                            context = context,
+                            adding = adding,
+                            setAdding = { adding = it },
+                            onDelete = { deleteOrder(it) }
+                        )
+                        // The overview is where "how am I doing" is asked, and every
+                        // figure on it is only as true as the last background pass.
+                        // So the pass says for itself whether it is still running,
+                        // above the screen rather than buried in it.
+                        else -> Column(Modifier.fillMaxSize()) {
+                            WorkHealthStrip(health?.let { healthLine(it) }) { healthOpen = true }
+                            Box(Modifier.weight(1f)) {
+                                SettingsScreen(
+                                    recap = recap,
+                                    onOpenRecap = { recapOpen = true },
+                                    summary = overview(
+                                        wishes,
+                                        pays,
+                                        orders,
+                                        monthBudget.income,
+                                        usdSell,
+                                        today
+                                    ),
+                                    store = store,
+                                    months = monthRecords(pays, paid, today, usdSell),
+                                    pays = pays,
+                                    paid = paid,
+                                    onTogglePaid = { pay, month ->
+                                        val marks = togglePaid(paid, pay, month)
+                                        paid = marks
+                                        store.savePaidMarks(marks)
+                                    },
+                                    bin = bin,
+                                    onRestore = { id -> store.restoreFromBin(id); reload() },
+                                    onDropFromBin = { id ->
+                                        store.dropFromBin(id)
+                                        bin = store.bin()
+                                    },
+                                    onEmptyBin = { store.emptyBin(); bin = store.bin() },
+                                    onImported = { reload() }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            // Marked seen on opening rather than on being shown. A deck that
+            // vanished because you scrolled past it once would be a month's worth
+            // of the app's only ceremony, lost to a flick.
+            if (healthOpen) {
+                health?.let { current ->
+                    WorkHealthSheet(
+                        health = current,
+                        digestHour = digestHour,
+                        onHour = { hour ->
+                            digestHour = hour
+                            store.saveDigestHour(hour)
+                            // The enqueued request carries the old time of day in its
+                            // initial delay, so the schedule has to be replaced rather
+                            // than left to notice.
+                            ReminderWorker.reschedule(context)
+                        },
+                        onOpenSettings = { openBackgroundSettings(context) },
+                        onClose = { healthOpen = false }
                     )
                 }
             }
-        }) { padding ->
-            Box(
-                Modifier.padding(padding).fillMaxSize().background(
-                    Brush.verticalGradient(listOf(Color(0xff0d100b), AppBackground, Color.Black))
-                )
-            ) {
-                when (tab) {
-                    0 -> WishlistScreen(wishes, { wishes = it; store.saveWishes(it) }, context)
-                    1 -> CalculatorScreen()
-                    2 -> PaymentsScreen(pays) { pays = it; store.savePays(it) }
-                    3 -> OrdersScreen(orders, { orders = it; store.saveOrders(it) }, context)
-                    else -> SettingsScreen(store) {
-                        wishes = store.wishes()
-                        pays = store.pays()
-                        orders = store.orders()
-                    }
-                }
-            }
         }
     }
 }
 
+/**
+ * The large title at the top of a screen.
+ *
+ * It is always item zero of its list and nothing else shares that item, because
+ * [CollapsingTitle] measures this block to know when it has scrolled far enough to
+ * hand the screen's name over to the compact bar. Put anything else in item zero
+ * and the handover happens far too late.
+ */
 @Composable
-fun ScreenHeader(kicker: String, title: String, subtitle: String? = null) {
-    Column(Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 14.dp)) {
+fun ScreenHeader(
+    kicker: String,
+    title: String,
+    subtitle: String? = null,
+    trailing: (@Composable () -> Unit)? = null,
+    /** Zero where the list around it already supplies the screen margin. */
+    inset: Dp = Space.screen
+) {
+    // Overline, title and subtitle form one group, at most 8dp apart, followed by a
+    // 32dp break. That break is what gives the screen a readable shape.
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = inset, end = inset, top = Space.md, bottom = Space.lg)
+    ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(color = Accent, shape = RoundedCornerShape(10.dp), modifier = Modifier.size(30.dp)) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("F", color = Color(0xff10120d), fontWeight = FontWeight.Black, fontSize = 18.sp)
-                }
-            }
-            Spacer(Modifier.width(9.dp))
-            Text(kicker, color = Accent, fontSize = 11.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text(
+                kicker,
+                color = Accent,
+                fontSize = Type.overlineSize,
+                fontWeight = Type.strong,
+                letterSpacing = Type.overlineTracking
+            )
+            Spacer(Modifier.weight(1f))
+            trailing?.invoke()
         }
-        Spacer(Modifier.height(10.dp))
-        Text(title, fontSize = 31.sp, fontWeight = FontWeight.Black, lineHeight = 34.sp)
-        subtitle?.let { Text(it, color = Color(0xff9b9d96), fontSize = 14.sp, modifier = Modifier.padding(top = 3.dp)) }
+        Spacer(Modifier.height(Space.sm))
+        Text(
+            title,
+            fontSize = Type.screenTitleSize,
+            lineHeight = Type.screenTitleLine,
+            letterSpacing = Type.screenTitleTracking,
+            fontWeight = Type.strong
+        )
+        subtitle?.let {
+            Text(
+                it,
+                color = TextSecondary,
+                fontSize = Type.bodySize,
+                lineHeight = Type.bodyLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
     }
 }
 
 @Composable
-fun WishlistScreen(items: List<Wish>, save: (List<Wish>) -> Unit, context: Context) {
-    var adding by remember { mutableStateOf(false) }
+fun WishlistScreen(
+    items: List<Wish>,
+    save: (List<Wish>) -> Unit,
+    store: Store,
+    context: Context,
+    adding: Boolean,
+    setAdding: (Boolean) -> Unit,
+    // Held by id rather than by value so the page keeps showing the live item
+    // after a price refresh or a change to the savings plan.
+    opened: String?,
+    setOpened: (String?) -> Unit,
+    freeCash: Double,
+    /** Deleting is the app's one irreversible act, so it is owned above this screen. */
+    onDelete: (Wish) -> Unit,
+    /**
+     * The wish travels with the parcel it became, because removing it from the
+     * list is a deletion like any other and belongs above this screen with the bin.
+     */
+    onBought: (Order, Wish) -> Unit
+) {
     var editing by remember { mutableStateOf<Wish?>(null) }
+    var sort by remember { mutableStateOf(store.wishSort()) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
+    var query by remember { mutableStateOf("") }
+    var searching by remember { mutableStateOf(false) }
+    // Which chip is down. Null is "Усі", and it is also where a category goes when
+    // its last wish is renamed or deleted out from under the selection.
+    var chosenCategory by remember { mutableStateOf<String?>(null) }
+    val touch = rememberTouch()
     val scope = rememberCoroutineScope()
+    // Read once, so a session that crosses midnight cannot change its mind about
+    // which wishes are still on hold halfway down the list.
+    val today = remember { LocalDate.now() }
 
-    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-        item {
-            ScreenHeader("FLOWPAY", "Мої бажання", "Ціна, ціль та історія в одному місці")
-            Row(Modifier.padding(horizontal = 20.dp).fillMaxWidth()) {
-                Button({ adding = true }, Modifier.weight(1f), shape = RoundedCornerShape(16.dp)) {
-                    Icon(Icons.Default.Add, null); Text(" Додати")
-                }
-                Spacer(Modifier.width(10.dp))
-                FilledTonalButton(onClick = {
-                    scope.launch {
-                        refreshing = true
-                        var updated = 0
-                        val fresh = items.map { old ->
-                            runCatching { product(old.url) }.getOrNull()?.let { now ->
-                                updated++
-                                old.copy(name = now.name, image = now.image.ifBlank { old.image }, price = now.price, history = (old.history + now.price).takeLast(90))
-                            } ?: old
-                        }
-                        save(fresh); refreshing = false; message = "Оновлено: $updated з ${items.size}"
+    val openedWish = opened?.let { id -> items.firstOrNull { it.id == id } }
+    // The list and the page live in one composition, so the photo can travel
+    // between them: the card image grows into the page header instead of being
+    // replaced by a second copy of itself.
+    SharedTransitionLayout {
+        AnimatedContent(openedWish, label = "wish") { shown ->
+            if (shown != null) {
+                WishDetailScreen(
+                    wish = shown,
+                    visibility = this@AnimatedContent,
+                    context = context,
+                    onBack = { setOpened(null) },
+                    onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
+                    onEdit = { editing = shown },
+                    onDelete = { onDelete(shown); setOpened(null) },
+                    freeCash = freeCash,
+                    onBought = { trackingNumber, paid ->
+                        onBought(
+                            Order(
+                                id = shown.id,
+                                name = shown.name,
+                                url = shown.url,
+                                status = ORDERED,
+                                tracking = trackingNumber,
+                                image = shown.image,
+                                price = shown.price,
+                                paid = paid,
+                                // The wish leaves the list on the next line, so the
+                                // one number the verdict needs has to be carried
+                                // across now or it is gone for good.
+                                lowestSeen = lowestTracked(shown)
+                            ),
+                            shown
+                        )
+                        setOpened(null)
                     }
-                }, enabled = !refreshing && items.isNotEmpty(), shape = RoundedCornerShape(16.dp)) {
-                    if (refreshing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Refresh, null)
-                    Text(" Оновити")
+                )
+            } else {
+                val categories = remember(items) { knownCategories(items) }
+                val totals = remember(items) { categoryTotals(items) }
+                // Derived rather than corrected in an effect: a category whose last
+                // wish was deleted simply stops being selected on the next frame,
+                // instead of leaving the grid filtered on a name nothing carries.
+                val category = chosenCategory?.takeIf { chosen ->
+                    categories.any { categoryKey(it) == categoryKey(chosen) }
+                }
+                val shown = remember(items, category, query) { filterWishes(items, category, query) }
+
+                // The same controls in the large header and in the compact bar, so
+                // refreshing and searching stay reachable once you are down the grid
+                // — which is exactly where a list long enough to need searching puts
+                // you. A field pinned to the top of the grid would scroll away with
+                // the header and have to be scrolled back to.
+                val refreshAction: @Composable () -> Unit = {
+                    IconButton(
+                        onClick = {
+                            scope.launch {
+                                refreshing = true
+                                val day = LocalDate.now().toEpochDay()
+                                val rate = store.fxRate().first
+                                val before = items.count { targetHit(it, day) }
+                                val fetched = items.map { refreshed(it, day, rate) }
+                                val result = applyFollowed(items, fetched)
+                                // One tick if this pass brought something to the
+                                // price you named — not one per wish. The count is
+                                // compared rather than the list, because what is
+                                // being reported is that the pass produced news at
+                                // all; which item it was is on the grid a moment
+                                // later, and the pill above it.
+                                if (result.wishes.count { targetHit(it, day) } > before) {
+                                    touch.landed()
+                                }
+                                save(result.wishes)
+                                refreshing = false
+                                message = listOfNotNull(
+                                    refreshMessage(result.updated, items.size),
+                                    staleMessage(staleCount(result.wishes))
+                                ).joinToString(" · ")
+                            }
+                        },
+                        enabled = !refreshing && items.isNotEmpty()
+                    ) {
+                        if (refreshing) {
+                            BusyMark()
+                        } else {
+                            Icon(Icons.Default.Refresh, "Оновити ціни", tint = TextSecondary)
+                        }
+                    }
+                }
+                val headerActions: @Composable () -> Unit = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (items.size > 1) {
+                            IconButton(
+                                onClick = {
+                                    searching = !searching
+                                    // Closing the box has to clear what was in it, or
+                                    // the grid stays filtered by a query with nothing
+                                    // on screen to explain why.
+                                    if (!searching) query = ""
+                                }
+                            ) {
+                                Icon(
+                                    if (searching) Icons.Default.Close else Icons.Default.Search,
+                                    if (searching) "Закрити пошук" else "Пошук за назвою",
+                                    tint = if (query.isNotBlank()) Accent else TextSecondary
+                                )
+                            }
+                        }
+                        refreshAction()
+                    }
+                }
+                val gridState = rememberLazyGridState()
+                // The box is item one, so opening it from the compact bar would
+                // otherwise put the field somewhere thirty cards above the screen.
+                LaunchedEffect(searching) { if (searching) gridState.animateScrollToItem(0) }
+                Box {
+                    // Two columns, the way a shop lists goods. One wish per full-width
+                    // row meant a photograph, a chart and four lines of text for every
+                    // item, and half a screen spent on one of them.
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(2),
+                        state = gridState,
+                        contentPadding = PaddingValues(
+                            start = Space.screen,
+                            end = Space.screen,
+                            // The navigation bar is translucent and the grid runs
+                            // under it, so its height is left here rather than cut
+                            // out of the scaffold.
+                            bottom = navClearance() + Space.fabClearance
+                        ),
+                        horizontalArrangement = Arrangement.spacedBy(Space.md),
+                        verticalArrangement = Arrangement.spacedBy(Space.md)
+                    ) {
+                        // Item zero is the header alone: that is the block the compact
+                        // bar measures to know when to take over.
+                        item(span = { GridItemSpan(maxLineSpan) }) {
+                            ScreenHeader(
+                                kicker = "FLOWPAY",
+                                title = "Мої бажання",
+                                subtitle = "Ціна, ціль та історія в одному місці",
+                                // The grid already supplies the screen margin.
+                                inset = 0.dp,
+                                trailing = headerActions
+                            )
+                        }
+                        if (searching) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                WishSearchField(query, { query = it }) {
+                                    searching = false
+                                    query = ""
+                                }
+                            }
+                        }
+                        if (showsCategoryRow(items)) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                CategoryChips(
+                                    totals = totals,
+                                    everything = allCategoriesTotal(items),
+                                    selected = category
+                                ) { tapped ->
+                                    // Tapping the chip that is already down clears it,
+                                    // so getting back to the whole list never needs the
+                                    // row to be scrolled back to its first chip.
+                                    chosenCategory = if (tapped == category) null else tapped
+                                }
+                            }
+                        }
+                        message?.let { text ->
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    text,
+                                    Modifier.padding(bottom = Space.lg),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                        }
+                        if (items.size > 1) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                // Five chips in a row ran off the right edge with nothing
+                                // to say they scrolled, so the last options were simply
+                                // invisible. One line names the current order instead.
+                                var sortOpen by remember { mutableStateOf(false) }
+                                Box {
+                                    Row(
+                                        Modifier.clickable { sortOpen = true },
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            "Сортування",
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize
+                                        )
+                                        Spacer(Modifier.width(Space.sm))
+                                        Text(
+                                            sort.label,
+                                            color = Accent,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.medium
+                                        )
+                                        Icon(
+                                            Icons.Default.ArrowDropDown,
+                                            "Змінити порядок",
+                                            tint = Accent
+                                        )
+                                    }
+                                    DropdownMenu(sortOpen, { sortOpen = false }) {
+                                        WishSort.entries.forEach { option ->
+                                            DropdownMenuItem(
+                                                text = {
+                                                    Text(
+                                                        option.label,
+                                                        // The trigger line names the
+                                                        // current order, but not once
+                                                        // the menu covers it.
+                                                        color = if (option == sort) Accent else TextPrimary
+                                                    )
+                                                },
+                                                onClick = {
+                                                    sort = option
+                                                    store.saveWishSort(option)
+                                                    sortOpen = false
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (items.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                EmptyInvite(
+                                    "Ще нічого не хочеться",
+                                    "Вставте посилання на товар. FlowPay візьме назву, фото й ціну, " +
+                                        "далі стежить за ціною сам і скаже, коли вигідно купувати."
+                                )
+                            }
+                        }
+                        if (items.isNotEmpty() && shown.isEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    browseEmptyNote(query, category),
+                                    Modifier.padding(top = Space.lg, bottom = Space.lg),
+                                    color = TextSecondary,
+                                    fontSize = Type.bodySize,
+                                    lineHeight = Type.bodyLine
+                                )
+                            }
+                        }
+                        // Held wishes drop to their own block at the foot of the list
+                        // rather than vanishing: the whole point of a hold is to come
+                        // back to the thing, and something you cannot find again was
+                        // deleted rather than postponed.
+                        val (watched, held) = partitionByHold(shown, today.toEpochDay())
+                        items(sortWishes(watched, sort), key = { it.id }) { wish ->
+                            WishCard(wish, this@AnimatedContent, today.toEpochDay()) {
+                                setOpened(wish.id)
+                            }
+                        }
+                        if (held.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                Text(
+                                    "Відкладено — ${positionsLabel(held.size)}",
+                                    Modifier.padding(top = Space.xl, bottom = Space.sm),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            items(sortWishes(held, sort), key = { it.id }) { wish ->
+                                WishCard(wish, this@AnimatedContent, today.toEpochDay()) {
+                                    setOpened(wish.id)
+                                }
+                            }
+                        }
+                    }
+                    CollapsingTitle("Мої бажання", gridState, trailing = headerActions)
                 }
             }
-            message?.let { Text(it, Modifier.padding(horizontal = 22.dp, vertical = 8.dp), color = Color.Gray) }
-        }
-        if (items.isEmpty()) item { EmptyCard("Додайте посилання на товар — фото й ціна підтягнуться автоматично") }
-        items(items, key = { it.id }) { wish ->
-            WishCard(wish, context, onEdit = { editing = wish }, onDelete = { save(items - wish) })
         }
     }
-    if (adding) AddWishDialog({ adding = false }, { wish -> save(items + wish); adding = false })
+    if (adding) {
+        AddWishSheet({ setAdding(false) }, store.fxRate().first, knownCategories(items)) { wish ->
+            save(items + wish)
+            setAdding(false)
+        }
+    }
     editing?.let { selected ->
-        EditWishDialog(selected, { editing = null }) { changed ->
+        EditWishSheet(selected, knownCategories(items), { editing = null }) { changed ->
             save(items.map { if (it.id == changed.id) changed else it })
             editing = null
         }
     }
 }
 
+/**
+ * The search box, which only exists while it is being used.
+ *
+ * It takes focus the moment it appears, because it was opened by tapping a
+ * magnifier and anything else would ask for a second tap to do the obvious thing.
+ */
 @Composable
-fun AddWishDialog(close: () -> Unit, add: (Wish) -> Unit) {
-    var link by remember { mutableStateOf("") }
-    var target by remember { mutableStateOf("") }
-    var category by remember { mutableStateOf("Інше") }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-    AlertDialog(onDismissRequest = close, confirmButton = {
-        Button(onClick = {
-            scope.launch {
-                loading = true; error = null
-                runCatching { product(link).copy(targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category) }
-                    .onSuccess(add).onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
-                loading = false
+fun WishSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Unit) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    OutlinedTextField(
+        query,
+        onQuery,
+        Modifier
+            .fillMaxWidth()
+            .padding(bottom = Space.lg)
+            .focusRequester(focus),
+        label = { Text("Пошук за назвою") },
+        singleLine = true,
+        leadingIcon = { Icon(Icons.Default.Search, null, tint = TextSecondary) },
+        trailingIcon = {
+            IconButton(onClick = { if (query.isBlank()) onClose() else onQuery("") }) {
+                Icon(Icons.Default.Close, "Очистити", tint = TextSecondary)
             }
-        }, enabled = link.startsWith("http") && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
-    }, dismissButton = { TextButton(close) { Text("Скасувати") } }, title = { Text("Новий товар") }, text = {
-        Column {
-            OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
-            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
-            OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Категорія") })
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
         }
-    })
+    )
+}
+
+/**
+ * One chip per category, each carrying what it is holding.
+ *
+ * The money is the point of the row as much as the filter is: "Техніка" says
+ * nothing you did not know, while "Техніка · 62 000 ₴" answers the question a
+ * wishlist is really being asked. On the chip rather than in the overview because
+ * that puts every category's figure beside every other one, which is the only way
+ * the number means anything — a total alone is a number, four totals side by side
+ * is where the money went.
+ */
+@Composable
+fun CategoryChips(
+    totals: List<CategoryTotal>,
+    everything: Double,
+    selected: String?,
+    onSelect: (String?) -> Unit
+) {
+    LazyRow(
+        Modifier.padding(bottom = Space.lg),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+    ) {
+        item {
+            CategoryChip("Усі", approxMoney(everything), selected == null) { onSelect(null) }
+        }
+        items(totals, key = { it.name }) { total ->
+            CategoryChip(
+                total.name,
+                approxMoney(total.total),
+                categoryKey(total.name) == selected?.let(::categoryKey)
+            ) { onSelect(total.name) }
+        }
+    }
 }
 
 @Composable
-fun EditWishDialog(wish: Wish, close: () -> Unit, save: (Wish) -> Unit) {
-    var name by remember { mutableStateOf(wish.name) }
-    var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
-    var category by remember { mutableStateOf(wish.category) }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Редагувати товар") },
-        text = {
-            Column {
-                OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
-                NumberField("Цільова ціна, ₴", target) { target = it }
-                OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Категорія") })
-            }
-        },
-        confirmButton = {
-            Button({ save(wish.copy(name = name.ifBlank { wish.name }, targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0, category = category.ifBlank { "Інше" })) }) {
-                Text("Зберегти")
-            }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
+private fun CategoryChip(label: String, amount: String, active: Boolean, onClick: () -> Unit) {
+    Column(
+        Modifier
+            .clip(Radius.pill)
+            .background(if (active) Accent else SurfaceHigh)
+            .clickable(onClick = onClick)
+            .padding(horizontal = Space.lg, vertical = Space.sm)
+    ) {
+        Text(
+            label,
+            color = if (active) AccentInk else TextPrimary,
+            fontSize = Type.captionSize,
+            fontWeight = Type.medium,
+            maxLines = 1
+        )
+        Text(
+            amount,
+            // Two thirds opacity rather than a second colour: on the lime chip any
+            // muted grey from the palette turns muddy against it.
+            color = if (active) AccentInk.copy(alpha = 0.7f) else TextSecondary,
+            fontSize = Type.overlineSize,
+            maxLines = 1,
+            style = Tabular
+        )
+    }
+}
+
+/**
+ * The categories already in use, offered rather than imposed.
+ *
+ * The field stays free text — a fixed list would be wrong about this person's
+ * things within a week — but typing "техніка" a second time is how one category
+ * quietly becomes two, and tapping is both faster and exact.
+ */
+@Composable
+fun CategorySuggestions(known: List<String>, chosen: String, onPick: (String) -> Unit) {
+    if (known.isEmpty()) return
+    LazyRow(
+        Modifier.padding(top = Space.sm),
+        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+    ) {
+        items(known, key = { it }) { name ->
+            val active = categoryKey(name) == categoryKey(chosen)
+            Text(
+                name,
+                Modifier
+                    .clip(Radius.pill)
+                    .background(if (active) AccentSoft else SurfaceHigh)
+                    .clickable { onPick(name) }
+                    .padding(horizontal = Space.md, vertical = Space.sm),
+                color = if (active) Accent else TextSecondary,
+                fontSize = Type.captionSize,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * What the page did give, shown before asking for the one thing it did not.
+ *
+ * The photograph and the title are here to be checked, not admired: a shared link
+ * is often not the link the person thought they shared, and typing a price into a
+ * sheet that has silently latched onto the wrong item is the one mistake this
+ * screen can make that nothing downstream would catch. Seeing the thing answers
+ * that before a number is typed.
+ */
+@Composable
+fun NoPricePreview(facts: PageFacts, link: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (facts.image.isNotBlank()) {
+            AsyncImage(
+                facts.image,
+                facts.name,
+                Modifier
+                    .size(64.dp)
+                    .clip(Radius.sm)
+                    .background(SurfaceRaised),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(Modifier.width(Space.md))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                facts.name.ifBlank { placeholderName(link) },
+                fontSize = Type.bodySize,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                sourceName(link),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                maxLines = 1
+            )
+        }
+    }
+    Text(
+        noPriceNote(facts),
+        color = TextSecondary,
+        fontSize = Type.captionSize,
+        lineHeight = Type.captionLine,
+        modifier = Modifier.padding(top = Space.md)
     )
 }
 
 @Composable
-fun WishCard(wish: Wish, context: Context, onEdit: () -> Unit, onDelete: () -> Unit) {
-    val first = wish.history.firstOrNull() ?: wish.price
-    val change = if (first > 0) (wish.price - first) / first * 100 else 0.0
-    Card(Modifier.padding(horizontal = 12.dp, vertical = 7.dp).fillMaxWidth(), shape = RoundedCornerShape(28.dp)) {
-        AsyncImage(
-            wish.image, wish.name,
-            Modifier.fillMaxWidth().height(190.dp).background(Color(0xff262724)),
-            contentScale = ContentScale.Crop
+fun AddWishSheet(
+    close: () -> Unit,
+    rate: FxRate = FxRate(),
+    /** The spellings already in use, so a new wish joins a category instead of forking it. */
+    known: List<String> = emptyList(),
+    add: (Wish) -> Unit
+) {
+    var link by remember { mutableStateOf("") }
+    var target by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf(OTHER_CATEGORY) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    // The page is held between the two steps, so choosing an edition does not
+    // fetch it a second time and cannot land on a different version of it.
+    var page by remember { mutableStateOf<String?>(null) }
+    var offers by remember { mutableStateOf(emptyList<Offer>()) }
+    // Set only on the third path: the page was read, it says what the thing is,
+    // and it does not say what it costs. Null keeps the sheet on its usual form.
+    var facts by remember { mutableStateOf<PageFacts?>(null) }
+    var typedPrice by remember { mutableStateOf("") }
+    val touch = rememberTouch()
+    val scope = rememberCoroutineScope()
+
+    fun finish(offer: Offer) {
+        val html = page ?: return
+        // Both ways into the list come through here — the page with one price, and
+        // the card tapped when it had several — so the tick belongs here rather
+        // than at either call site, where one of them would have been forgotten.
+        touch.landed()
+        add(
+            wishFromOffer(
+                html,
+                link.trim(),
+                System.currentTimeMillis().toString(),
+                offer,
+                LocalDate.now().toEpochDay(),
+                rate
+            ).copy(
+                targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                category = canonicalCategory(category, known)
+            )
         )
-        Column(Modifier.padding(18.dp)) {
-            Row { AssistChip({}, { Text(wish.category) }); Spacer(Modifier.weight(1f)); Text("%+.1f%%".format(change), color = if (change <= 0) Accent else Color(0xffff6b6b), fontWeight = FontWeight.Bold) }
-            Text(wish.name, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-            Text(money(wish.price), fontSize = 29.sp, color = Accent, fontWeight = FontWeight.Black)
-            if (wish.targetPrice > 0) Text("Ціль: ${money(wish.targetPrice)}", color = Color.LightGray)
-            PriceChart(wish.history, Modifier.fillMaxWidth().height(76.dp).padding(top = 10.dp))
-            Text("${wish.history.size} вимірювань · останні 90", color = Color.Gray, fontSize = 11.sp)
-            Row {
-                TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(wish.url))) }) { Text("До магазину ↗") }
-                Spacer(Modifier.weight(1f))
-                IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати") }
-                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+    }
+
+    /** The third way in: everything the page gave, plus the number it withheld. */
+    fun finishTyped(read: PageFacts) {
+        touch.landed()
+        add(
+            wishFromFacts(
+                read,
+                link.trim(),
+                System.currentTimeMillis().toString(),
+                parseAmount(typedPrice),
+                LocalDate.now().toEpochDay()
+            ).copy(
+                targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                category = canonicalCategory(category, known)
+            )
+        )
+    }
+
+    val read = facts
+    FormSheet(
+        title = when {
+            offers.size > 1 -> "Яка ціна ваша?"
+            read != null -> "Ціну доведеться вписати"
+            else -> "Новий товар"
+        },
+        confirmLabel = if (loading) "Зчитую…" else "Додати",
+        confirmEnabled = when {
+            loading -> false
+            // Nothing to confirm while the picker is the question on screen: the
+            // rows themselves are the answer.
+            offers.size > 1 -> false
+            read != null -> parseAmount(typedPrice) > 0.0
+            else -> isSupportedWebUrl(link)
+        },
+        onConfirm = {
+            if (read != null) finishTyped(read) else scope.launch {
+                loading = true
+                error = null
+                runCatching { pricedPageHtml(link) }
+                    .onSuccess { html ->
+                        val found = extractOffers(html)
+                        // A page priced in money the app has no rate for cannot be
+                        // tracked at all, and saying so now is kinder than adding a
+                        // wish that will never show a price. Judged on the first
+                        // offer because a page prices every edition in one currency.
+                        val money = found.firstOrNull()
+                            ?.let { toHryvnia(it.price, it.currency, rate) }
+                        val whatItIs = pageFacts(html)
+                        when {
+                            // Read fine, priced nothing. Not a failure: the name
+                            // and the photograph are the parts that cannot be
+                            // typed again, and the number is the part that can.
+                            found.isEmpty() && whatItIs.describable -> facts = whatItIs
+                            found.isEmpty() -> error = NOTHING_READ_NOTE
+                            money != null && money.noRate ->
+                                error = "Ціна в ${money.currency} — FlowPay знає курс лише долара"
+                            // One price is not a question worth asking.
+                            found.size == 1 -> { page = html; finish(found.first()) }
+                            else -> { page = html; offers = found }
+                        }
+                    }
+                    .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                // Whichever way it failed — nothing readable on the page, money
+                // with no rate, or no page at all. The error text says which; this
+                // says that the link you pasted did not become a wish, which is
+                // what you were waiting to find out with the phone in your hand.
+                if (error != null) touch.refused()
+                loading = false
+            }
+        },
+        onDismiss = close
+    ) {
+        if (read != null) {
+            NoPricePreview(read, link)
+            NumberField("Ціна, ₴", typedPrice) { typedPrice = it }
+            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
+            OutlinedTextField(
+                category,
+                { category = it },
+                Modifier.fillMaxWidth().padding(top = Space.md),
+                label = { Text("Категорія") }
+            )
+            CategorySuggestions(known, category) { category = it }
+        } else if (offers.size > 1) {
+            Text(
+                "На сторінці кілька цін. Оберіть ту, за якою стежити — " +
+                    "далі FlowPay щоразу шукатиме саме її.",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+            Spacer(Modifier.height(Space.md))
+            offers.forEachIndexed { index, offer ->
+                Card(
+                    onClick = { finish(offer) },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.sm),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                    shape = Radius.sm
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(Space.lg),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            offerLabel(offer, index),
+                            Modifier.weight(1f).padding(end = Space.md),
+                            fontSize = Type.bodySize,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        // In the shop's own money, because that is what is printed
+                        // on the page the person is choosing from.
+                        Text(
+                            amountLabel(offer.price, offer.currency.ifBlank { UAH }),
+                            fontWeight = Type.strong,
+                            style = Tabular
+                        )
+                    }
+                }
+            }
+        } else {
+            OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth(), label = { Text("Посилання на товар") })
+            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
+            OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+            CategorySuggestions(known, category) { category = it }
+            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+        }
+    }
+}
+
+@Composable
+fun EditWishSheet(
+    wish: Wish,
+    /** The spellings already in use, so an edit joins a category instead of forking it. */
+    known: List<String> = emptyList(),
+    close: () -> Unit,
+    save: (Wish) -> Unit
+) {
+    var name by remember { mutableStateOf(wish.name) }
+    var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
+    var category by remember { mutableStateOf(wish.category) }
+    var price by remember { mutableStateOf(amountText(wish.price)) }
+    val touch = rememberTouch()
+    val today = remember { LocalDate.now().toEpochDay() }
+    FormSheet(
+        title = "Редагувати товар",
+        confirmLabel = "Зберегти",
+        confirmEnabled = true,
+        onConfirm = {
+            val typed = parseAmount(price)
+            // A price the user typed is the deliberate fallback for a page that
+            // cannot be read, so it is marked as hand-entered rather than passed off
+            // as a reading: the card then stops promising it is being watched.
+            val priced = if (typed > 0.0 && typed != wish.price) {
+                wish.copy(
+                    price = typed,
+                    history = appendPrice(wish.history, typed, today),
+                    checkedDay = today,
+                    freshness = Freshness.MANUAL
+                )
+            } else {
+                wish
+            }
+            touch.landed()
+            save(
+                priced.copy(
+                    name = name.ifBlank { wish.name },
+                    targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                    category = canonicalCategory(category, known)
+                )
+            )
+        },
+        onDismiss = close
+    ) {
+        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
+        NumberField("Ціна, ₴", price) { price = it }
+        if (isStale(wish.freshness)) {
+            Text(
+                "Сторінка зараз не читається. Вписана вручну ціна лишає бажання живим — " +
+                    "план накопичення і ціль працюють далі.",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+        }
+        NumberField("Цільова ціна, ₴", target) { target = it }
+        OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
+        CategorySuggestions(known, category) { category = it }
+    }
+}
+
+/**
+ * One shop behind a wish: what it is asking, and whether it is still answering.
+ *
+ * The cheapest is marked rather than sorted to the top, so the rows keep the order
+ * they were added in and a shop does not jump about the card every time a sale
+ * starts somewhere else.
+ */
+@Composable
+fun SourceRow(
+    source: WishSource,
+    cheapest: Boolean,
+    removable: Boolean,
+    onOpen: () -> Unit,
+    onRemove: () -> Unit
+) {
+    val dead = isStale(source.freshness)
+    Column(Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f).clickable(onClick = onOpen)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        sourceName(source.url),
+                        color = if (dead) TextSecondary else TextPrimary,
+                        fontSize = Type.bodySize,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (cheapest) {
+                        Spacer(Modifier.width(Space.sm))
+                        Text(
+                            "найдешевше",
+                            color = Accent,
+                            fontSize = Type.overlineSize,
+                            fontWeight = Type.strong,
+                            letterSpacing = Type.overlineTracking
+                        )
+                    }
+                }
+            }
+            Text(
+                sourcePriceLabel(source),
+                color = when {
+                    dead -> TextDisabled
+                    cheapest -> Accent
+                    else -> TextPrimary
+                },
+                fontSize = Type.bodySize,
+                fontWeight = Type.strong
+            )
+            if (removable) {
+                IconButton(onRemove, Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.Close,
+                        "Прибрати магазин",
+                        tint = TextDisabled,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+        // Why this row reads the way it does: a dead page, or money the app has no
+        // rate for. Silent on the ordinary case, which is most rows most of the time.
+        sourceNote(source).takeIf { dead }?.let { note ->
+            Text(
+                note,
+                color = Negative,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
+        // The working behind a converted figure, so "2 480 ₴" can be checked
+        // against what the shop actually printed.
+        if (!dead) {
+            convertedPriceLine(
+                PriceInUah(
+                    uah = source.price,
+                    amount = source.amount,
+                    currency = source.currency,
+                    rate = source.rate,
+                    noRate = false
+                )
+            )?.let { line ->
+                Text(
+                    line,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.xs)
+                )
             }
         }
     }
 }
 
+/**
+ * Adds a second shop for the same thing.
+ *
+ * The page is read before the shop is kept, because a source that cannot produce
+ * a price is not a source — it is a link, and the wish already has one of those
+ * that works. Better to say so here than to add a row that sits empty for ever.
+ */
 @Composable
-fun PriceChart(values: List<Double>, modifier: Modifier = Modifier) {
-    val points = values.filter { it > 0 }
-    Canvas(modifier) {
-        if (points.size < 2) {
-            drawLine(Color.DarkGray, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 2f, StrokeCap.Round)
-            return@Canvas
+fun AddSourceSheet(
+    wish: Wish,
+    rate: FxRate,
+    close: () -> Unit,
+    add: (WishSource) -> Unit
+) {
+    var link by remember { mutableStateOf("") }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val today = remember { LocalDate.now().toEpochDay() }
+
+    FormSheet(
+        title = "Ще один магазин",
+        confirmLabel = if (loading) "Зчитую…" else "Додати",
+        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        onConfirm = {
+            scope.launch {
+                loading = true
+                error = null
+                if (hasSource(wish, link)) {
+                    error = "Цей магазин уже в списку"
+                } else {
+                    runCatching { pricedPageHtml(link) }
+                        .onSuccess { html ->
+                            val offer = extractOffers(html).firstOrNull()
+                            val converted = offer?.let { toHryvnia(it.price, it.currency, rate) }
+                            when {
+                                // The same two outcomes the add sheet now tells
+                                // apart, and they ask for different things here
+                                // too: one means check the link, the other means
+                                // this shop is no use as a second opinion. Typing
+                                // a price is deliberately not offered — a shop
+                                // exists on a wish to be read, and this wish
+                                // already has one that answers.
+                                offer == null || converted == null ->
+                                    error = if (pageFacts(html).describable) {
+                                        "Сторінку прочитав, але ціни на ній немає. " +
+                                            "Другий магазин потрібен саме заради ціни."
+                                    } else {
+                                        NOTHING_READ_NOTE
+                                    }
+                                converted.noRate ->
+                                    error = "Ціна в ${converted.currency} — курсу до гривні немає"
+                                else -> add(
+                                    WishSource(
+                                        url = link.trim(),
+                                        price = converted.uah,
+                                        variant = offer.label,
+                                        freshness = Freshness.OK,
+                                        checkedDay = today,
+                                        amount = converted.amount,
+                                        currency = converted.currency,
+                                        rate = converted.rate
+                                    )
+                                )
+                            }
+                        }
+                        .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                }
+                loading = false
+            }
+        },
+        onDismiss = close
+    ) {
+        Text(
+            "Те саме у другому магазині. FlowPay читатиме обидві сторінки й " +
+                "показуватиме ту ціну, що зараз нижча.",
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
+        OutlinedTextField(
+            link,
+            { link = it },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Посилання на товар") }
+        )
+        error?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(top = Space.sm)
+            )
         }
-        val min = points.min()
-        val max = points.max()
-        val range = (max - min).takeIf { it > 0 } ?: 1.0
-        val path = Path()
-        points.forEachIndexed { index, value ->
-            val x = size.width * index / (points.size - 1)
-            val y = size.height - ((value - min) / range * size.height).toFloat()
-            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        drawPath(path, if (points.last() <= points.first()) Accent else Color(0xffff6b6b), style = Stroke(5f, cap = StrokeCap.Round))
     }
 }
 
+/** A heading that sits closer to its own content than to whatever came before. */
 @Composable
-fun CalculatorScreen() {
+fun SectionTitle(text: String) {
+    Text(
+        text,
+        Modifier.padding(horizontal = Space.screen).padding(top = Space.xxl, bottom = Space.md),
+        fontSize = Type.sectionSize,
+        lineHeight = Type.sectionLine,
+        fontWeight = Type.medium
+    )
+}
+
+/**
+ * The names the folded state of each section is stored under.
+ *
+ * Plain ASCII and written out rather than derived from the heading: the headings
+ * are Ukrainian, and a key built by lowercasing one would be a locale-sensitive
+ * transformation standing between a person's choice and the preference that
+ * remembers it.
+ */
+const val SECTION_HISTORY = "history"
+const val SECTION_SHOPS = "shops"
+const val SECTION_PLAN = "plan"
+
+/**
+ * A heading that can fold its own content away, and says what is inside while shut.
+ *
+ * The wish page was a wall: everything it knows, expanded, in one column, with the
+ * description of the thing itself buried below a block of savings arithmetic. The
+ * fix is not only to fold the long parts away, because a row reading "Історія
+ * ціни ⌄" and nothing else makes you open all three to find out which one holds
+ * what you came for — which is the wall again, with taps in front of it. So the
+ * [summary] is not decoration: it is the reason a closed section is allowed to be
+ * closed, and it must be a figure the screen has already worked out rather than a
+ * new one invented here.
+ *
+ * [open] is hoisted, because the answer outlives the screen — see [Store.sectionOpen].
+ *
+ * **No haptic, and that is on purpose.** Haptics.kt sets the budget at five and
+ * spends none of it on an ordinary tap: a vibration on every tap stops being
+ * feedback within a day and becomes the texture of the app. `switched` is defined
+ * for a real two-state change the person made to their own data — a payment
+ * marked paid, a wish put on hold — and folding a heading is neither. It changes
+ * nothing but the view, and the screen answers the tap completely and instantly by
+ * opening. That is also the argument the three-way chart switch on this same page
+ * already makes for staying silent, and this control will end up on more screens
+ * than that one, so a buzz here would be the fastest route to exactly the texture
+ * Haptics.kt is written against.
+ */
+@Composable
+fun CollapsibleSection(
+    title: String,
+    summary: String,
+    open: Boolean,
+    onToggle: (Boolean) -> Unit,
+    content: @Composable () -> Unit
+) {
+    // The chevron is the same gesture as the opening, so it rides the same spring
+    // rather than a second one of its own — and Motion is what makes both of them
+    // snap when the phone has been told to stop animating.
+    val turn by animateFloatAsState(
+        if (open) 180f else 0f,
+        Motion.spatial(),
+        label = "section chevron"
+    )
+    Row(
+        Modifier
+            .fillMaxWidth()
+            // Clickable before the padding, so the whole heading block is the
+            // target rather than the two lines of text inside it.
+            .clickable { onToggle(!open) }
+            .padding(horizontal = Space.screen)
+            .padding(top = Space.xxl, bottom = Space.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                fontSize = Type.sectionSize,
+                lineHeight = Type.sectionLine,
+                fontWeight = Type.medium
+            )
+            if (summary.isNotBlank()) {
+                Text(
+                    summary,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.xs)
+                )
+            }
+        }
+        Icon(
+            Icons.Default.ExpandMore,
+            if (open) "Згорнути" else "Розгорнути",
+            Modifier.padding(start = Space.md).rotate(turn),
+            tint = TextSecondary
+        )
+    }
+    AnimatedVisibility(
+        visible = open,
+        // Height only. A section holding the price chart must not have the chart
+        // fade or draw itself into existence behind the reveal — the thing has a
+        // press-and-drag scrub on it, and a canvas that is still arriving is a
+        // canvas that owes the finger an answer it cannot give yet. Anchored at the
+        // top so the block grows downward out of its own heading instead of sliding
+        // up from under whatever follows it.
+        enter = expandVertically(Motion.spatial(), expandFrom = Alignment.Top),
+        exit = shrinkVertically(Motion.spatial(), shrinkTowards = Alignment.Top)
+    ) {
+        content()
+    }
+}
+
+/** One number of the savings plan, muted while there is nothing to show yet. */
+@Composable
+fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted: Boolean = false) {
+    Card(
+        modifier.litEdge(Radius.sm),
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.sm
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Text(label, color = TextSecondary, fontSize = Type.captionSize)
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                value,
+                fontSize = Type.sectionSize,
+                lineHeight = Type.sectionLine,
+                fontWeight = if (muted) Type.regular else Type.strong,
+                color = if (muted) TextDisabled else TextPrimary,
+                style = Tabular
+            )
+        }
+    }
+}
+
+/**
+ * The page behind a wishlist card.
+ *
+ * It exists to answer one question the list cannot: what would it take to actually
+ * buy this. The plan works from the target price when one is set, and from the
+ * current price otherwise, so the number on screen is always the sum that matters.
+ */
+/** The price history as it was paid for: hryvnia, the only view always available. */
+const val CHART_HRYVNIA = 0
+
+/** The same history in dollars, dropping the readings that carry no rate. */
+const val CHART_DOLLAR = 1
+
+/** Price and rate together, both set to 100 at the first reading that had a rate. */
+const val CHART_REBASED = 2
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SharedTransitionScope.WishDetailScreen(
+    wish: Wish,
+    visibility: AnimatedVisibilityScope,
+    context: Context,
+    onBack: () -> Unit,
+    onChange: (Wish) -> Unit,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    freeCash: Double,
+    onBought: (tracking: String, paid: Double) -> Unit
+) {
+    // Keyed on the item, so opening a different one does not inherit these boxes.
+    var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
+    var monthlyText by remember(wish.id) { mutableStateOf(amountText(wish.monthlyPlan)) }
+    var deadlineDay by remember(wish.id) { mutableLongStateOf(wish.deadline) }
+    // Which end of the plan is known: the monthly sum, or the date.
+    var byDate by remember(wish.id) { mutableStateOf(wish.deadline > 0L) }
+    var pickingDate by remember { mutableStateOf(false) }
+    var pickingHold by remember { mutableStateOf(false) }
+    var addingSource by remember { mutableStateOf(false) }
+    var buying by remember { mutableStateOf(false) }
+    var refreshing by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    // Which of the three views of the history is showing: hryvnia, dollars, or
+    // the two rebased against the rate. Hryvnia until asked otherwise — the other
+    // two answer a question, and a chart that opens on one is answering a question
+    // nobody asked.
+    //
+    // No haptic on changing it. Picking one of three views is a selection, not a
+    // switch, and ToggleOn/ToggleOff would be claiming a two-state answer for a
+    // control that has three — the same reason the delivery rail says nothing.
+    var chartView by remember(wish.id) { mutableIntStateOf(CHART_HRYVNIA) }
+    val touch = rememberTouch()
+    val scope = rememberCoroutineScope()
+    val store = remember(context) { Store(context) }
+
+    // Whether each of the three detail sections below is unfolded. Seeded from the
+    // preference and written back on every tap, so the choice carries to the next
+    // wish opened rather than resetting with the screen. Shut by default: relieving
+    // the wall is the whole point, and a default of open is the wall.
+    var historyOpen by remember { mutableStateOf(store.sectionOpen(SECTION_HISTORY)) }
+    var shopsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_SHOPS)) }
+    var planOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PLAN)) }
+
+    val today = remember { LocalDate.now() }
+    // The day the stored rate was fetched, so a converted price can say how old
+    // the rate behind it is. Zero until a rate has ever been loaded.
+    val rateDay = remember {
+        store.fxRate().second.takeIf { it > 0L }
+            ?.let { java.time.Instant.ofEpochMilli(it).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toEpochDay() }
+            ?: 0L
+    }
+    val goal = wishGoal(wish)
+    val deadlineDate = if (deadlineDay > 0L) LocalDate.ofEpochDay(deadlineDay) else null
+    val monthsLeft = deadlineDate?.let { monthsUntil(today, it) } ?: 0
+    val plan = if (byDate && deadlineDate != null) {
+        deadlinePlan(goal, parseAmount(savedText), today, deadlineDate)
+    } else {
+        savingsPlan(goal, parseAmount(savedText), parseAmount(monthlyText))
+    }
+    val change = priceChangePercent(wish)
+    val insight = priceInsight(wish.history, wish.price, wish.checkedDay)
+    val stale = isStale(wish.freshness)
+    // A verdict is a claim about a price that can be paid. While the reading is
+    // doubtful there is no such price, so the app says nothing rather than judging
+    // a figure the shop has stopped standing behind.
+    val verdict = if (stale) BuyVerdict.UNKNOWN else insight.verdict
+    val held = onHold(wish, today.toEpochDay())
+
+    // What each folded heading says while it is shut. Every figure is one the screen
+    // has already worked out: a summary that could disagree with the block under it
+    // would be worse than no summary at all.
+    val historySummary = when {
+        stale -> "Ціна не читається"
+        insight.changes < 1 -> "Змін ціни ще не було"
+        insight.atReferenceLow -> "Найнижча за ${daysLabel(insight.referenceDays)}"
+        else -> "${signedPercent(change)} від першої ціни"
+    }
+    val shopsSummary = run {
+        val watched = wishSources(wish)
+        val cheapest = bestSource(watched)
+        when {
+            watched.isEmpty() -> "Магазинів ще немає"
+            cheapest != null -> "${shopsLabel(watched.size)} · від ${money(cheapest.price)}"
+            else -> "${shopsLabel(watched.size)} · ціни не читаються"
+        }
+    }
+    // The same five cases the tiles inside the section choose between, in one line.
+    val planSummary = when {
+        plan.reached -> "Сума зібрана"
+        byDate && deadlineDate == null -> "Дату покупки ще не обрано"
+        byDate && monthsLeft == 0 -> "Потрібно ${money(plan.remaining)} одразу"
+        plan.needsRate -> "Щомісячну суму ще не вказано"
+        else -> "${money(plan.monthly)} на місяць · ${monthsLabel(plan.months)}"
+    }
+
+    // Persist only when something the user typed or picked actually changed.
+    LaunchedEffect(savedText, monthlyText, deadlineDay) {
+        val saved = parseAmount(savedText)
+        val monthly = parseAmount(monthlyText)
+        if (saved != wish.saved || monthly != wish.monthlyPlan || deadlineDay != wish.deadline) {
+            onChange(wish.copy(saved = saved, monthlyPlan = monthly, deadline = deadlineDay))
+        }
+    }
+
+    LazyColumn(contentPadding = PaddingValues(bottom = navClearance() + Space.huge)) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(start = Space.sm, end = Space.sm, top = Space.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = TextPrimary)
+                }
+                Text(
+                    wish.category.uppercase(),
+                    color = Accent,
+                    fontSize = Type.overlineSize,
+                    fontWeight = Type.strong,
+                    letterSpacing = Type.overlineTracking
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onEdit) { Icon(Icons.Default.Edit, "Редагувати", tint = TextSecondary) }
+                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити", tint = TextSecondary) }
+            }
+
+            if (wish.image.isNotBlank()) {
+                PhotoHeader(
+                    imageUrl = wish.image,
+                    description = wish.name,
+                    modifier = Modifier.padding(horizontal = Space.screen),
+                    height = 240.dp,
+                    overlayNumber = signedPercent(change, 0)
+                    .takeIf { change <= -1.0 && wish.history.size > 1 && !stale },
+                    overlayNote = firstPriceNote(wish)
+                        .takeIf { change <= -1.0 && wish.history.size > 1 && !stale },
+                    chip = freshnessLabel(wish.freshness)
+                        ?: verdictLabel(verdict).takeIf { verdict != BuyVerdict.UNKNOWN },
+                    chipIcon = if (stale) Icons.Default.ErrorOutline else Icons.Default.Bolt,
+                    chipColor = when {
+                        stale -> Negative
+                        wish.freshness == Freshness.MANUAL -> TextPrimary
+                        verdict == BuyVerdict.GOOD -> Accent
+                        verdict == BuyVerdict.POOR -> Negative
+                        else -> TextPrimary
+                    },
+                    // The verdict flipping is the moment this whole screen exists
+                    // for, so the chip changes outline rather than swapping words
+                    // under a cross-fade.
+                    chipCorners = buyVerdictCorners(insight.verdict)
+                ) { imageModifier ->
+                    AsyncImage(
+                        wish.image, wish.name,
+                        imageModifier
+                            .sharedElement(
+                                rememberSharedContentState("wish-photo-${wish.id}"),
+                                animatedVisibilityScope = visibility
+                            )
+                            .clip(Radius.lg)
+                            .background(SurfaceRaised),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+            }
+
+            Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
+                Text(
+                    wish.name,
+                    fontSize = Type.sectionSize,
+                    lineHeight = Type.sectionLine,
+                    fontWeight = Type.medium
+                )
+                Spacer(Modifier.height(Space.sm))
+                Row(verticalAlignment = Alignment.Bottom) {
+                    FigureWithTarget(
+                        value = money(wish.price),
+                        target = wish.targetPrice.takeIf { it > 0 }?.let { "ціль ${money(it)}" },
+                        valueSize = Type.heroSize,
+                        color = if (stale) TextSecondary else TextPrimary
+                    )
+                    if (!stale) {
+                        Spacer(Modifier.width(Space.md))
+                        Text(
+                            signedPercent(change),
+                            color = if (change <= 0) Accent else Negative,
+                            fontSize = Type.captionSize,
+                            fontWeight = Type.strong,
+                            modifier = Modifier.padding(bottom = Space.sm),
+                            style = Tabular
+                        )
+                    }
+                }
+                // What the shop actually printed, when the figure above had to be
+                // converted to get there. Without it a hryvnia figure and a
+                // converted one look identical, and only one of them moves when
+                // the currency does.
+                bestSource(wishSources(wish))?.let { source ->
+                    val converted = PriceInUah(
+                        uah = source.price,
+                        amount = source.amount,
+                        currency = source.currency,
+                        rate = source.rate,
+                        noRate = false
+                    )
+                    convertedPriceLine(converted)?.let { line ->
+                        Text(
+                            line,
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine,
+                            modifier = Modifier.padding(top = Space.sm)
+                        )
+                    }
+                    // A converted price is only as current as the rate under it,
+                    // and the rate is fetched by the same pass that reads prices —
+                    // so a phone that has been offline converts today's dollars at
+                    // last week's hryvnia.
+                    staleRateNote(converted, rateDay, today.toEpochDay())?.let { note ->
+                        Text(
+                            note,
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            modifier = Modifier.padding(top = Space.xs)
+                        )
+                    }
+                }
+                // Why the figure above is the colour it is, in one sentence. The
+                // card can only carry a two-word badge; this is where it is explained.
+                freshnessNote(wish.freshness)?.let { note ->
+                    Text(
+                        note,
+                        color = if (stale) Negative else TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(top = Space.sm)
+                    )
+                }
+                // How long this has been wanted. The one number a wishlist owes the
+                // person keeping it, and the app had the date all along without
+                // ever putting it on screen.
+                wantedLabel(wish, today.toEpochDay())?.let { age ->
+                    Text(
+                        age,
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.xs)
+                    )
+                }
+            }
+
+            HoldBlock(
+                wish = wish,
+                today = today,
+                onPick = { pickingHold = true },
+                onRelease = {
+                    touch.switched(false)
+                    onChange(wish.copy(holdUntil = 0L))
+                }
+            )
+
+            // Only where the shop actually said something. A heading over an
+            // empty block is worse than no block: it reads as something broken
+            // rather than as a shop that publishes nothing.
+            if (!wish.about.isEmpty) {
+                SectionTitle("Про товар")
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.fillMaxWidth().litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            if (wish.about.brand.isNotBlank() || wish.about.rating > 0) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (wish.about.brand.isNotBlank()) {
+                                        Text(
+                                            wish.about.brand,
+                                            color = Accent,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    ratingLine(wish.about).takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color = TextSecondary, fontSize = Type.captionSize)
+                                    }
+                                }
+                                Spacer(Modifier.height(Space.sm))
+                            }
+                            if (wish.about.description.isNotBlank()) {
+                                var expanded by remember(wish.id) { mutableStateOf(false) }
+                                Text(
+                                    wish.about.description,
+                                    color = TextSecondary,
+                                    fontSize = Type.bodySize,
+                                    lineHeight = Type.bodyLine,
+                                    maxLines = if (expanded) Int.MAX_VALUE else 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.clickable { expanded = !expanded }
+                                )
+                            }
+                            if (wish.about.specs.isNotEmpty()) {
+                                Spacer(Modifier.height(Space.md))
+                                wish.about.specs.forEach { (name, value) ->
+                                    LeaderRow(name, value)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The chart, the verdict and the notes under them. First of the three
+            // because "what has this cost before now" is the question the page is
+            // read for once you know what the thing is.
+            CollapsibleSection(
+                title = "Історія ціни",
+                summary = historySummary,
+                open = historyOpen,
+                onToggle = { historyOpen = it; store.saveSectionOpen(SECTION_HISTORY, it) }
+            ) {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.fillMaxWidth().litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            // The range bar goes first because it is the densest thing
+                            // on the screen: where today sits between the cheapest and
+                            // the dearest ever seen, with the usual thirty days shaded
+                            // behind it, read without an axis and without a sentence.
+                            //
+                            // Gone while the reading is doubtful, for the same reason
+                            // the verdict below goes quiet: placing a price the shop has
+                            // stopped standing behind would be a picture of a claim the
+                            // next paragraph refuses to make in words.
+                            if (!stale && insight.highest > insight.lowest) {
+                                PriceRangeBar(insight)
+                                Spacer(Modifier.height(Space.lg))
+                            }
+                            val usdPoints = remember(wish.history) { inDollars(wish.history) }
+                            // Offered only once two points carry a rate. One converted
+                            // point is a number, not a history, and the other two views
+                            // would draw a single dot saying nothing about direction.
+                            val twoCurrencies = hasDollarHistory(wish.history)
+                            val view = if (twoCurrencies) chartView else CHART_HRYVNIA
+                            if (twoCurrencies) {
+                                // One track with one marker, rather than three chips
+                                // that each look independently switchable.
+                                SegmentedControl(
+                                    listOf("₴", "$", "Ціна і курс"),
+                                    view
+                                ) { chartView = it }
+                                Spacer(Modifier.height(Space.md))
+                            }
+                            when (view) {
+                                // Both lines set to 100 at the first reading: the one
+                                // picture that separates a thing getting dearer from
+                                // the hryvnia moving underneath it.
+                                CHART_REBASED -> RebasedPriceAndRate(wish.history)
+                                CHART_DOLLAR -> PriceChart(usdPoints, format = ::dollars)
+                                else -> PriceChart(
+                                    remember(wish.history, wish.price, wish.checkedDay) {
+                                        chartSeries(wish.history, wish.price, wish.checkedDay)
+                                    },
+                                    // Every chart here is drawn on its own scale, so two
+                                    // of them side by side cannot be compared by eye.
+                                    // This figure is what makes them comparable, and it
+                                    // is the price of being allowed a per-item scale at
+                                    // all. It measures from the left edge of the chart,
+                                    // which is the first price ever recorded. Withheld
+                                    // while the reading is doubtful, like everything else
+                                    // on this card that depends on the price being real.
+                                    note = "від першої ціни ${signedPercent(change)}"
+                                        .takeIf { wish.history.isNotEmpty() && !stale }
+                                )
+                            }
+                            if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
+                                Text(
+                                    "Зараз ${dollars(usdPoints.last().price)} " +
+                                        "· курс записано з кожною ціною",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                            if (twoCurrencies) {
+                                // The line the two-currency history exists to write: a
+                                // flat hryvnia price that has quietly got cheaper, or a
+                                // rise that was only ever the rate moving.
+                                currencyMoveNote(wish.history)?.let { note ->
+                                    Text(
+                                        note,
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine,
+                                        modifier = Modifier.padding(top = Space.sm)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(Space.md))
+                            Text(
+                                verdictLabel(verdict),
+                                color = when (verdict) {
+                                    BuyVerdict.GOOD -> Accent
+                                    BuyVerdict.POOR -> Negative
+                                    else -> TextSecondary
+                                },
+                                fontSize = Type.cardTitleSize,
+                                fontWeight = Type.medium
+                            )
+                            Text(
+                                when {
+                                    stale -> "Поки ціна не читається, оцінювати нічого"
+                                    verdict == BuyVerdict.UNKNOWN ->
+                                        "Потрібно щонайменше два тижні спостережень і дві зміни ціни"
+                                    verdict == BuyVerdict.GOOD ->
+                                        if (insight.atReferenceLow)
+                                            "Це найнижча ціна за останні ${daysLabel(insight.referenceDays)}"
+                                        else "Ціна в нижній частині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                    verdict == BuyVerdict.FAIR ->
+                                        "Ціна в середині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                    else ->
+                                        "За останні ${daysLabel(insight.referenceDays)} ціна опускалась " +
+                                            "на ${figure(insight.offHighest, 0)}% нижче"
+                                },
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine,
+                                modifier = Modifier.padding(top = Space.xs)
+                            )
+                            // The shop's own discount, checked against the app's record of
+                            // what the price actually was before it. This is the figure EU
+                            // law makes a shop quote, and the reason the rule exists.
+                            if (!stale) {
+                                priorLowNote(insight)?.let { claim ->
+                                    Text(
+                                        claim,
+                                        color = Negative,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine,
+                                        modifier = Modifier.padding(top = Space.sm)
+                                    )
+                                }
+                            }
+                            // The reference the verdict is actually measured against, as a
+                            // figure rather than a description of one.
+                            referenceWindowNote(insight)?.let { reference ->
+                                Text(
+                                    reference,
+                                    color = TextPrimary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    fontWeight = Type.medium,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                            if (insight.changes > 1) {
+                                val lowDay = lowestPointDay(wish.history)
+                                Text(
+                                    "За весь час: найнижча ${money(insight.lowest)}" +
+                                        (lowDay?.let { " — ${formatDate(LocalDate.ofEpochDay(it))}" } ?: "") +
+                                        " · найвища ${money(insight.highest)}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.sm)
+                                )
+                            }
+                            Text(
+                                listOfNotNull(
+                                    changesLabel(insight.changes),
+                                    insight.daysTracked.takeIf { it > 0 }?.let { daysLabel(it) }
+                                ).joinToString(" за "),
+                                color = TextDisabled,
+                                fontSize = Type.captionSize
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Where the price comes from. Shown even for one shop, because that is
+            // where the button to add a second one lives — and because a wish with
+            // one shop that has stopped answering needs somewhere to say so that is
+            // not the price itself.
+            CollapsibleSection(
+                title = "Де стежимо",
+                summary = shopsSummary,
+                open = shopsOpen,
+                onToggle = { shopsOpen = it; store.saveSectionOpen(SECTION_SHOPS, it) }
+            ) {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.fillMaxWidth().litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            val sources = wishSources(wish)
+                            val cheapest = bestSource(sources)
+                            sources.forEachIndexed { index, source ->
+                                if (index > 0) Spacer(Modifier.height(Space.md))
+                                SourceRow(
+                                    source = source,
+                                    cheapest = cheapest != null && source.url == cheapest.url &&
+                                        sources.size > 1,
+                                    removable = sources.size > 1,
+                                    onOpen = {
+                                        context.startActivity(
+                                            Intent(Intent.ACTION_VIEW, source.url.toUri())
+                                        )
+                                    },
+                                    onRemove = { onChange(withoutSource(wish, source.url)) }
+                                )
+                            }
+                            sourceSpreadNote(sources)?.let { spread ->
+                                Text(
+                                    spread,
+                                    color = Accent,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.md)
+                                )
+                            }
+                            TextButton(
+                                { addingSource = true },
+                                Modifier.padding(top = Space.sm)
+                            ) { Text("Додати магазин") }
+                        }
+                    }
+                }
+            }
+
+            // Last, because it is the longest block on the page and the least often
+            // the reason for opening it.
+            CollapsibleSection(
+                title = "План накопичення",
+                summary = planSummary,
+                open = planOpen,
+                onToggle = { planOpen = it; store.saveSectionOpen(SECTION_PLAN, it) }
+            ) {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    HeroPanel(
+                        label = if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
+                        value = money(plan.remaining),
+                        caption = "${money(plan.saved)} з ${money(plan.goal)}",
+                        muted = plan.reached,
+                        trailing = {
+                            ProgressRing(plan.progress, diameter = 84.dp, stroke = 9.dp) {
+                                Text(
+                                    "${(plan.progress * 100).toInt()}%",
+                                    color = if (plan.reached) TextSecondary else AccentInk,
+                                    fontSize = Type.captionSize,
+                                    fontWeight = Type.strong
+                                )
+                            }
+                        }
+                    )
+
+                    NumberField("Вже відкладено, ₴", savedText) { savedText = it }
+
+                    // The plan can be read from either end. Say what you can put aside
+                    // and it answers when; say when you want it and it answers how much.
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = Space.lg),
+                        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                    ) {
+                        FilterChip(
+                            !byDate,
+                            { byDate = false; deadlineDay = 0L },
+                            { Text("Знаю суму", fontSize = Type.captionSize) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        FilterChip(
+                            byDate,
+                            { byDate = true },
+                            { Text("Знаю дату", fontSize = Type.captionSize) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+
+                    // The link between the two halves of the app: what the expenses
+                    // screen says is spare is the most that can go here each month.
+                    if (!byDate && freeCash > 0) {
+                        val fromFree = savingsPlan(goal, parseAmount(savedText), freeCash)
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = Space.md),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Вільно після витрат ${money(freeCash)} на місяць",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                                if (!fromFree.reached) {
+                                    Text(
+                                        "цією сумою — ${monthsLabel(fromFree.months)}",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                }
+                            }
+                            TextButton({ monthlyText = amountText(freeCash) }) { Text("Взяти") }
+                        }
+                    }
+
+                    if (byDate) {
+                        OutlinedButton(
+                            { pickingDate = true },
+                            Modifier.fillMaxWidth().padding(top = Space.md),
+                            shape = Radius.sm,
+                            border = BorderStroke(1.dp, HairLine),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        ) {
+                            Icon(Icons.Default.CalendarMonth, null)
+                            Text(
+                                if (deadlineDate != null) "  Купити до ${formatDate(deadlineDate)}"
+                                else "  Обрати дату покупки"
+                            )
+                        }
+                    } else {
+                        NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
+                    }
+
+                    Spacer(Modifier.height(Space.lg))
+                    when {
+                        plan.reached -> PlanTile(
+                            "Можна купувати",
+                            "Гроші вже є",
+                            Modifier.fillMaxWidth()
+                        )
+
+                        byDate && deadlineDate == null -> PlanTile(
+                            "Скільки відкладати",
+                            "Оберіть дату покупки",
+                            Modifier.fillMaxWidth(),
+                            muted = true
+                        )
+
+                        byDate && monthsLeft == 0 -> PlanTile(
+                            "Менше місяця до дати",
+                            "Потрібно ${money(plan.remaining)} одразу",
+                            Modifier.fillMaxWidth()
+                        )
+
+                        plan.needsRate -> PlanTile(
+                            "Скільки чекати",
+                            "Впишіть щомісячну суму",
+                            Modifier.fillMaxWidth(),
+                            muted = true
+                        )
+
+                        byDate -> {
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                PlanTile("Відкладати щомісяця", money(plan.monthly), Modifier.weight(1f))
+                                PlanTile("Внесків до дати", monthsLabel(monthsLeft), Modifier.weight(1f))
+                            }
+                            Spacer(Modifier.height(Space.md))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                PlanTile("Це щотижня", money(plan.weekly), Modifier.weight(1f))
+                                PlanTile("Це щодня", money(plan.daily), Modifier.weight(1f))
+                            }
+                        }
+
+                        else -> {
+                            // The daily figure leads because it is the one people act on.
+                            // Field work on a savings app found the same amount framed
+                            // per day rather than per month quadrupled sign-ups.
+                            PlanTile("Це ${money(plan.daily)} на день", monthsLabel(plan.months), Modifier.fillMaxWidth())
+                            Spacer(Modifier.height(Space.md))
+                            Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                                PlanTile("Щотижня", money(plan.weekly), Modifier.weight(1f))
+                                PlanTile(
+                                    "Готово",
+                                    formatDate(readyDate(plan.months, today)),
+                                    Modifier.weight(1f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Outside every fold, because an action that can be folded away is an
+            // action nobody finds. It used to live inside the price history, which
+            // is now a section that spends most of its life shut.
+            Column(Modifier.padding(horizontal = Space.screen)) {
+                Spacer(Modifier.height(Space.xl))
+                // Buying is what the whole page is for, so it gets the filled button
+                // and the full width. Everything else here is secondary — except on
+                // a wish deliberately on hold, where a one-tap buy is the thing the
+                // hold was set up to stand in the way of, so it goes quiet instead.
+                if (held) {
+                    OutlinedButton(
+                        { buying = true },
+                        Modifier.fillMaxWidth(),
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSecondary)
+                    ) {
+                        Icon(Icons.Default.ShoppingCartCheckout, null)
+                        Text("  Я купив це")
+                    }
+                } else {
+                    Button(
+                        { buying = true },
+                        Modifier.fillMaxWidth(),
+                        shape = Radius.sm
+                    ) {
+                        Icon(Icons.Default.ShoppingCartCheckout, null)
+                        Text("  Я купив це")
+                    }
+                }
+                Spacer(Modifier.height(Space.md))
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                    OutlinedButton(
+                        {
+                            scope.launch {
+                                refreshing = true
+                                message = null
+                                when (
+                                    val reading =
+                                        refreshed(wish, today.toEpochDay(), store.fxRate().first)
+                                ) {
+                                    is Reading.Priced -> {
+                                        // The one moment on this screen worth a
+                                        // haptic: you asked, and the price you were
+                                        // waiting for is the answer. Only on the
+                                        // crossing — a price already under its
+                                        // target before the tap is not news, and
+                                        // buzzing for it would make every refresh
+                                        // of a reached wish feel like an event.
+                                        if (targetHit(reading.wish, today.toEpochDay()) &&
+                                            !targetHit(wish, today.toEpochDay())
+                                        ) {
+                                            touch.landed()
+                                        }
+                                        onChange(reading.wish)
+                                        message = "Ціну оновлено"
+                                    }
+                                    // The wish is saved even though no price came
+                                    // back: the new freshness is itself the news.
+                                    is Reading.Stale -> {
+                                        onChange(reading.wish)
+                                        message = freshnessNote(reading.wish.freshness)
+                                    }
+                                    Reading.Failed -> {
+                                        // You asked and the network refused. This is
+                                        // the other half of the pair above, and it
+                                        // fires only because the refusal answers a
+                                        // tap: the background pass that reads the
+                                        // same page on a schedule stays silent.
+                                        touch.refused()
+                                        message = "Не вдалося прочитати сторінку"
+                                    }
+                                }
+                                refreshing = false
+                            }
+                        },
+                        Modifier.weight(1f),
+                        enabled = !refreshing,
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                    ) {
+                        if (refreshing) {
+                            BusyMark()
+                        } else {
+                            Icon(Icons.Default.Refresh, null)
+                        }
+                        Text(" Оновити")
+                    }
+                    OutlinedButton(
+                        { context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) },
+                        Modifier.weight(1f),
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                    ) { Text("До магазину ↗") }
+                }
+                message?.let {
+                    Text(
+                        it,
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.md)
+                    )
+                }
+            }
+        }
+    }
+
+    if (addingSource) {
+        AddSourceSheet(wish, store.fxRate().first, { addingSource = false }) { source ->
+            addingSource = false
+            onChange(withSource(wish, source))
+        }
+    }
+
+    if (buying) {
+        BoughtSheet(wish, { buying = false }) { trackingNumber, paid ->
+            buying = false
+            onBought(trackingNumber, paid)
+        }
+    }
+
+    if (pickingDate) {
+        val millisPerDay = 86_400_000L
+        val state = rememberDatePickerState(
+            initialSelectedDateMillis = (deadlineDate ?: today.plusMonths(3)).toEpochDay() * millisPerDay,
+            selectableDates = object : SelectableDates {
+                // A deadline in the past cannot be planned for.
+                override fun isSelectableDate(utcTimeMillis: Long) =
+                    utcTimeMillis / millisPerDay >= today.toEpochDay()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickingDate = false },
+            confirmButton = {
+                TextButton({
+                    // The picker works in UTC midnights, so this is an exact day.
+                    state.selectedDateMillis?.let { deadlineDay = it / millisPerDay }
+                    pickingDate = false
+                }) { Text("Обрати") }
+            },
+            dismissButton = { TextButton({ pickingDate = false }) { Text("Скасувати") } }
+        ) {
+            DatePicker(state)
+        }
+    }
+
+    if (pickingHold) {
+        val millisPerDay = 86_400_000L
+        val state = rememberDatePickerState(
+            // A month out by default: long enough for the urge to pass, short
+            // enough that picking it does not feel like giving the thing up.
+            initialSelectedDateMillis = today.plusMonths(1).toEpochDay() * millisPerDay,
+            selectableDates = object : SelectableDates {
+                // A hold that ended before it began is not a hold.
+                override fun isSelectableDate(utcTimeMillis: Long) =
+                    utcTimeMillis / millisPerDay > today.toEpochDay()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { pickingHold = false },
+            confirmButton = {
+                TextButton({
+                    state.selectedDateMillis?.let {
+                        // The hold going on, felt at the moment it does. Not on the
+                        // button that opened this dialog — that only asked until
+                        // when — and the matching answer comes when it is lifted.
+                        touch.switched(true)
+                        onChange(wish.copy(holdUntil = it / millisPerDay))
+                    }
+                    pickingHold = false
+                }) { Text("Відкласти") }
+            },
+            dismissButton = { TextButton({ pickingHold = false }) { Text("Скасувати") } }
+        ) {
+            DatePicker(state)
+        }
+    }
+}
+
+/**
+ * The deliberate pause, and the question waiting at the end of it.
+ *
+ * A wishlist's job is to put distance between the urge and the decision. The list
+ * on its own does not do that — it keeps everything equally present for ever — so
+ * this is the app using time as the tool: out of the way and silent until the day
+ * comes, then back with the only question that matters.
+ */
+@Composable
+fun HoldBlock(wish: Wish, today: LocalDate, onPick: () -> Unit, onRelease: () -> Unit) {
+    val day = today.toEpochDay()
+    val held = onHold(wish, day)
+    val ended = holdEnded(wish, day)
+    if (!held && !ended) {
+        Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
+            TextButton(onPick, contentPadding = PaddingValues(0.dp)) {
+                Icon(Icons.Default.Snooze, null, tint = TextSecondary)
+                Text("  Відкласти до дати", color = TextSecondary, fontSize = Type.captionSize)
+            }
+        }
+        return
+    }
+    Card(
+        Modifier.fillMaxWidth().padding(horizontal = Space.screen).padding(top = Space.lg).litEdge(Radius.sm),
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.sm
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Text(
+                if (ended) "Ще хочеш?" else "Відкладено",
+                fontSize = Type.cardTitleSize,
+                fontWeight = Type.medium,
+                color = if (ended) Accent else TextPrimary
+            )
+            Text(
+                if (ended) {
+                    "Пауза скінчилась. Якщо річ і досі потрібна — це вже рішення, а не порив."
+                } else {
+                    "Картка не турбуватиме до ${formatDate(LocalDate.ofEpochDay(wish.holdUntil))}."
+                },
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+            Row(
+                Modifier.padding(top = Space.sm),
+                horizontalArrangement = Arrangement.spacedBy(Space.md)
+            ) {
+                TextButton(onRelease, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (ended) "Так, хочу" else "Повернути в список")
+                }
+                TextButton(onPick, contentPadding = PaddingValues(0.dp)) {
+                    Text(if (ended) "Ще почекаю" else "Інша дата", color = TextSecondary)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One wish in a two-column grid.
+ *
+ * Shaped like a shop listing rather than a report: a square photograph, the name
+ * in two lines, the price. The chart, the savings plan and how stale the reading
+ * is all live on the item's own page, one tap away. Carrying them here cost half
+ * a screen for a single item.
+ */
+@Composable
+fun SharedTransitionScope.WishCard(
+    wish: Wish,
+    visibility: AnimatedVisibilityScope,
+    today: Long,
+    onOpen: () -> Unit
+) {
+    val change = priceChangePercent(wish)
+    val plan = savingsPlan(wishGoal(wish), wish.saved, wish.monthlyPlan)
+    val stale = isStale(wish.freshness)
+    val held = onHold(wish, today)
+    val holdText = holdLabel(wish, today)
+    // Null wherever the price has never moved: a range bar with nothing to span
+    // would draw a dot in the middle of a grey track, which on twenty cards is
+    // twenty pieces of furniture saying nothing.
+    val rangeInsight = remember(wish.history, wish.price, wish.checkedDay) {
+        priceInsight(wish.history, wish.price, wish.checkedDay)
+            .takeIf { it.highest > it.lowest }
+    }
+    // The card's own outline says whether the price you named has arrived. A held
+    // wish is excluded on purpose: a hold is you telling the app not to raise this
+    // until March, and a card that reshaped itself to say "now!" would be the app
+    // overruling the one decision the hold exists to protect.
+    val reached = targetHit(wish, today) && !held
+    // One shape, handed to both the card and its lit edge. The edge is a border
+    // that follows whatever outline it is given — that is the whole reason it is a
+    // border rather than a line across the top — so a card clipped to the morph
+    // while its edge still traced an 18dp rectangle would have the hairline cutting
+    // across the opened corners and hanging off them, which is exactly the failure
+    // litEdge was shaped to avoid.
+    val cardShape = wishCardShape(reached)
+    Card(
+        onClick = onOpen,
+        modifier = Modifier.fillMaxWidth().litEdge(cardShape),
+        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+        shape = cardShape
+    ) {
+        Box {
+            if (wish.image.isNotBlank()) {
+                AsyncImage(
+                    wish.image,
+                    wish.name,
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .sharedElement(
+                            rememberSharedContentState("wish-photo-${wish.id}"),
+                            animatedVisibilityScope = visibility
+                        )
+                        .background(SurfaceRaised),
+                    // Cropped square rather than the whole photograph: shop pictures
+                    // come in every proportion, and a grid only holds together when
+                    // every tile is the same shape.
+                    contentScale = ContentScale.Crop
+                )
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        // A held wish is faded rather than hidden: it should read as
+                        // set aside on purpose, not as something the app has lost.
+                        .background(
+                            AppBackground.copy(alpha = if (held || stale) 0.55f else 0.14f)
+                        )
+                )
+            } else {
+                Box(Modifier.fillMaxWidth().aspectRatio(1f).background(SurfaceRaised))
+            }
+            // The one thing worth knowing without opening the item: it got cheaper.
+            // Withheld while the reading is doubtful, because a fall computed from a
+            // price the shop no longer states is a claim about nothing.
+            if (wish.history.size > 1 && change <= -1.0 && !stale && !held) {
+                Text(
+                    signedPercent(change, 0),
+                    color = AccentInk,
+                    fontSize = Type.captionSize,
+                    fontWeight = Type.strong,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(Space.sm)
+                        .background(Accent, Radius.pill)
+                        .padding(horizontal = Space.sm, vertical = 2.dp),
+                    style = Tabular
+                )
+            }
+            freshnessLabel(wish.freshness)?.takeIf { stale }?.let { warning ->
+                Text(
+                    warning,
+                    color = TextPrimary,
+                    fontSize = Type.overlineSize,
+                    fontWeight = Type.medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(Space.sm)
+                        .background(SurfaceHigh, Radius.pill)
+                        .padding(horizontal = Space.sm, vertical = 2.dp)
+                )
+            }
+        }
+        Column(Modifier.padding(Space.md)) {
+            Text(
+                wish.name,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                color = if (held) TextSecondary else TextPrimary
+            )
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                money(wish.price),
+                fontSize = Type.cardTitleSize,
+                fontWeight = Type.strong,
+                // A price nobody can currently buy at must not carry the weight of
+                // one that was read this morning.
+                color = if (stale || held) TextDisabled else TextPrimary,
+                // The grid puts two of these side by side, which is precisely where
+                // digits of unequal width stop lining up and the column looks nudged.
+                style = Tabular
+            )
+            // Where this price sits in its own range, unlabelled and five pixels
+            // tall. The percentage badge over the photograph says how far the price
+            // has come since the first reading, which is a different fact and the
+            // one that misleads on its own: a wish can be ten percent below where it
+            // started and still be sitting at the top of the last month. This is the
+            // other half. Withheld while the reading is doubtful or the wish is set
+            // aside, for the same reason the badge is — there is no live price to
+            // place. Each card is on its own scale, so the bars are not comparable
+            // between cards and nothing here invites reading them that way; the
+            // comparable figure is the percentage, in text, above.
+            if (!stale && !held && rangeInsight != null) {
+                Spacer(Modifier.height(Space.sm))
+                PriceRangeBar(rangeInsight, labels = false, height = 5.dp)
+            }
+            if (holdText != null) {
+                Text(
+                    holdText,
+                    color = if (held) TextSecondary else Accent,
+                    fontSize = Type.overlineSize,
+                    fontWeight = if (held) Type.regular else Type.medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            } else if (wish.targetPrice > 0) {
+                Text(
+                    "ціль ${money(wish.targetPrice)}",
+                    color = TextSecondary,
+                    fontSize = Type.overlineSize,
+                    style = Tabular
+                )
+            }
+            if (!held && (wish.saved > 0 || wish.monthlyPlan > 0)) {
+                Spacer(Modifier.height(Space.sm))
+                PillProgress(plan.progress, height = 4.dp)
+            }
+        }
+    }
+}
+
+
+@Composable
+fun CalculatorScreen(store: Store) {
+    val touch = rememberTouch()
     var amount by remember { mutableStateOf("") }
     var hryvniaToDollar by remember { mutableStateOf(true) }
     var first by remember { mutableStateOf("") }
     var second by remember { mutableStateOf("") }
     var operation by remember { mutableStateOf("+") }
-    var rate by remember { mutableStateOf(FxRate()) }
-    var loading by remember { mutableStateOf(true) }
+    val cached = remember { store.fxRate() }
+    var rate by remember { mutableStateOf(cached.first) }
+    var fetchedAt by remember { mutableLongStateOf(cached.second) }
+    var loading by remember { mutableStateOf(false) }
+    var rateError by remember { mutableStateOf(false) }
+    var history by remember { mutableStateOf(store.rateHistory()) }
+    var rateTarget by remember { mutableStateOf(store.rateTarget()) }
+    var targetInput by remember { mutableStateOf("") }
+    var askingTarget by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    fun refresh() {
+    /**
+     * [asked] is what separates the refresh button from the one this screen runs
+     * for itself on open. Both set the same error text, but only the one you tapped
+     * is allowed to answer in the hand: a phone that shivers every time the rate
+     * tab is opened without a signal is reporting its own housekeeping.
+     */
+    fun refresh(asked: Boolean) {
         scope.launch {
             loading = true
-            runCatching { usdRate() }.onSuccess { rate = it }
+            rateError = false
+            runCatching { usdRate() }
+                .onSuccess { fresh ->
+                    if (fresh.sell > 0) {
+                        rate = fresh
+                        fetchedAt = System.currentTimeMillis()
+                        store.saveFxRate(fresh, fetchedAt)
+                        // The series the chart draws. Recorded here rather than only
+                        // on a schedule, so a phone that is opened daily builds a
+                        // month of history whether or not background work ran.
+                        history = appendRate(history, fresh.sell, LocalDate.now().toEpochDay())
+                        store.saveRateHistory(history)
+                    } else {
+                        rateError = true
+                    }
+                }
+                .onFailure { rateError = true }
+            if (rateError && asked) touch.refused()
             loading = false
         }
     }
-    LaunchedEffect(Unit) { refresh() }
+
+    // Only reach for the network when the cached rate is actually stale. The
+    // refresh button always asks, which is what it is for.
+    LaunchedEffect(Unit) {
+        val age = System.currentTimeMillis() - fetchedAt
+        if (rate.sell <= 0 || age > 30 * 60 * 1000L) refresh(asked = false)
+    }
 
     val source = amount.replace(',', '.').toDoubleOrNull() ?: 0.0
     val exchangeRate = if (hryvniaToDollar) rate.sell else rate.buy
@@ -508,223 +4053,1490 @@ fun CalculatorScreen() {
         else -> a + b
     }
 
-    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-        item {
-            ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки")
-            Column(Modifier.padding(horizontal = 20.dp)) {
-                Card(shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = Color(0xff20221d))) {
-                    Column(Modifier.padding(18.dp)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Column(Modifier.weight(1f)) {
-                                Text("USD / UAH", color = Color.Gray, fontSize = 12.sp)
-                                Text(
-                                    if (rate.sell > 0) "Купівля ${"%.2f".format(rate.buy)} · продаж ${"%.2f".format(rate.sell)}"
-                                    else "Немає даних",
-                                    fontWeight = FontWeight.Bold
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(bottom = navClearance() + Space.huge)
+        ) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item { ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки") }
+            item {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Card(
+                        Modifier.litEdge(Radius.lg),
+                        shape = Radius.lg,
+                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised)
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text("USD / UAH", color = TextSecondary, fontSize = Type.captionSize)
+                                    Text(rateHeadline(rate), fontWeight = FontWeight.Bold)
+                                    // Never the figure without its source: the official
+                                    // rate and a bank's rate differ by most of a hryvnia,
+                                    // and an unlabelled number invites reading one as the
+                                    // other.
+                                    rateSourceLabel(rate).takeIf { it.isNotBlank() }?.let {
+                                        Text(it, color = TextSecondary, fontSize = Type.captionSize)
+                                    }
+                                    if (fetchedAt > 0) {
+                                        Text(
+                                            "станом на ${timeLabel(fetchedAt)}" +
+                                                if (rateError) " · оновити не вдалося" else "",
+                                            color = if (rateError) Negative else TextSecondary,
+                                            fontSize = Type.captionSize
+                                        )
+                                    } else if (rateError) {
+                                        Text(
+                                            "Ні Monobank, ні НБУ не відповіли, спробуйте пізніше",
+                                            color = Negative,
+                                            fontSize = Type.captionSize
+                                        )
+                                    }
+                                }
+                                IconButton({ refresh(asked = true) }) {
+                                    if (loading) BusyMark()
+                                    else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
+                                }
+                            }
+                            NumberField(if (hryvniaToDollar) "Сума у гривнях" else "Сума у доларах", amount) { amount = it }
+                            // Secondary action, so an outline rather than a second filled
+                            // shape. The lime is spent on the one figure below.
+                            OutlinedButton(
+                                {
+                                    // Which way round the conversion runs is a
+                                    // switch, not a command: the figure below keeps
+                                    // its digits and changes its meaning, which is
+                                    // easy to miss on a glance and impossible to
+                                    // miss in the hand.
+                                    hryvniaToDollar = !hryvniaToDollar
+                                    touch.switched(hryvniaToDollar)
+                                },
+                                Modifier.fillMaxWidth().padding(top = Space.md),
+                                shape = Radius.sm,
+                                border = BorderStroke(1.dp, HairLine),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                            ) {
+                                Icon(Icons.Default.SwapVert, null)
+                                Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
+                            }
+                            Spacer(Modifier.height(Space.lg))
+                            HeroPanel(
+                                label = if (hryvniaToDollar) "У доларах" else "У гривнях",
+                                value = if (hryvniaToDollar) "${figure(converted, 2)} USD" else money(converted),
+                                muted = converted == 0.0,
+                                // A short number left the right half of the panel empty.
+                                // The rate it was converted at belongs there: it is the
+                                // one thing you would otherwise scroll up to check.
+                                trailing = if (exchangeRate > 0) {
+                                    {
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                "за курсом",
+                                                color = AccentInk.copy(alpha = 0.65f),
+                                                fontSize = Type.captionSize
+                                            )
+                                            Text(
+                                                rateFigure(exchangeRate),
+                                                color = AccentInk,
+                                                fontSize = Type.sectionSize,
+                                                lineHeight = Type.sectionLine,
+                                                fontWeight = Type.strong,
+                                                style = Tabular
+                                            )
+                                        }
+                                    }
+                                } else {
+                                    null
+                                }
+                            )
+                        }
+                    }
+
+                    Text(
+                        "Курс за місяць",
+                        Modifier.padding(top = Space.xxl, bottom = Space.md),
+                        fontSize = Type.sectionSize,
+                        lineHeight = Type.sectionLine,
+                        fontWeight = Type.medium
+                    )
+                    Card(
+                        Modifier.litEdge(Radius.lg),
+                        shape = Radius.lg,
+                        colors = CardDefaults.cardColors(containerColor = SurfaceBase)
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            if (history.isNotEmpty()) {
+                                // A straight line here rather than a step, and the
+                                // difference is not cosmetic: appendRate records a
+                                // point every day whether or not the rate moved, so
+                                // the gaps are days the phone was off, not days the
+                                // rate stood still. A step would claim it held for a
+                                // week and then jumped.
+                                PriceChart(
+                                    history,
+                                    kind = ChartLine.LINEAR,
+                                    format = { "${rateFigure(it)} ₴" }
                                 )
+                                Spacer(Modifier.height(Space.sm))
                             }
-                            IconButton({ refresh() }) {
-                                if (loading) CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp)
-                                else Icon(Icons.Default.Refresh, "Оновити")
+                            // Nothing recorded the rate before this version, so the chart
+                            // says how many days it has actually seen rather than letting
+                            // four bars pass for a month.
+                            Text(
+                                rateHistoryNote(history, LocalDate.now().toEpochDay()),
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                            rateRangeNote(history)?.let {
+                                Spacer(Modifier.height(Space.sm))
+                                LeaderRow("Від і до", it)
+                            }
+                            HorizontalDivider(
+                                color = HairLine,
+                                modifier = Modifier.padding(top = Space.md)
+                            )
+                            Row(
+                                Modifier.fillMaxWidth().padding(top = Space.sm),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    rateTargetNote(rateTarget, rate.sell),
+                                    Modifier.weight(1f),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                                Spacer(Modifier.width(Space.sm))
+                                OutlinedButton(
+                                    onClick = {
+                                        // Prefilled with whatever is being watched, so
+                                        // nudging a threshold is a keystroke rather than
+                                        // remembering the number and typing it again.
+                                        targetInput = amountText(rateTarget?.rate ?: 0.0)
+                                        askingTarget = true
+                                    },
+                                    shape = Radius.sm,
+                                    border = BorderStroke(1.dp, HairLine),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = TextPrimary
+                                    )
+                                ) {
+                                    Text(if (rateTarget == null) "Стежити" else "Змінити")
+                                }
                             }
                         }
-                        NumberField(if (hryvniaToDollar) "Сума у гривнях" else "Сума у доларах", amount) { amount = it }
-                        FilledTonalButton({ hryvniaToDollar = !hryvniaToDollar }, Modifier.fillMaxWidth().padding(top = 10.dp)) {
-                            Icon(Icons.Default.SwapVert, null)
-                            Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
+                    }
+
+                    // A section heading sits closer to its own content than to what came
+                    // before it, so the gap above is larger than the gap below.
+                    Text(
+                        "Калькулятор сум",
+                        Modifier.padding(top = Space.xxl, bottom = Space.md),
+                        fontSize = Type.sectionSize,
+                        lineHeight = Type.sectionLine,
+                        fontWeight = Type.medium
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                        Box(Modifier.weight(1f)) { NumberField("Перша сума", first) { first = it } }
+                        Box(Modifier.weight(1f)) { NumberField("Друга сума", second) { second = it } }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().padding(vertical = Space.md),
+                        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                    ) {
+                        listOf("+", "−", "×", "÷").forEach { symbol ->
+                            FilterChip(
+                                operation == symbol,
+                                { operation = symbol },
+                                { Text(symbol, fontSize = Type.sectionSize) },
+                                modifier = Modifier.weight(1f)
+                            )
                         }
+                    }
+                    SummaryCard(
+                        "Результат",
+                        NumberFormat.getNumberInstance(UK).format(total),
+                        total == 0.0,
+                        hero = false
+                    )
+                }
+            }
+        }
+        CollapsingTitle("Курс і суми", listState)
+    }
+    if (askingTarget) {
+        AlertDialog(
+            onDismissRequest = { askingTarget = false },
+            title = { Text("Поріг по курсу") },
+            text = {
+                Column {
+                    Text(
+                        "Скажу один раз у ранковому зведенні, коли курс дійде до цього " +
+                            "числа. Далі поріг перестає нагадувати про себе.",
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                    Spacer(Modifier.height(Space.md))
+                    NumberField("Курс", targetInput) { targetInput = it }
+                    if (rate.sell <= 0) {
                         Text(
-                            if (hryvniaToDollar) "${"%.2f".format(converted)} USD" else money(converted),
-                            Modifier.padding(top = 16.dp), color = Accent, fontSize = 32.sp, fontWeight = FontWeight.Black
+                            "Спершу має завантажитись курс — без нього не видно, " +
+                                "з якого боку чекати",
+                            color = Negative,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine,
+                            modifier = Modifier.padding(top = Space.sm)
                         )
                     }
                 }
-
-                Text("Калькулятор сум", Modifier.padding(top = 24.dp, bottom = 4.dp), fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Box(Modifier.weight(1f)) { NumberField("Перша сума", first) { first = it } }
-                    Box(Modifier.weight(1f)) { NumberField("Друга сума", second) { second = it } }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        armRateTarget(parseAmount(targetInput), rate.sell)?.let {
+                            rateTarget = it
+                            store.saveRateTarget(it)
+                        }
+                        askingTarget = false
+                    },
+                    enabled = rate.sell > 0
+                ) { Text("Стежити") }
+            },
+            dismissButton = {
+                // Removing a threshold lives here rather than beside the caption:
+                // it is the rarer action of the two and does not deserve a button
+                // on the screen that the eye has to step over every time.
+                if (rateTarget != null) {
+                    TextButton({
+                        rateTarget = null
+                        store.saveRateTarget(null)
+                        askingTarget = false
+                    }) { Text("Прибрати", color = Negative) }
+                } else {
+                    TextButton({ askingTarget = false }) { Text("Скасувати") }
                 }
-                Row(Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("+", "−", "×", "÷").forEach { symbol ->
-                        FilterChip(operation == symbol, { operation = symbol }, { Text(symbol, fontSize = 18.sp) }, modifier = Modifier.weight(1f))
-                    }
-                }
-                SummaryCard("Результат", NumberFormat.getNumberInstance(Locale("uk", "UA")).format(total), Accent)
             }
+        )
+    }
+}
+
+/**
+ * A subscription's own price history, two or three points wide, in its row.
+ *
+ * A step rather than a slope, for the reason [ChartLine.STEP] sets out: a point is
+ * written only where the price moved, so a sloping line between two figures would
+ * draw six months of a rise that happened on one morning.
+ *
+ * **Why this is not [PriceChart], having looked.** The shared step chart landed and
+ * it does not fit here, and forcing it in would be worse than these thirty lines.
+ * It is a `Column`: a 132dp plate in [ChartGround] clipped to [Radius.sm], a
+ * gridline across the middle, a 6dp inset, and — not optionally — an axis row
+ * underneath carrying [axisNote]. In a 28×14dp slot the 12dp corner radius rounds
+ * the plate into a lozenge, the insets leave two device pixels of plot, and the
+ * axis line would print "вісь 199 – 249 ₴" beside [amountMoveLine], which already
+ * says both figures in words. It also owns a press-and-drag scrub, and this sits
+ * inside a row that is itself clickable to open the expense — two gestures
+ * competing for the same 28 dp. None of that is a flaw in [PriceChart]; it is a
+ * full-width card component being asked to be a sparkline.
+ *
+ * **What is adopted, rather than duplicated.** The scale comes from [chartAxis],
+ * so the [MIN_AXIS_SPAN] floor applies here too — that was a real bug in the first
+ * version of this, which fitted two points to their own min and max and so drew a
+ * 1% raise as the same cliff as a doubling. The line colour is [ChartInk], so the
+ * rule about calming the lime on a 2dp stroke holds in a list row exactly as it
+ * does on the card. What stays local is the twenty lines of `drawLine`.
+ *
+ * Spaced evenly rather than by [chartPositions]. There is no horizontal axis here
+ * and the date is in the text beside it, so date spacing would buy no readable
+ * information and would cost the common case: two changes a week apart and one six
+ * months later collapse the first tread to a fraction of a pixel at this width.
+ */
+@Composable
+fun AmountStep(points: List<PricePoint>, modifier: Modifier = Modifier) {
+    val prices = points.map { it.price }.filter { it > 0.0 }
+    // The last move decides the colour. A raise is the fact worth noticing, and it
+    // is a fact about the subscription rather than about the person paying it.
+    val raised = prices.size >= 2 && prices.last() > prices[prices.size - 2]
+    val axis = remember(prices) { chartAxis(prices) }
+    Canvas(modifier) {
+        if (prices.size < 2) return@Canvas
+        val width = 2.dp.toPx()
+        val usable = (size.height - width * 2).coerceAtLeast(1f)
+        val slot = size.width / prices.size
+        fun height(price: Double) = width + usable * (1f - axis.fraction(price))
+
+        var x = 0f
+        var previous = height(prices.first())
+        prices.forEachIndexed { index, price ->
+            val y = height(price)
+            val last = index == prices.size - 1
+            val ink = when {
+                !last -> TextDisabled
+                // [Negative] is left alone. The desaturation rule behind [ChartInk]
+                // is about the lime specifically — 17:1 on this ground at a maxed
+                // green channel is what blooms — and this salmon is nowhere near
+                // that. Mixing it a quarter towards grey would only make the one
+                // stroke that means "this went up" harder to tell from the ones
+                // that do not.
+                raised -> Negative
+                else -> ChartInk
+            }
+            // The riser first, so the tread that follows caps it cleanly.
+            if (index > 0) {
+                drawLine(ink, Offset(x, previous), Offset(x, y), width, StrokeCap.Round)
+            }
+            drawLine(ink, Offset(x, y), Offset(x + slot, y), width, StrokeCap.Round)
+            x += slot
+            previous = y
         }
     }
 }
 
+/**
+ * The month as one bar: what the standing costs take, and what survives them.
+ *
+ * One shape and one colour, because at five subscriptions a palette would be
+ * five arbitrary hues nobody can hold in their head — and the question the bar
+ * answers is not "which one" but "how much of the month is already gone".
+ *
+ * The third state is the reason this is a composable rather than a call to
+ * [PillProgress]. With no income entered there is no denominator, and both a full
+ * bar and an empty one would be a claim: one says the month is spent, the other
+ * says it is free. So the lime runs from the left and fades out, which says
+ * exactly what is true — this much is committed, and how much of the month that
+ * is remains unknown.
+ */
 @Composable
-fun PaymentsScreen(items: List<Pay>, save: (List<Pay>) -> Unit) {
-    var adding by remember { mutableStateOf(false) }
-    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-        item {
-            ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки")
-            Column(Modifier.padding(horizontal = 20.dp)) {
-                SummaryCard("Разом на місяць", money(items.sumOf { it.amount }), Accent)
-                Button({ adding = true }, Modifier.fillMaxWidth().padding(top = 14.dp), shape = RoundedCornerShape(16.dp)) {
-                    Icon(Icons.Default.Add, null); Text(" Додати витрату")
-                }
-            }
-        }
-        if (items.isEmpty()) item { EmptyCard("Додайте оренду квартири, комуналку, інтернет або підписку") }
-        items(items) { pay ->
-            Card(Modifier.padding(horizontal = 16.dp, vertical = 5.dp).fillMaxWidth(), shape = RoundedCornerShape(20.dp)) {
-                ListItem(
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = {
-                        Surface(color = Color(0xff30332a), shape = RoundedCornerShape(14.dp), modifier = Modifier.size(44.dp)) {
-                            Box(contentAlignment = Alignment.Center) {
-                                Icon(
-                                    when {
-                                        pay.name.contains("Оренда", true) -> Icons.Default.Home
-                                        pay.name.contains("Комун", true) -> Icons.Default.Bolt
-                                        pay.name.contains("Інтернет", true) -> Icons.Default.Wifi
-                                        else -> Icons.Default.Autorenew
-                                    }, null, tint = Accent
-                                )
-                            }
-                        }
-                    },
-                    headlineContent = { Text(pay.name, fontWeight = FontWeight.Bold) },
-                    supportingContent = { Text("${pay.day} числа щомісяця") },
-                    trailingContent = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(money(pay.amount), fontWeight = FontWeight.Bold)
-                            IconButton({ save(items - pay) }) { Icon(Icons.Default.Close, "Видалити") }
-                        }
-                    }
+fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
+    val height = 14.dp
+    Column(modifier.fillMaxWidth()) {
+        Text(
+            committedHeadline(bar),
+            fontSize = Type.sectionSize,
+            lineHeight = Type.sectionLine,
+            fontWeight = Type.strong,
+            color = when (bar.state) {
+                CommittedState.KNOWN -> Accent
+                CommittedState.OVERSPENT -> Negative
+                CommittedState.UNKNOWN -> TextSecondary
+            },
+            // This figure is rewritten the moment the income is edited, and the
+            // bar it sits above changes width at the same time. Proportional
+            // digits would make the headline change width too, so two things
+            // would move when only one of them is the answer.
+            style = Tabular
+        )
+        Spacer(Modifier.height(Space.sm))
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(height)
+                .background(SurfaceHigh, Radius.pill)
+        ) {
+            when (bar.state) {
+                CommittedState.UNKNOWN -> Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(height)
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Accent.copy(alpha = 0.55f), Color.Transparent)
+                            ),
+                            Radius.pill
+                        )
+                )
+
+                else -> Box(
+                    Modifier
+                        .fillMaxWidth(bar.share.coerceIn(0f, 1f))
+                        .height(height)
+                        .background(
+                            if (bar.state == CommittedState.OVERSPENT) Negative else Accent,
+                            Radius.pill
+                        )
                 )
             }
         }
-    }
-    if (adding) AddPaymentDialog({ adding = false }) {
-        save(items + it)
-        adding = false
+        Spacer(Modifier.height(Space.sm))
+        Text(
+            committedDetail(bar),
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
     }
 }
 
 @Composable
-fun AddPaymentDialog(close: () -> Unit, add: (Pay) -> Unit) {
-    val types = listOf("Оренда квартири", "Комуналка", "Інтернет", "Мобільний", "Підписка", "Інше")
-    var selected by remember { mutableStateOf(types.first()) }
-    var custom by remember { mutableStateOf("") }
+fun PaymentsScreen(
+    items: List<Pay>,
+    save: (List<Pay>) -> Unit,
+    store: Store,
+    adding: Boolean,
+    setAdding: (Boolean) -> Unit,
+    /** What has been marked paid, across every month still kept. */
+    paid: List<PaidMark>,
+    setPaid: (List<PaidMark>) -> Unit,
+    onDelete: (Int) -> Unit
+) {
+    val touch = rememberTouch()
+    // The rate the exchange screen already fetched and cached. Dollar entries are
+    // converted at the sell rate, since that is what buying dollars costs.
+    val rate = remember { store.fxRate().first }
+    // Read once, so the timeline and the strip cannot disagree about which day it
+    // is, nor the totals about which trials have run out.
+    val today = remember { LocalDate.now() }
+    val monthly = monthlyTotal(items, rate.sell, today)
+    val yearly = yearlyTotal(items, rate.sell, today)
+    // What the year becomes once the free periods end. Only shown while one is
+    // running, because otherwise it is the same figure twice.
+    val trials = trialsRunning(items, today)
+    val committed = yearlyCommitment(items, rate.sell, today)
+    var income by remember { mutableDoubleStateOf(store.income()) }
+    var editingIncome by remember { mutableStateOf(false) }
+    val month = budget(income, monthly)
+    var editing by remember { mutableStateOf<Int?>(null) }
+    val shift = yearlyShift(items, rate.sell, today)
+    val thisMonth = monthKey(today)
+    val record = monthRecord(items, paid, thisMonth, today, rate.sell)
+    // Empty until a background pass has fetched the year, and empty is a working
+    // state: the weekend rule stands on its own without it.
+    val holidays = remember { store.holidays(today.year) }
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(bottom = navClearance() + Space.fabClearance)
+        ) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item { ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки") }
+            item {
+                Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
+                    // The loudest figure should be one you can act on. A monthly total is
+                    // read and forgotten; the next payment is prepared for, so it takes
+                    // the panel and the total moves down into the summary rows.
+                    val next = nextPayment(items, today, rate.sell)
+                    HeroPanel(
+                        label = if (next != null) {
+                            "Найближчий платіж · ${dueLabel(next.daysAway)}"
+                        } else {
+                            "Разом на місяць"
+                        },
+                        value = money(next?.total?.total ?: monthly.total),
+                        caption = when {
+                            next == null -> null
+                            next.total.rateMissing ->
+                                "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
+                            else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
+                        },
+                        muted = next == null
+                    )
+                    if (items.isNotEmpty()) {
+                        Spacer(Modifier.height(Space.md))
+                        DaysStrip(days = 30, marked = paymentOffsets(items, today))
+                        Spacer(Modifier.height(Space.xs))
+                        Text(
+                            "Списання у найближчі 30 днів",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize
+                        )
+                    }
+                    Spacer(Modifier.height(Space.md))
+                    Card(
+                        modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            // Not "here are your subscriptions" but "here is what
+                            // survives them". The same figures as a bite out of
+                            // the month, which is what makes a small number feel
+                            // consequential without exaggerating it by a hryvnia.
+                            Row(
+                                Modifier.fillMaxWidth().clickable { editingIncome = true },
+                                verticalAlignment = Alignment.Top
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        if (month.unknown) "Вкажіть дохід" else "Місяць",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Spacer(Modifier.height(Space.sm))
+                                    CommittedBar(committedOf(month))
+                                }
+                                Spacer(Modifier.width(Space.md))
+                                Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
+                            }
+                            if (items.isNotEmpty()) {
+                                Spacer(Modifier.height(Space.md))
+                                // What the month actually cost, beside what it was
+                                // meant to. Until this row existed the screen could
+                                // only ever state the plan.
+                                LeaderRow("Сплачено цього місяця", totalLabel(record.paid))
+                                // A year of the same costs, because that is the scale at
+                                // which a subscription is worth arguing with.
+                                LeaderRow("Разом на рік", money(yearly.total))
+                                // And what that same year cost before the quiet
+                                // raises. Each one is a few tens of hryvnia and
+                                // reads as nothing; twelve months of all of them
+                                // is the figure that gets something cancelled.
+                                yearlyShiftNote(shift)?.let { note ->
+                                    Text(
+                                        note,
+                                        Modifier.padding(top = Space.xs),
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine
+                                    )
+                                }
+                                // The row above counts a trial as the nought it
+                                // currently is. That is true of this month and
+                                // false of the year, so the commitment behind the
+                                // free period is stated rather than left to be
+                                // discovered on the first statement.
+                                if (trials.isNotEmpty()) {
+                                    LeaderRow(
+                                        "Після пробних періодів",
+                                        money(committed.total)
+                                    )
+                                }
+                                if (monthly.rateMissing) {
+                                    // Both totals are short by this much, so it is said as
+                                    // a gap rather than folded in as a smaller number.
+                                    LeaderRow(
+                                        "Плюс ${dollars(yearly.usd)} на рік",
+                                        "курс ще не завантажено"
+                                    )
+                                } else if (monthly.hasUsd) {
+                                    LeaderRow(
+                                        "З них ${dollars(yearly.usd)} на рік",
+                                        "≈ ${approxMoney(yearly.usdInUah)}"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if (items.isEmpty()) {
+                item {
+                    PlaceholderRows(
+                        listOf(
+                            "оренда, комуналка" to "сума і день оплати",
+                            "інтернет, підписки" to "сума і день оплати"
+                        ),
+                        Modifier.padding(horizontal = Space.screen)
+                    )
+                }
+            }
+            // A timeline rather than a list: the date is said once for everything
+            // falling on it, instead of "1 числа щомісяця" repeated under every row.
+            paymentGroups(items, today).forEach { group ->
+                item(key = group.date.toString()) {
+                    val isToday = group.date == today
+                    Card(
+                        Modifier
+                            .padding(horizontal = Space.screen, vertical = Space.xs)
+                            .fillMaxWidth()
+                            // The edge on every one of them, including today's
+                            // tinted card. The timeline was the one run of cards
+                            // the original pass missed, so it sat flat directly
+                            // above sections that stand proud — and an edge that
+                            // came and went with the date would trade one
+                            // inconsistency for a stranger one.
+                            .litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isToday) AccentSoft else SurfaceBase
+                        ),
+                        shape = Radius.md
+                    ) {
+                        Column(Modifier.padding(Space.lg)) {
+                            Text(
+                                if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
+                                color = Accent,
+                                fontSize = Type.captionSize,
+                                fontWeight = Type.medium
+                            )
+                            // A day of the month is a lie four or five times a year.
+                            // When the charge lands on a weekend or a holiday the row
+                            // says so and names the day the money actually has to be
+                            // there by — which is the day the reminder already counts to.
+                            paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
+                                Text(
+                                    note,
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                            group.positions.forEach { position ->
+                                val pay = items[position]
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { editing = position }
+                                        .padding(vertical = Space.sm),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    IconChip(payIcon(pay.name))
+                                    Spacer(Modifier.width(Space.md))
+                                    // No dotted leader here. Two weighted children split
+                                    // the row in half, which cut "Оренда квартири" down to
+                                    // "Оренда к…" — and a name earns that space before a
+                                    // decoration does.
+                                    Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                        Text(
+                                            pay.name,
+                                            fontSize = Type.cardTitleSize,
+                                            fontWeight = Type.medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        // The annual figure is the one that changes minds
+                                        // about a subscription, so it rides with the name
+                                        // rather than waiting on another screen. It never
+                                        // looks at the trial: what a year of this costs is
+                                        // what signing up commits you to, and a free month
+                                        // does not change it.
+                                        //
+                                        // An annual charge says both denominators instead,
+                                        // because either alone misleads — and it says the
+                                        // rhythm between them, so the smoothed one can
+                                        // never be mistaken for cash.
+                                        Text(
+                                            billingLine(pay),
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            // One of these under every name in the
+                                            // timeline, so they stack into a column
+                                            // whether or not anything drew one.
+                                            style = Tabular
+                                        )
+                                        // The date the free ride ends, on the row, in
+                                        // the accent — because it is the one fact about
+                                        // this expense that expires.
+                                        trialLabel(pay, today)?.let { free ->
+                                            Text(
+                                                free,
+                                                color = Accent,
+                                                fontSize = Type.captionSize,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        // What it used to cost, on the row rather
+                                        // than a screen away. A subscription earns
+                                        // by raising its price quietly, and the
+                                        // whole defence is the old figure sitting
+                                        // beside the new one where it is read. An
+                                        // expense the app has only ever seen at
+                                        // one price says nothing at all here.
+                                        val steps = amountStepPoints(pay)
+                                        amountMoveLine(pay)?.let { move ->
+                                            Spacer(Modifier.height(Space.xs))
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                AmountStep(
+                                                    steps,
+                                                    Modifier.width(28.dp).height(14.dp)
+                                                )
+                                                Spacer(Modifier.width(Space.sm))
+                                                Text(
+                                                    move,
+                                                    color = TextSecondary,
+                                                    fontSize = Type.captionSize,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    // "було 199 → стало 249 ₴" is two
+                                                    // figures asking to be compared
+                                                    // across an arrow. Unequal digit
+                                                    // widths are exactly what stops
+                                                    // that reading as a comparison.
+                                                    style = Tabular
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            amountLabel(pay.amount, pay.currency),
+                                            fontWeight = Type.strong,
+                                            style = Tabular
+                                        )
+                                        if (pay.currency == USD && rate.sell > 0) {
+                                            Text(
+                                                "≈ ${approxMoney(pay.amount * rate.sell)}",
+                                                color = TextSecondary,
+                                                fontSize = Type.captionSize,
+                                                style = Tabular
+                                            )
+                                        }
+                                    }
+                                    // One tap, on the row you are already looking at.
+                                    // Anywhere else and the record would be a screen
+                                    // you have to remember to visit, which is the same
+                                    // as not having one.
+                                    val done = isPaid(paid, pay.name, thisMonth)
+                                    // A real two-state mark, and the two states feel
+                                    // different: this is the one control in the app
+                                    // you use without looking, halfway through paying
+                                    // something on another screen, so the phone
+                                    // saying which way it went is the whole point.
+                                    IconButton({
+                                        touch.switched(!done)
+                                        setPaid(togglePaid(paid, pay, thisMonth))
+                                    }) {
+                                        Icon(
+                                            if (done) {
+                                                Icons.Default.CheckCircle
+                                            } else {
+                                                Icons.Default.RadioButtonUnchecked
+                                            },
+                                            if (done) {
+                                                "Скасувати позначку про оплату"
+                                            } else {
+                                                "Позначити оплаченим"
+                                            },
+                                            tint = if (done) Accent else TextDisabled
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // The annual blind spot, given a place to be visible from.
+            //
+            // A charge that happens once in twelve months is off the timeline for
+            // eleven of them, and until this section existed that meant off the
+            // screen entirely — the quietest way a subscription tracker can lie.
+            // They are listed at their real amounts on their real dates rather
+            // than averaged into the monthly total, because an averaged figure in
+            // the month the charge actually lands shows a month that fits when it
+            // does not.
+            val dormant = annualElsewhere(items, today)
+            if (dormant.isNotEmpty()) {
+                item(key = "annual-elsewhere") {
+                    Column(
+                        Modifier
+                            .padding(horizontal = Space.screen)
+                            .padding(top = Space.xl, bottom = Space.sm)
+                    ) {
+                        SectionTitle("Раз на рік")
+                        annualElsewhereNote(items, today, rate.sell)?.let { note ->
+                            Text(
+                                note,
+                                color = TextSecondary,
+                                fontSize = Type.captionSize,
+                                lineHeight = Type.captionLine
+                            )
+                        }
+                    }
+                }
+                items(dormant, key = { "annual-${it.name}-${it.billingMonth}-${it.day}" }) { pay ->
+                    Card(
+                        Modifier
+                            .padding(horizontal = Space.screen, vertical = Space.xs)
+                            .fillMaxWidth()
+                            .litEdge(Radius.md),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+                        shape = Radius.md
+                    ) {
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { editing = items.indexOf(pay) }
+                                .padding(Space.lg),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            IconChip(payIcon(pay.name))
+                            Spacer(Modifier.width(Space.md))
+                            Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                Text(
+                                    pay.name,
+                                    fontSize = Type.cardTitleSize,
+                                    fontWeight = Type.medium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    annualDueLine(pay, today),
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    // A stack of dates and amounts, one per row.
+                                    style = Tabular
+                                )
+                            }
+                            // The smoothed figure, and only ever here beside the
+                            // real one above it.
+                            Text(
+                                "≈${amountLabel(
+                                    kotlin.math.round(monthlyEquivalent(pay)),
+                                    pay.currency
+                                )}/міс",
+                                color = TextDisabled,
+                                fontSize = Type.captionSize,
+                                // Right-aligned against the row's edge, so unequal
+                                // digits would leave the column of them ragged.
+                                style = Tabular
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        CollapsingTitle("Постійні витрати", listState)
+    }
+    if (adding) AddPaymentSheet({ setAdding(false) }) {
+        save(items + it)
+        setAdding(false)
+    }
+    if (editingIncome) {
+        IncomeDialog(income, { editingIncome = false }) { value ->
+            income = value
+            store.saveIncome(value)
+            editingIncome = false
+        }
+    }
+    editing?.let { index ->
+        items.getOrNull(index)?.let { pay ->
+            EditPaymentSheet(
+                pay,
+                close = { editing = null },
+                delete = {
+                    onDelete(index)
+                    editing = null
+                }
+            ) { changed ->
+                save(items.mapIndexed { i, item -> if (i == index) changed else item })
+                editing = null
+            }
+        }
+    }
+}
+
+/** A recurring expense is recognised by its name, since that is all it carries. */
+fun payIcon(name: String) = when {
+    name.contains("Оренда", true) -> Icons.Default.Home
+    name.contains("Комун", true) -> Icons.Default.Bolt
+    name.contains("Інтернет", true) -> Icons.Default.Wifi
+    name.contains("Мобіл", true) -> Icons.Default.Smartphone
+    else -> Icons.Default.Autorenew
+}
+
+@Composable
+fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
+    // The chips fill the name in, they are not the name. Two subscriptions are
+    // rarely the same subscription, so the field is always present and always
+    // editable: tapping a chip simply types the word for you.
+    val presets = listOf("Оренда квартири", "Комуналка", "Інтернет", "Мобільний", "Підписка")
+    var name by remember { mutableStateOf(presets.first()) }
     var amount by remember { mutableStateOf("") }
     var day by remember { mutableStateOf("1") }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Нова постійна витрата") },
-        text = {
-            Column {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(types) { type -> FilterChip(selected == type, { selected = type }, { Text(type) }) }
-                }
-                if (selected == "Інше") OutlinedTextField(custom, { custom = it }, Modifier.fillMaxWidth(), label = { Text("Назва") })
-                NumberField("Сума, ₴", amount) { amount = it }
-                NumberField("День оплати", day) { day = it }
-            }
-        },
-        confirmButton = {
-            Button({
-                amount.replace(',', '.').toDoubleOrNull()?.let { value ->
-                    add(Pay(if (selected == "Інше") custom.ifBlank { "Інше" } else selected, value, day.toIntOrNull()?.coerceIn(1, 31) ?: 1))
-                }
-            }, enabled = amount.replace(',', '.').toDoubleOrNull() != null) { Text("Додати") }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
-}
-
-@Composable
-fun OrdersScreen(items: List<Order>, save: (List<Order>) -> Unit, context: Context) {
-    var adding by remember { mutableStateOf(false) }
-    LazyColumn(contentPadding = PaddingValues(bottom = 28.dp)) {
-        item {
-            ScreenHeader("ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам")
-            Column(Modifier.padding(horizontal = 20.dp)) {
-                Button({ adding = true }, Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp)) {
-                    Icon(Icons.Default.AddLink, null); Text(" Додати посилання")
-                }
-            }
-        }
-        if (items.isEmpty()) item { EmptyCard("Скопіюйте посилання на придбаний товар — назва, фото й ціна підтягнуться автоматично") }
-        items(items, key = { it.id }) { order ->
-            Card(Modifier.padding(horizontal = 12.dp, vertical = 6.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) {
-                Row(Modifier.padding(12.dp)) {
-                    AsyncImage(
-                        order.image, order.name,
-                        Modifier.size(92.dp).background(Color(0xff292a27), RoundedCornerShape(16.dp)),
-                        contentScale = ContentScale.Crop
+    var currency by remember { mutableStateOf(UAH) }
+    var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
+    var trialEnd by remember { mutableLongStateOf(0L) }
+    var billingMonth by remember { mutableIntStateOf(0) }
+    val today = remember { LocalDate.now() }
+    FormSheet(
+        title = "Нова постійна витрата",
+        confirmLabel = "Додати",
+        confirmEnabled = parseAmount(amount) > 0 && name.isNotBlank(),
+        onConfirm = {
+            parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                add(
+                    Pay(
+                        name.trim().ifBlank { "Інше" },
+                        value,
+                        day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+                        currency,
+                        warnDays,
+                        // The opening figure, dated. An expense whose history starts
+                        // here can later say when its old price started; one seeded
+                        // at the first edit instead can only say that it did.
+                        listOf(PricePoint(value, today.toEpochDay())),
+                        trialEnd,
+                        billingMonth
                     )
-                    Spacer(Modifier.width(14.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(order.status.uppercase(), color = Accent, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                        Text(order.name, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                        if (order.price > 0) Text(money(order.price), fontWeight = FontWeight.Black, fontSize = 19.sp)
-                    }
-                }
-                LazyRow(Modifier.padding(horizontal = 12.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(listOf("Замовлено", "В дорозі", "Отримано")) { status ->
-                        FilterChip(order.status == status, { save(items.map { if (it.id == order.id) it.copy(status = status) else it }) }, { Text(status, fontSize = 11.sp) })
-                    }
-                }
-                Row(Modifier.padding(horizontal = 10.dp)) {
-                    TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(order.url))) }) { Text("До магазину ↗") }
-                    Spacer(Modifier.weight(1f))
-                    IconButton({ save(items - order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
-                }
+                )
+            }
+        },
+        onDismiss = close
+    ) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+            items(presets) { preset ->
+                FilterChip(name == preset, { name = preset }, { Text(preset) })
             }
         }
-    }
-    if (adding) AddOrderDialog({ adding = false }) {
-        save(items + it)
-        adding = false
+        OutlinedTextField(
+            name,
+            { name = it },
+            Modifier.fillMaxWidth(),
+            label = { Text("Назва") },
+            singleLine = true
+        )
+        CurrencySegments(currency) { currency = it }
+        NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
+        BillingSegments(billingMonth, today) { billingMonth = it }
+        NumberField("День оплати", day) { day = it }
+        TrialField(trialEnd, today) { trialEnd = it }
+        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today, billingMonth)
+            ?.let { note ->
+            Text(
+                note,
+                Modifier.padding(top = Space.xs),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
+        WarnDaysChips(warnDays) { warnDays = it }
     }
 }
 
 @Composable
-fun AddOrderDialog(close: () -> Unit, add: (Order) -> Unit) {
+fun OrdersScreen(
+    items: List<Order>,
+    save: (List<Order>) -> Unit,
+    context: Context,
+    adding: Boolean,
+    setAdding: (Boolean) -> Unit,
+    /** Owned above this screen, which is where the undo and the bin live. */
+    onDelete: (Order) -> Unit
+) {
+    var tracking by remember { mutableStateOf<Order?>(null) }
+    var closing by remember { mutableStateOf<Order?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    // A closed purchase is history, not a parcel: it is not asked about again, and
+    // it does not sit in the list of things still on their way.
+    val open = items.filter { it.archivedDay == 0L }
+    val archived = items.filter { it.archivedDay > 0L }.sortedByDescending { it.archivedDay }
+    val trackable = open.count { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
+
+    fun checkAll() {
+        scope.launch {
+            checking = true
+            message = null
+            var moved = 0
+            val now = System.currentTimeMillis()
+            val fresh = items.map { order ->
+                if (order.archivedDay > 0L) return@map order
+                if (detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA) return@map order
+                val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                    ?: return@map order
+                if (status.stage.isNotBlank() && status.stage != order.status) moved++
+                applyStatus(order, status, now)
+            }
+            save(fresh)
+            checking = false
+            message = when {
+                trackable == 0 -> "Немає номерів Нової Пошти для перевірки"
+                moved > 0 -> "Оновлено, змінилось статусів: $moved"
+                else -> "Перевірено, змін немає"
+            }
+        }
+    }
+
+    // The same control in the large header and in the compact bar, so checking
+    // statuses does not become unreachable once you are down the list.
+    val checkAction: @Composable () -> Unit = {
+        IconButton(onClick = { checkAll() }, enabled = !checking && trackable > 0) {
+            if (checking) {
+                BusyMark()
+            } else {
+                Icon(Icons.Default.Sync, "Перевірити статуси", tint = TextSecondary)
+            }
+        }
+    }
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(
+            state = listState,
+            contentPadding = PaddingValues(bottom = navClearance() + Space.fabClearance)
+        ) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item {
+                ScreenHeader(
+                    "ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам",
+                    trailing = checkAction
+                )
+            }
+            message?.let { text ->
+                item {
+                    Text(
+                        text,
+                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize
+                    )
+                }
+            }
+            if (open.isEmpty() && archived.isEmpty()) {
+                item {
+                    Column(Modifier.padding(horizontal = Space.screen)) {
+                        EmptyInvite(
+                            "Посилок немає",
+                            "Додайте покупку з трек-номером Нової Пошти. Статус і залишок " +
+                                "безкоштовного зберігання підтягнуться самі."
+                        )
+                    }
+                }
+            }
+            items(open, key = { it.id }) { order ->
+                Card(
+                    Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
+                    shape = Radius.md
+                ) {
+                    Row(Modifier.padding(Space.lg)) {
+                        AsyncImage(
+                            order.image, order.name,
+                            Modifier.size(72.dp).background(SurfaceRaised, Radius.sm),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(Modifier.width(Space.md))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                order.status.uppercase(),
+                                color = Accent,
+                                fontSize = Type.overlineSize,
+                                fontWeight = Type.strong,
+                                letterSpacing = Type.overlineTracking
+                            )
+                            Spacer(Modifier.height(Space.xs))
+                            Text(
+                                order.name,
+                                fontSize = Type.cardTitleSize,
+                                lineHeight = Type.cardTitleLine,
+                                fontWeight = Type.medium,
+                                maxLines = 2
+                            )
+                            if (order.price > 0) {
+                                Text(
+                                    money(order.price),
+                                    fontWeight = Type.strong,
+                                    fontSize = Type.bodySize,
+                                    style = Tabular
+                                )
+                            }
+                            if (order.tracking.isNotBlank()) {
+                                Text(
+                                    "Трек: ${order.tracking}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            if (order.statusDetail.isNotBlank()) {
+                                Text(
+                                    order.statusDetail,
+                                    color = TextPrimary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                            if (order.problem) {
+                                Text(
+                                    "Потрібна увага: перевірте номер або статус у перевізника",
+                                    color = Negative,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                            if (order.paidStorageFrom > 0) {
+                                val left = freeStorageDaysLeft(
+                                    LocalDate.ofEpochDay(order.paidStorageFrom),
+                                    LocalDate.now()
+                                ) ?: 0
+                                val pressing = left <= 2
+                                Row(
+                                    Modifier.fillMaxWidth().padding(top = Space.sm),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "Безкоштовне зберігання",
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
+                                        DottedLeader(Modifier.fillMaxWidth())
+                                    }
+                                    Text(
+                                        if (left > 0) daysLabel(left) else "закінчилось",
+                                        color = if (pressing) Negative else Accent,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.strong
+                                    )
+                                }
+                                Text(
+                                    if (left > 0) {
+                                        "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}"
+                                    } else {
+                                        "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}, вже йде"
+                                    },
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                            if (order.scheduledDelivery > 0 && order.status != RECEIVED) {
+                                Text(
+                                    "Очікується ${formatDate(LocalDate.ofEpochDay(order.scheduledDelivery))}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            if (order.amountToPay > 0) {
+                                Text(
+                                    "До сплати при отриманні ${money(order.amountToPay)}",
+                                    color = TextPrimary,
+                                    fontSize = Type.captionSize
+                                )
+                            }
+                            if (order.checkedAt > 0) {
+                                Text(
+                                    "перевірено ${timeLabel(order.checkedAt)}",
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize
+                                )
+                            } else if (order.tracking.isNotBlank() &&
+                                detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA
+                            ) {
+                                Text(
+                                    "Автоперевірка працює для номерів Нової Пошти",
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                        }
+                    }
+                    StageRail(
+                        stages = PARCEL_STAGES,
+                        current = order.status,
+                        modifier = Modifier.padding(horizontal = Space.lg)
+                    ) { status ->
+                        save(items.map { if (it.id == order.id) it.copy(status = status) else it })
+                    }
+                    // The parcel is in your hands, so the only thing left to do with
+                    // it is close it. Offered here rather than on a menu, because a
+                    // purchase nobody closes is a purchase nobody can learn from.
+                    if (order.status == RECEIVED) {
+                        // Outlined, not filled: the lime on this screen is already
+                        // spent on the action button, and two lime surfaces on one
+                        // screen means neither is the subject.
+                        OutlinedButton(
+                            { closing = order },
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = Space.lg)
+                                .padding(top = Space.sm),
+                            shape = Radius.sm,
+                            border = BorderStroke(1.dp, Accent),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
+                        ) {
+                            Icon(Icons.Default.TaskAlt, null)
+                            Text("  Завершити покупку")
+                        }
+                    }
+                    // Left aligned for the same reason as the wish card: the floating
+                    // action button sits over the bottom right corner.
+                    Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                        TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) {
+                            Text("До магазину ↗")
+                        }
+                        IconButton({ tracking = order }) { Icon(Icons.Default.Edit, "Трек-номер") }
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                                    message = if (status == null) {
+                                        "Не вдалося отримати статус"
+                                    } else {
+                                        save(
+                                            items.map {
+                                                if (it.id == order.id) {
+                                                    applyStatus(it, status, System.currentTimeMillis())
+                                                } else {
+                                                    it
+                                                }
+                                            }
+                                        )
+                                        status.text
+                                    }
+                                }
+                            },
+                            enabled = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
+                        ) { Icon(Icons.Default.Sync, "Перевірити статус") }
+                        IconButton({ onDelete(order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
+                        Spacer(Modifier.weight(1f))
+                    }
+                }
+            }
+            if (archived.isNotEmpty()) {
+                item {
+                    SectionTitle("Архів покупок")
+                    Text(
+                        // The only line in the app that answers whether watching
+                        // prices was worth doing, so it goes above the evidence.
+                        purchaseTallyLine(
+                            purchaseTally(
+                                archived.map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
+                            )
+                        ),
+                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                }
+                items(archived, key = { "archived-${it.id}" }) { order ->
+                    ArchivedPurchase(
+                        order = order,
+                        onEdit = { closing = order },
+                        // Through the bin like every other deletion: a finished
+                        // purchase is the one record in the app that cannot be
+                        // rebuilt, because the price it is judged against was only
+                        // ever observed while the thing was still a wish.
+                        onDelete = { onDelete(order) }
+                    )
+                }
+            }
+        }
+        CollapsingTitle("Мої покупки", listState, trailing = checkAction)
+    }
+    closing?.let { selected ->
+        CloseOrderSheet(selected, { closing = null }) { closed ->
+            save(items.map { if (it.id == closed.id) closed else it })
+            closing = null
+        }
+    }
+    if (adding) AddOrderSheet({ setAdding(false) }) {
+        save(items + it)
+        setAdding(false)
+    }
+    tracking?.let { selected ->
+        TrackingDialog(selected, { tracking = null }) { number ->
+            save(items.map { if (it.id == selected.id) it.copy(tracking = number) else it })
+            tracking = null
+        }
+    }
+}
+
+/**
+ * A finished purchase, with the one thing it can still teach.
+ *
+ * No photograph and no stage rail: this thing is not going anywhere, and the card
+ * exists for the verdict rather than for the object. The chip carries the verdict
+ * in the same shapes the wishlist uses for its buy advice, so a purchase filed as
+ * "ти поспішив" looks like the "дорого зараз" it was bought at.
+ */
+@Composable
+fun ArchivedPurchase(order: Order, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val review = purchaseReview(order.paid, order.lowestSeen, order.uses)
+    Card(
+        Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth().litEdge(Radius.md),
+        colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+        shape = Radius.md
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    order.name,
+                    Modifier.weight(1f),
+                    fontSize = Type.cardTitleSize,
+                    lineHeight = Type.cardTitleLine,
+                    fontWeight = Type.medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(Space.md))
+                VerdictChip(
+                    purchaseVerdictLabel(review.verdict),
+                    icon = Icons.Default.TaskAlt,
+                    tint = verdictInk(review.verdict),
+                    corners = purchaseVerdictCorners(review.verdict)
+                )
+            }
+            Text(
+                purchaseVerdictDetail(review),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+            costPerUseLine(review)?.let {
+                Row(
+                    Modifier.fillMaxWidth().padding(top = Space.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Виходить", color = TextSecondary, fontSize = Type.captionSize)
+                    Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
+                        DottedLeader(Modifier.fillMaxWidth())
+                    }
+                    Text(it, color = TextPrimary, fontSize = Type.captionSize, fontWeight = Type.strong)
+                }
+            }
+            Text(
+                "у архіві з ${formatDate(LocalDate.ofEpochDay(order.archivedDay))}",
+                color = TextDisabled,
+                fontSize = Type.captionSize,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+            Row(Modifier.padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onEdit) {
+                    Text(if (order.uses > 0) "Оновити користування" else "Порахувати користування")
+                }
+                Spacer(Modifier.weight(1f))
+                IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити з архіву") }
+            }
+        }
+    }
+}
+
+@Composable
+fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
     var link by remember { mutableStateOf("") }
+    var trackingNumber by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Додати покупку") },
-        text = {
-            Column {
-                Text("Вставте посилання на сторінку придбаного товару.")
-                OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = 12.dp), label = { Text("Посилання") })
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 8.dp)) }
+    FormSheet(
+        title = "Додати покупку",
+        confirmLabel = if (loading) "Зчитую…" else "Додати",
+        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        onConfirm = {
+            scope.launch {
+                loading = true
+                error = null
+                runCatching {
+                    readForAdd(
+                        pricedPageHtml(link),
+                        link.trim(),
+                        System.currentTimeMillis().toString()
+                    )
+                }
+                    .onSuccess { read ->
+                        // A purchase is a record of a thing you already own, so a
+                        // page that names it without pricing it is still worth
+                        // everything: the price of an order is typed on the card
+                        // anyway, because what you paid is rarely what the page
+                        // asks today.
+                        val item = when (read) {
+                            is PageAdd.Priced -> read.wish
+                            is PageAdd.Described -> read.wish
+                            PageAdd.Blank -> null
+                        }
+                        if (item == null) {
+                            error = NOTHING_READ_NOTE
+                        } else {
+                            add(
+                                Order(
+                                    item.id, item.name, item.url, "Замовлено",
+                                    tracking = trackingNumber.trim(),
+                                    image = item.image,
+                                    price = item.price
+                                )
+                            )
+                        }
+                    }
+                    .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
+                loading = false
             }
         },
-        confirmButton = {
-            Button({
-                scope.launch {
-                    loading = true
-                    error = null
-                    runCatching { product(link) }
-                        .onSuccess { item ->
-                            add(Order(item.id, item.name, item.url, "Замовлено", image = item.image, price = item.price))
-                        }
-                        .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
-                    loading = false
-                }
-            }, enabled = link.startsWith("http") && !loading) { Text(if (loading) "Зчитую…" else "Додати") }
-        },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
+        onDismiss = close
+    ) {
+        Text("Вставте посилання на сторінку придбаного товару.")
+        OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Посилання") })
+        OutlinedTextField(
+            trackingNumber,
+            { trackingNumber = it },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Трек-номер, якщо вже є") },
+            singleLine = true
+        )
+        error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
+    }
 }
 
 @Composable
-fun SettingsScreen(store: Store, onImported: () -> Unit) {
+fun SettingsScreen(
+    /** The month that has ended, already built. Null when there is none worth showing. */
+    recap: Recap?,
+    onOpenRecap: () -> Unit,
+    summary: Overview,
+    store: Store,
+    /** Newest first, as far back as the record goes. */
+    months: List<MonthRecord>,
+    /** The standing expenses, so a month that was missed can still be filled in. */
+    pays: List<Pay>,
+    paid: List<PaidMark>,
+    onTogglePaid: (Pay, String) -> Unit,
+    bin: List<BinEntry>,
+    onRestore: (String) -> Unit,
+    onDropFromBin: (String) -> Unit,
+    onEmptyBin: () -> Unit,
+    onImported: () -> Unit
+) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
     var available by remember { mutableStateOf<UpdateInfo?>(null) }
     val scope = rememberCoroutineScope()
+    val today = remember { LocalDate.now().toEpochDay() }
+    // Which month is open for correction. One at a time, because the point is to
+    // fix the month you noticed, not to audit the year.
+    var openMonth by remember { mutableStateOf<String?>(null) }
+
+    // The folder and the timestamp are read into state so that picking a folder or
+    // running a copy updates the row, rather than leaving it describing the state
+    // the screen opened in.
+    var backupFolder by remember { mutableStateOf(store.backupFolder()) }
+    var lastBackup by remember { mutableLongStateOf(store.lastBackupAt()) }
+    var backingUp by remember { mutableStateOf(false) }
+    var exportingCsv by remember { mutableStateOf(false) }
+    val thisYear = remember { LocalDate.now().year }
+    val backupPermitted = remember(backupFolder, lastBackup) {
+        holdsBackupPermission(context, backupFolder)
+    }
+    val backup = backupState(backupFolder, backupPermitted)
+    val pickFolder = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            // Without the persistable grant the folder works until the phone is
+            // restarted and then silently stops, which is worse than refusing it.
+            if (takeBackupFolder(context, uri)) {
+                store.saveBackupFolder(uri.toString())
+                backupFolder = uri.toString()
+                scope.launch {
+                    backingUp = true
+                    // The first copy is written straight away: a backup you have to
+                    // wait a week to see is a backup you do not believe in.
+                    message = if (backupNow(context, store)) {
+                        lastBackup = store.lastBackupAt()
+                        "Копію створено"
+                    } else {
+                        "Тека вибрана, але записати не вдалося"
+                    }
+                    backingUp = false
+                }
+            } else {
+                message = "Android не дав постійний доступ до цієї теки"
+            }
+        }
+    }
     val export = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         if (uri != null) runCatching {
             context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(store.exportJson()) }
@@ -737,54 +5549,618 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
             store.importJson(text)
         }.onSuccess { onImported(); message = "Дані відновлено" }.onFailure { message = "Файл FlowPay пошкоджений" }
     }
-    LazyColumn {
-        item {
-            ScreenHeader("FLOWPAY", "Налаштування")
-            ListItem(leadingContent = { Icon(Icons.Default.Sync, null) }, headlineContent = { Text("Фонове оновлення") }, supportingContent = { Text("Кожні 12 годин, коли є інтернет") })
-            ListItem(leadingContent = { Icon(Icons.Default.NotificationsNone, null) }, headlineContent = { Text("Сповіщення") }, supportingContent = { Text("Про падіння та досягнення цільової ціни") })
-            ListItem(leadingContent = { Icon(Icons.Default.Security, null) }, headlineContent = { Text("Приватність") }, supportingContent = { Text("Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK.") })
-            HorizontalDivider()
-            ListItem(
-                modifier = Modifier.padding(top = 8.dp),
-                leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
-                headlineContent = { Text("Оновлення FlowPay", fontWeight = FontWeight.Bold) },
-                supportingContent = { Text("Встановлено: ${BuildConfig.VERSION_NAME}") },
-                trailingContent = {
-                    FilledTonalButton(
-                        onClick = {
-                            scope.launch {
-                                checking = true
-                                message = null
-                                val latest = runCatching { latestUpdate() }.getOrNull()
-                                if (latest != null && latest.versionCode > BuildConfig.VERSION_CODE) {
-                                    available = latest
-                                } else {
-                                    message = if (latest == null) "Release ще не опублікований" else "У вас остання версія"
-                                }
-                                checking = false
+    val listState = rememberLazyListState()
+    Box {
+        LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
+            // Item zero is the header alone: that is the block the compact bar watches.
+            item { ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається") }
+            // Waiting, not interrupting. It sits above the figures because it is
+            // the one thing on this screen that is only here this month.
+            recap?.let { deck ->
+                item(key = "recap-${deck.month}") {
+                    RecapInvite(
+                        deck,
+                        Modifier
+                            .padding(horizontal = Space.screen)
+                            .padding(bottom = Space.lg),
+                        onOpen = onOpenRecap
+                    )
+                }
+            }
+            item {
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    // The one loud block on this screen, with the ring reading the same
+                    // number a second way.
+                    HeroPanel(
+                        label = "Відкладено на бажання",
+                        value = money(summary.savedTotal),
+                        caption = buildList {
+                            if (summary.wishTotal > 0) {
+                                add("з ${money(summary.wishTotal)} на ${summary.wishCount} позицій")
                             }
-                        },
-                        enabled = !checking
+                            if (summary.readyCount > 0) add("готових ${summary.readyCount}")
+                            summary.monthsToFundAll?.takeIf { it > 0 }?.let {
+                                add("все разом ${monthsLabel(it)}")
+                            }
+                        }.joinToString(" · ").ifBlank { null },
+                        muted = summary.savedTotal <= 0,
+                        trailing = if (summary.wishTotal > 0) {
+                            {
+                                ProgressRing(summary.savedProgress, diameter = 84.dp, stroke = 9.dp) {
+                                    Text(
+                                        "${(summary.savedProgress * 100).toInt()}%",
+                                        color = AccentInk,
+                                        fontSize = Type.captionSize,
+                                        fontWeight = Type.strong
+                                    )
+                                }
+                            }
+                        } else {
+                            null
+                        }
+                    )
+
+                    if (summary.plansConflict) {
+                        Spacer(Modifier.height(Space.md))
+                        Card(
+                            Modifier.fillMaxWidth().litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+                            shape = Radius.md
+                        ) {
+                            Column(Modifier.padding(Space.lg)) {
+                                Text(
+                                    "Плани не сходяться",
+                                    color = Negative,
+                                    fontSize = Type.cardTitleSize,
+                                    fontWeight = Type.medium
+                                )
+                                Text(
+                                    "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
+                                        "а вільно ${money(summary.freeCash)}. " +
+                                        "Не вистачає ${money(summary.plansOverBudget)}.",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                            }
+                        }
+                    }
+
+                    val moved = summary.movement
+                    if (moved.tracked > 0) {
+                        Spacer(Modifier.height(Space.md))
+                        Card(
+                            Modifier.fillMaxWidth().litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Column(Modifier.padding(Space.lg)) {
+                                Text(
+                                    when {
+                                        moved.change < 0 -> "Список подешевшав"
+                                        moved.change > 0 -> "Список подорожчав"
+                                        else -> "Ціни стоять на місці"
+                                    },
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize
+                                )
+                                Spacer(Modifier.height(Space.xs))
+                                Text(
+                                    if (moved.change == 0.0) {
+                                        money(0.0)
+                                    } else {
+                                        "${money(kotlin.math.abs(moved.change))} · " +
+                                            signedPercent(moved.changePercent)
+                                    },
+                                    fontSize = Type.sectionSize,
+                                    lineHeight = Type.sectionLine,
+                                    fontWeight = Type.strong,
+                                    color = when {
+                                        moved.change < 0 -> Accent
+                                        moved.change > 0 -> Negative
+                                        else -> TextPrimary
+                                    },
+                                    style = Tabular
+                                )
+                                Text(
+                                    "від ${money(moved.firstTotal)} за весь час спостереження · " +
+                                        positionsLabel(moved.tracked),
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                                Spacer(Modifier.height(Space.sm))
+                                LeaderRow("Подешевшало", moved.cheaper.toString())
+                                LeaderRow(
+                                    "Подорожчало",
+                                    moved.dearer.toString(),
+                                    alarm = moved.dearer > 0
+                                )
+                                LeaderRow("Без змін", moved.steady.toString())
+
+                                // Named separately rather than as leader rows: a product
+                                // name is long enough to squeeze the figure off the line.
+                                moved.biggestDropName?.let { name ->
+                                    Spacer(Modifier.height(Space.sm))
+                                    Text(
+                                        "Найбільше подешевшало",
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            name,
+                                            fontSize = Type.captionSize,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f).padding(end = Space.sm)
+                                        )
+                                        Text(
+                                            signedPercent(moved.biggestDropPercent),
+                                            color = Accent,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                }
+                                moved.biggestRiseName?.let { name ->
+                                    Spacer(Modifier.height(Space.sm))
+                                    Text(
+                                        "Найбільше подорожчало",
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize
+                                    )
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            name,
+                                            fontSize = Type.captionSize,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f).padding(end = Space.sm)
+                                        )
+                                        Text(
+                                            signedPercent(moved.biggestRisePercent),
+                                            color = Negative,
+                                            fontSize = Type.captionSize,
+                                            fontWeight = Type.strong
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(Modifier.height(Space.md))
+                    // Three figures and their targets in the height one card used to take,
+                    // with the rings restating them. This density is what the reference
+                    // gets right and a column of single-figure cards does not.
+                    StatStrip(
+                        columns = listOf(
+                            StatColumn(
+                                Icons.Default.ReceiptLong,
+                                "Витрати за місяць",
+                                money(summary.monthlyExpenses),
+                                summary.income.takeIf { it > 0 }?.let { money(it) }
+                            ),
+                            StatColumn(
+                                Icons.Default.Savings,
+                                if (summary.overspent) "Не сходиться" else "Вільно",
+                                if (summary.budgetUnknown) "—" else money(summary.freeCash)
+                            ),
+                            StatColumn(
+                                Icons.Default.Flag,
+                                "Плани на місяць",
+                                money(summary.plannedMonthly),
+                                summary.freeCash.takeIf { !summary.budgetUnknown && it > 0 }
+                                    ?.let { money(it) }
+                            )
+                        ),
+                        rings = listOf(
+                            summary.savedProgress,
+                            if (summary.income > 0) {
+                                (summary.monthlyExpenses / summary.income).toFloat().coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            },
+                            if (summary.freeCash > 0) {
+                                (summary.plannedMonthly / summary.freeCash).toFloat().coerceIn(0f, 1f)
+                            } else {
+                                0f
+                            }
+                        )
+                    )
+
+                    Spacer(Modifier.height(Space.lg))
+                    Card(
+                        Modifier.fillMaxWidth().litEdge(Radius.lg),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                        shape = Radius.lg
                     ) {
-                        if (checking) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text("Перевірити")
+                        Column(Modifier.padding(Space.lg)) {
+                            LeaderRow("Бажань у списку", summary.wishCount.toString())
+                            LeaderRow("Повністю накопичено", summary.readyCount.toString())
+                            LeaderRow("Посилок у дорозі", summary.parcelsMoving.toString())
+                            LeaderRow(
+                                "Чекають на відділенні",
+                                summary.parcelsAtBranch.toString(),
+                                alarm = summary.parcelsAtBranch > 0
+                            )
+                            LeaderRow("Покупок закрито", summary.parcelsDone.toString())
+                        }
                     }
                 }
-            )
-            ListItem(
-                leadingContent = { Icon(Icons.Default.UploadFile, null) },
-                headlineContent = { Text("Створити резервну копію") },
-                supportingContent = { Text("Вішліст, платежі та замовлення у JSON") },
-                trailingContent = { IconButton({ export.launch("flowpay-backup.json") }) { Icon(Icons.Default.ChevronRight, null) } }
-            )
-            ListItem(
-                leadingContent = { Icon(Icons.Default.Download, null) },
-                headlineContent = { Text("Відновити з файлу") },
-                supportingContent = { Text("Замінить дані на телефоні даними з копії") },
-                trailingContent = { IconButton({ import.launch(arrayOf("application/json", "text/plain")) }) { Icon(Icons.Default.ChevronRight, null) } }
-            )
-            message?.let { Text(it, Modifier.padding(20.dp), color = Accent) }
+
+                // What was planned is everywhere in this app; what was paid was
+                // nowhere. The months read back newest first, because the question
+                // is almost always about the one that just ended.
+                SectionTitle("Що вже сплачено")
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    // Said once, while there is nothing to read yet. The months
+                    // below still draw, because the current one showing nought
+                    // paid out of what is due is the thing being explained.
+                    if (months.all { it.paidCount == 0 }) {
+                        EmptyInvite(
+                            "Ще нічого не позначено",
+                            "Позначайте платежі оплаченими на вкладці «Платежі» — тут буде " +
+                                "видно, скільки насправді пішло щомісяця."
+                        )
+                        Spacer(Modifier.height(Space.md))
+                    }
+                    months.forEach { record ->
+                        val open = openMonth == record.month
+                        Card(
+                            Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Column(
+                                Modifier
+                                    // A month reported as unpaid with no way to correct
+                                    // it is an accusation you cannot answer. Opening the
+                                    // row is how a month you forgot to mark gets marked.
+                                    .clickable(enabled = pays.isNotEmpty()) {
+                                        openMonth = if (open) null else record.month
+                                    }
+                                    .padding(Space.lg)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        record.title,
+                                        fontSize = Type.cardTitleSize,
+                                        fontWeight = Type.medium,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    if (pays.isNotEmpty()) {
+                                        Icon(
+                                            if (open) {
+                                                Icons.Default.ExpandLess
+                                            } else {
+                                                Icons.Default.ExpandMore
+                                            },
+                                            if (open) "Згорнути місяць" else "Позначити платежі",
+                                            tint = TextSecondary
+                                        )
+                                    }
+                                }
+                                Text(
+                                    monthRecordLine(record),
+                                    // A month that ended with nothing marked is not a
+                                    // month with nothing to pay, and the difference is
+                                    // worth a colour rather than only a wording.
+                                    color = when (record.state) {
+                                        MonthState.UNRECORDED -> Negative
+                                        MonthState.NOTHING_DUE -> TextDisabled
+                                        else -> TextPrimary
+                                    },
+                                    fontSize = Type.bodySize,
+                                    lineHeight = Type.bodyLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                                monthRecordDetail(record).takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        it,
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine
+                                    )
+                                }
+                                if (record.gap > 0.0 && record.state != MonthState.NOTHING_DUE) {
+                                    Spacer(Modifier.height(Space.sm))
+                                    LeaderRow(
+                                        "Різниця з планом",
+                                        money(record.gap),
+                                        alarm = record.state != MonthState.RUNNING
+                                    )
+                                }
+                                if (open) {
+                                    HorizontalDivider(
+                                        color = HairLine,
+                                        modifier = Modifier.padding(vertical = Space.md)
+                                    )
+                                    pays.forEach { pay ->
+                                        val done = isPaid(paid, pay.name, record.month)
+                                        Row(
+                                            Modifier
+                                                .fillMaxWidth()
+                                                .clickable { onTogglePaid(pay, record.month) }
+                                                .padding(vertical = Space.xs),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                if (done) {
+                                                    Icons.Default.CheckCircle
+                                                } else {
+                                                    Icons.Default.RadioButtonUnchecked
+                                                },
+                                                if (done) {
+                                                    "Скасувати позначку про оплату"
+                                                } else {
+                                                    "Позначити оплаченим"
+                                                },
+                                                tint = if (done) Accent else TextDisabled
+                                            )
+                                            Spacer(Modifier.width(Space.md))
+                                            Text(
+                                                pay.name,
+                                                Modifier.weight(1f).padding(end = Space.sm),
+                                                color = if (done) TextPrimary else TextSecondary,
+                                                fontSize = Type.bodySize,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                amountLabel(pay.amount, pay.currency),
+                                                color = if (done) TextPrimary else TextSecondary,
+                                                fontSize = Type.bodySize,
+                                                fontWeight = Type.medium,
+                                                style = Tabular
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SectionTitle("Кошик")
+                Column(Modifier.padding(horizontal = Space.screen)) {
+                    Text(
+                        binSummary(bin),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(bottom = Space.sm)
+                    )
+                    sortedBin(bin).forEach { entry ->
+                        Card(
+                            Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Row(
+                                Modifier.padding(Space.lg),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                    Text(
+                                        binKindLabel(entry.kind).uppercase(),
+                                        color = Accent,
+                                        fontSize = Type.overlineSize,
+                                        fontWeight = Type.strong,
+                                        letterSpacing = Type.overlineTracking
+                                    )
+                                    Spacer(Modifier.height(Space.xs))
+                                    Text(
+                                        entry.title,
+                                        fontSize = Type.cardTitleSize,
+                                        fontWeight = Type.medium,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    listOfNotNull(
+                                        entry.detail.takeIf { it.isNotBlank() },
+                                        binLeftLabel(entry, today)
+                                    ).joinToString(" · ").let {
+                                        Text(
+                                            it,
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize,
+                                            lineHeight = Type.captionLine
+                                        )
+                                    }
+                                }
+                                TextButton({ onRestore(entry.id) }) { Text("Повернути") }
+                                IconButton({ onDropFromBin(entry.id) }) {
+                                    Icon(
+                                        Icons.Default.DeleteForever,
+                                        "Видалити назавжди",
+                                        tint = TextSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    if (bin.isNotEmpty()) {
+                        TextButton({ onEmptyBin() }) {
+                            Text("Очистити кошик", color = Negative)
+                        }
+                    }
+                }
+
+                SectionTitle("Налаштування")
+                // Filled list items painted a large lighter block across the screen and
+                // left a hard seam under the header. They sit on the page instead.
+                SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин перевіряються ціни та статуси посилок")
+                SettingsRow(
+                    Icons.Default.NotificationsNone,
+                    "Сповіщення",
+                    "Про падіння ціни, досягнення цілі та рух посилки. Ціни й доставка мають окремі канали."
+                )
+                SettingsRow(
+                    Icons.Default.Security,
+                    "Приватність",
+                    "Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK."
+                )
+                HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
+                ListItem(
+                    modifier = Modifier.padding(top = Space.sm),
+                    leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
+                    headlineContent = { Text("Оновлення FlowPay", fontWeight = FontWeight.Bold) },
+                    supportingContent = { Text("Встановлено: ${BuildConfig.VERSION_NAME}") },
+                    trailingContent = {
+                        OutlinedButton(
+                            shape = Radius.sm,
+                            border = BorderStroke(1.dp, HairLine),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                            onClick = {
+                                scope.launch {
+                                    checking = true
+                                    message = null
+                                    val latest = runCatching { latestUpdate() }.getOrNull()
+                                    if (latest != null && latest.versionCode > BuildConfig.VERSION_CODE) {
+                                        available = latest
+                                    } else {
+                                        message = if (latest == null) "Release ще не опублікований" else "У вас остання версія"
+                                    }
+                                    checking = false
+                                }
+                            },
+                            enabled = !checking
+                        ) {
+                            if (checking) BusyMark()
+                            else Text("Перевірити")
+                        }
+                    }
+                )
+                // The manual export below only helps the person who remembers to
+                // press it. The loss this guards against is a phone left in a taxi,
+                // and nobody exports on the morning of that.
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            Icons.Default.FolderOpen,
+                            null,
+                            tint = if (backup == BackupState.FOLDER_LOST) Negative else Accent
+                        )
+                    },
+                    headlineContent = { Text("Автоматична копія", fontWeight = FontWeight.Bold) },
+                    supportingContent = {
+                        Column {
+                            Text(
+                                backupStatusLine(backup, lastBackup),
+                                color = if (backup == BackupState.FOLDER_LOST) {
+                                    Negative
+                                } else {
+                                    TextSecondary
+                                }
+                            )
+                            if (backup == BackupState.READY) {
+                                Text(backupKeepLine(), color = TextDisabled)
+                            }
+                        }
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (backup == BackupState.READY) {
+                                IconButton(
+                                    onClick = {
+                                        scope.launch {
+                                            backingUp = true
+                                            message = if (backupNow(context, store)) {
+                                                lastBackup = store.lastBackupAt()
+                                                "Копію створено"
+                                            } else {
+                                                "Не вдалося записати у теку"
+                                            }
+                                            backingUp = false
+                                        }
+                                    },
+                                    enabled = !backingUp
+                                ) {
+                                    if (backingUp) {
+                                        BusyMark()
+                                    } else {
+                                        Icon(Icons.Default.Sync, "Створити копію зараз", tint = Accent)
+                                    }
+                                }
+                            }
+                            OutlinedButton(
+                                shape = Radius.sm,
+                                border = BorderStroke(1.dp, HairLine),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                onClick = { pickFolder.launch(null) },
+                                enabled = !backingUp
+                            ) {
+                                Text(if (backup == BackupState.OFF) "Вибрати теку" else "Змінити")
+                            }
+                        }
+                    }
+                )
+                // Written into the folder the weekly copy already uses, so the
+                // spreadsheet lands beside the backups instead of asking for a
+                // second folder the user would have to remember choosing.
+                ListItem(
+                    leadingContent = {
+                        Icon(
+                            Icons.Default.TableChart,
+                            null,
+                            tint = if (backup == BackupState.READY) Accent else TextDisabled
+                        )
+                    },
+                    headlineContent = { Text("Витрати за $thisYear рік", fontWeight = FontWeight.Bold) },
+                    supportingContent = {
+                        Text(
+                            if (backup == BackupState.READY) {
+                                "Сплачене, підписки та закриті покупки — таблиця для Excel"
+                            } else {
+                                "Спершу виберіть теку для копій — таблиця ляже туди ж"
+                            }
+                        )
+                    },
+                    trailingContent = {
+                        IconButton(
+                            onClick = {
+                                scope.launch {
+                                    exportingCsv = true
+                                    val done = exportExpensesNow(context, store)
+                                    message = when {
+                                        done.name != null ->
+                                            "Збережено ${done.name} · ${done.rows} рядків"
+                                        done.rows == 0 ->
+                                            "За $thisYear рік ще нічого не записано"
+                                        else -> "Не вдалося записати таблицю у теку"
+                                    }
+                                    exportingCsv = false
+                                }
+                            },
+                            enabled = backup == BackupState.READY && !exportingCsv
+                        ) {
+                            if (exportingCsv) {
+                                BusyMark()
+                            } else {
+                                Icon(Icons.Default.ChevronRight, "Зберегти таблицю")
+                            }
+                        }
+                    }
+                )
+                ListItem(
+                    leadingContent = { Icon(Icons.Default.UploadFile, null) },
+                    headlineContent = { Text("Створити резервну копію") },
+                    supportingContent = { Text("Вішліст, платежі та замовлення у JSON") },
+                    trailingContent = { IconButton({ export.launch("flowpay-backup.json") }) { Icon(Icons.Default.ChevronRight, null) } }
+                )
+                ListItem(
+                    leadingContent = { Icon(Icons.Default.Download, null) },
+                    headlineContent = { Text("Відновити з файлу") },
+                    supportingContent = { Text("Замінить дані на телефоні даними з копії") },
+                    trailingContent = { IconButton({ import.launch(arrayOf("application/json", "text/plain")) }) { Icon(Icons.Default.ChevronRight, null) } }
+                )
+                message?.let { Text(it, Modifier.padding(Space.screen), color = Accent) }
+            }
         }
+        CollapsingTitle("Огляд", listState)
     }
     available?.let { update ->
         AlertDialog(
@@ -802,19 +6178,539 @@ fun SettingsScreen(store: Store, onImported: () -> Unit) {
     }
 }
 
+/**
+ * One line of the settings page. Painted on the page rather than on its own filled
+ * surface, so the screen stays one colour instead of showing a lighter slab.
+ */
 @Composable
-fun NumberField(label: String, value: String, set: (String) -> Unit) = OutlinedTextField(
-    value, set, Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text(label) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
-)
-
-@Composable
-fun SummaryCard(label: String, value: String, color: Color) {
-    Card(Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = Color(0xff242520)), shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.padding(18.dp)) { Text(label, color = Color.Gray); Text(value, fontSize = 28.sp, fontWeight = FontWeight.Black, color = color) }
+fun SettingsRow(icon: ImageVector, title: String, detail: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = Space.screen, vertical = Space.md),
+        verticalAlignment = Alignment.Top
+    ) {
+        Icon(icon, null, tint = TextSecondary)
+        Spacer(Modifier.width(Space.lg))
+        Column {
+            Text(title, fontSize = Type.cardTitleSize, fontWeight = Type.medium)
+            Text(
+                detail,
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
     }
 }
 
+/**
+ * Corrects an existing recurring expense, so a typo no longer means delete and retype.
+ *
+ * The name is editable here too. It used to be the dialog's title and nothing
+ * more, which left a misspelled subscription misspelled for good.
+ */
 @Composable
-fun EmptyCard(text: String) {
-    Card(Modifier.padding(20.dp).fillMaxWidth(), shape = RoundedCornerShape(22.dp)) { Text(text, Modifier.padding(24.dp), color = Color.Gray) }
+fun EditPaymentSheet(
+    pay: Pay,
+    close: () -> Unit,
+    delete: () -> Unit,
+    save: (Pay) -> Unit
+) {
+    // A correction landing is worth feeling; opening the form to make one is not.
+    val touch = rememberTouch()
+    var name by remember { mutableStateOf(pay.name) }
+    var amount by remember { mutableStateOf(amountText(pay.amount)) }
+    var day by remember { mutableStateOf(pay.day.toString()) }
+    var currency by remember { mutableStateOf(pay.currency) }
+    var warnDays by remember { mutableIntStateOf(pay.warnDays) }
+    var trialEnd by remember { mutableLongStateOf(pay.trialEnd) }
+    var billingMonth by remember { mutableIntStateOf(pay.billingMonth) }
+    val today = remember { LocalDate.now() }
+    FormSheet(
+        title = "Змінити витрату",
+        confirmLabel = "Зберегти",
+        confirmEnabled = parseAmount(amount) > 0 && name.isNotBlank(),
+        onConfirm = {
+            parseAmount(amount).takeIf { it > 0 }?.let { value ->
+                touch.landed()
+                save(
+                    // The amount and the currency go through [edited] rather than
+                    // straight into the copy: this is the one moment the app can
+                    // learn that a subscription has raised its price, and writing
+                    // the new figure over the old one is how that moment was lost.
+                    edited(pay, value, currency, today.toEpochDay()).copy(
+                        name = name.trim().ifBlank { pay.name },
+                        day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+                        warnDays = warnDays,
+                        trialEnd = trialEnd,
+                        billingMonth = billingMonth
+                    )
+                )
+            }
+        },
+        onDismiss = close
+    ) {
+        OutlinedTextField(
+            name,
+            { name = it },
+            Modifier.fillMaxWidth(),
+            label = { Text("Назва") },
+            singleLine = true
+        )
+        CurrencySegments(currency) { currency = it }
+        NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
+        // The last move, directly under the field showing today's figure. This is
+        // the whole point of keeping a history: a subscription raises its price
+        // quietly, and the only defence is the old number sitting beside the new.
+        amountHistoryNote(pay)?.let { note ->
+            Text(
+                note,
+                Modifier.padding(top = Space.xs),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
+        BillingSegments(billingMonth, today) { billingMonth = it }
+        NumberField("День оплати", day) { day = it }
+        TrialField(trialEnd, today) { trialEnd = it }
+        // The reminder counts to this date, not to the free renewal before it.
+        firstChargeNote(
+            day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+            trialEnd,
+            today,
+            billingMonth
+        )
+            ?.let { note ->
+                Text(
+                    note,
+                    Modifier.padding(top = Space.xs),
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+            }
+        WarnDaysChips(warnDays) { warnDays = it }
+        val trail = amountTrailLines(pay)
+        if (trail.isNotEmpty()) {
+            Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
+                Text("Історія суми", color = TextSecondary, fontSize = Type.captionSize)
+                trail.forEach { line ->
+                    Text(
+                        line,
+                        Modifier.padding(top = Space.xs),
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                }
+            }
+        }
+        // Deleting used to sit on the row itself, a thumb's width from the tap
+        // that opens this form, and it asked nothing before erasing.
+        Spacer(Modifier.height(Space.md))
+        // Silent on purpose. The sheet closing and the row leaving the list say
+        // what happened, and the bin holds it if that was a mistake. The old buzz
+        // here was a long-press constant fired on a plain tap — it named a gesture
+        // nobody had made, and a confirming tick on an erasure would be no better.
+        TextButton(
+            { delete() },
+            Modifier.fillMaxWidth()
+        ) {
+            Text("Видалити витрату", color = Negative)
+        }
+    }
 }
+
+/**
+ * Turns a wish into a parcel.
+ *
+ * The tracking number is optional, because you often order first and learn the
+ * number hours later. The item keeps its name, photo, link and price, so the
+ * purchases tab shows the same thing you had been saving for, and it can be
+ * filled in from that card afterwards.
+ */
+@Composable
+fun BoughtSheet(wish: Wish, close: () -> Unit, confirm: (tracking: String, paid: Double) -> Unit) {
+    var trackingNumber by remember { mutableStateOf("") }
+    // Prefilled with the watched price, because most of the time that is what was
+    // paid, and an empty field here is the one that gets skipped — which would
+    // leave the purchase unjudgeable for ever.
+    var paidText by remember { mutableStateOf(amountText(wish.price)) }
+    FormSheet(
+        title = "Купив це",
+        confirmLabel = "Перенести в покупки",
+        confirmEnabled = true,
+        onConfirm = { confirm(trackingNumber.trim(), parseAmount(paidText)) },
+        onDismiss = close
+    ) {
+        Text(wish.name, fontSize = Type.captionSize, color = TextSecondary)
+        Text(
+            "Товар переїде в Покупки зі статусом «Замовлено». Сума потрібна, щоб " +
+                "потім чесно сказати, чи варто було чекати.",
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine,
+            color = TextSecondary,
+            modifier = Modifier.padding(top = Space.sm)
+        )
+        NumberField("Скільки заплатили, ₴", paidText) { paidText = it }
+        OutlinedTextField(
+            trackingNumber,
+            { trackingNumber = it },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Трек-номер, якщо вже є") },
+            singleLine = true
+        )
+    }
+}
+
+/**
+ * The last step of a purchase: what it cost, how much it gets used, and done.
+ *
+ * Opened when the parcel is in your hands, and again later whenever the use count
+ * has moved. Correcting the sum is allowed for the same reason it is asked for at
+ * all — a verdict computed from a figure nobody could fix would be decoration.
+ */
+@Composable
+fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
+    var paidText by remember(order.id) {
+        mutableStateOf(amountText(if (order.paid > 0) order.paid else order.price))
+    }
+    var usesText by remember(order.id) {
+        mutableStateOf(if (order.uses > 0) order.uses.toString() else "")
+    }
+    val paid = parseAmount(paidText)
+    val uses = usesText.trim().toIntOrNull() ?: 0
+    FormSheet(
+        title = if (order.archivedDay > 0L) "Покупка в архіві" else "Завершити покупку",
+        confirmLabel = if (order.archivedDay > 0L) "Зберегти" else "В архів",
+        confirmEnabled = paid > 0.0,
+        onConfirm = {
+            save(
+                order.copy(
+                    paid = paid,
+                    uses = uses.coerceAtLeast(0),
+                    status = RECEIVED,
+                    // Filed on the day it was closed, and never re-dated by a later
+                    // correction to the use count.
+                    archivedDay = order.archivedDay.takeIf { it > 0L }
+                        ?: LocalDate.now().toEpochDay()
+                )
+            )
+        },
+        onDismiss = close
+    ) {
+        Text(order.name, fontSize = Type.captionSize, color = TextSecondary)
+        NumberField("Скільки заплатили, ₴", paidText) { paidText = it }
+        OutlinedTextField(
+            usesText,
+            { usesText = it.filter(Char::isDigit).take(5) },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Скільки разів скористались") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+        )
+        Text(
+            // Porting the point across without lecturing: the number is optional,
+            // and this says what it buys you.
+            "Необов'язково. Ціна за одне користування каже про річ більше, ніж її цінник.",
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine,
+            modifier = Modifier.padding(top = Space.sm)
+        )
+        if (paid > 0.0) {
+            val review = purchaseReview(paid, order.lowestSeen, uses)
+            Text(
+                purchaseVerdictLabel(review.verdict),
+                color = verdictInk(review.verdict),
+                fontSize = Type.cardTitleSize,
+                fontWeight = Type.medium,
+                modifier = Modifier.padding(top = Space.lg)
+            )
+            Text(
+                purchaseVerdictDetail(review),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+            costPerUseLine(review)?.let {
+                Text(
+                    it,
+                    color = TextPrimary,
+                    fontSize = Type.captionSize,
+                    modifier = Modifier.padding(top = Space.xs)
+                )
+            }
+        }
+    }
+}
+
+/** One colour per verdict, so the archive and the sheet cannot disagree. */
+fun verdictInk(verdict: PurchaseVerdict): Color = when (verdict) {
+    PurchaseVerdict.PATIENT -> Accent
+    PurchaseVerdict.HASTY -> Negative
+    PurchaseVerdict.UNJUDGED -> TextSecondary
+}
+
+/**
+ * Sets the monthly income.
+ *
+ * Only ever stored on the phone, and only used to subtract the standing costs from
+ * it, so the wishlist can plan against a real figure instead of a guess.
+ */
+@Composable
+fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
+    var text by remember { mutableStateOf(amountText(current)) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Дохід на місяць") },
+        text = {
+            Column {
+                Text(
+                    "Потрібен лише для того, щоб порахувати, скільки лишається після " +
+                        "постійних витрат. Нікуди не надсилається.",
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+                NumberField("Сума, ₴", text) { text = it }
+            }
+        },
+        confirmButton = { Button({ save(parseAmount(text)) }) { Text("Зберегти") } },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+/**
+ * The date a free trial runs out.
+ *
+ * A date rather than "30 днів", because a trial is sold in days and charged on a
+ * date, and the conversion is exactly the arithmetic nobody does. Optional and
+ * absent by default: almost no expense has one, and a field every rent and
+ * electricity bill has to dismiss is a field that makes the form worse.
+ */
+@Composable
+fun TrialField(trialEnd: Long, today: LocalDate, set: (Long) -> Unit) {
+    var picking by remember { mutableStateOf(false) }
+    val ends = trialEnd.takeIf { it > 0L }?.let { LocalDate.ofEpochDay(it) }
+    Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
+        Text("Пробний період", color = TextSecondary, fontSize = Type.captionSize)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton({ picking = true }, Modifier.weight(1f)) {
+                Text(
+                    if (ends == null) {
+                        "Додати безкоштовний період"
+                    } else {
+                        "Безкоштовно до ${formatDate(ends)}"
+                    }
+                )
+            }
+            if (ends != null) {
+                TextButton({ set(0L) }) { Text("Прибрати", color = Negative) }
+            }
+        }
+    }
+    if (picking) {
+        val millisPerDay = 86_400_000L
+        val state = rememberDatePickerState(
+            // A month out: the length almost every trial actually runs.
+            initialSelectedDateMillis = (ends ?: today.plusMonths(1)).toEpochDay() * millisPerDay,
+            selectableDates = object : SelectableDates {
+                // A trial that ran out yesterday is not a trial, it is a charge,
+                // and entering one would hide a live subscription behind a nought.
+                override fun isSelectableDate(utcTimeMillis: Long) =
+                    utcTimeMillis / millisPerDay > today.toEpochDay()
+            }
+        )
+        DatePickerDialog(
+            onDismissRequest = { picking = false },
+            confirmButton = {
+                TextButton({
+                    // The picker works in UTC midnights, so this is an exact day.
+                    state.selectedDateMillis?.let { set(it / millisPerDay) }
+                    picking = false
+                }) { Text("Обрати") }
+            },
+            dismissButton = { TextButton({ picking = false }) { Text("Скасувати") } }
+        ) {
+            DatePicker(state)
+        }
+    }
+}
+
+/**
+ * How much notice this expense gets.
+ *
+ * A row of chips rather than a number field: the useful answers are few, and one
+ * of them — a week — is the difference between cancelling a subscription and
+ * paying for another year of it.
+ */
+@Composable
+fun WarnDaysChips(warnDays: Int, set: (Int) -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
+        Text("Нагадати", color = TextSecondary, fontSize = Type.captionSize)
+        LazyRow(
+            Modifier.padding(top = Space.xs),
+            horizontalArrangement = Arrangement.spacedBy(Space.sm)
+        ) {
+            items(WARN_CHOICES) { choice ->
+                FilterChip(
+                    warnDays == choice,
+                    { set(choice) },
+                    { Text(warnLabel(choice), fontSize = Type.captionSize) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Picks the currency an expense is actually billed in.
+ *
+ * One control rather than two chips: an expense is billed in one currency, and two
+ * independent-looking switches invited the question of what both of them on would
+ * mean. The lime indicator here is inside a form, so it never competes with the
+ * one lime panel on the screen behind it.
+ */
+@Composable
+fun CurrencySegments(currency: String, set: (String) -> Unit) {
+    val touch = rememberTouch()
+    SegmentedControl(
+        options = listOf("Гривня ₴", "Долар $"),
+        selected = if (currency == USD) 1 else 0,
+        modifier = Modifier.padding(top = Space.md)
+    ) { index ->
+        val dollars = index == 1
+        // The same switch as the one on the exchange screen, and it earns the same
+        // answer: which currency an expense is billed in changes what every total
+        // on the payments screen means, and it is set by tapping half of a control
+        // whose two halves look alike.
+        if (dollars != (currency == USD)) touch.switched(dollars)
+        set(if (dollars) USD else UAH)
+    }
+}
+
+/**
+ * Picks how often an expense is charged, and when the annual one lands.
+ *
+ * The month only appears once "раз на рік" is chosen, because an annual charge
+ * without a month is not a thing the app could put on a calendar — which is why
+ * the rhythm and the month are one field on [Pay] rather than two that can
+ * disagree. Switching back to monthly clears it, so nothing keeps a stale March.
+ */
+@Composable
+fun BillingSegments(billingMonth: Int, today: LocalDate, set: (Int) -> Unit) {
+    val annual = billingMonth in 1..MONTHS_IN_YEAR
+    Column(Modifier.fillMaxWidth()) {
+        SegmentedControl(
+            options = listOf("Щомісяця", "Раз на рік"),
+            selected = if (annual) 1 else 0,
+            modifier = Modifier.padding(top = Space.md)
+        ) { index -> set(if (index == 1) billingMonth.takeIf { annual } ?: today.monthValue else 0) }
+        if (annual) {
+            Text(
+                "Місяць списання",
+                Modifier.padding(top = Space.md),
+                color = TextSecondary,
+                fontSize = Type.captionSize
+            )
+            LazyRow(
+                Modifier.padding(top = Space.xs),
+                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+            ) {
+                items((1..MONTHS_IN_YEAR).toList()) { month ->
+                    FilterChip(
+                        billingMonth == month,
+                        { set(month) },
+                        { Text(monthShort(month), fontSize = Type.captionSize) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Sets the tracking number of a parcel.
+ *
+ * The field existed on the model and was written to backups from the start, but
+ * nothing in the app could ever fill it in, so a delivery tracker had no tracking
+ * number. You normally learn the number after ordering, which is why it is edited
+ * here rather than only at creation.
+ */
+@Composable
+fun TrackingDialog(order: Order, close: () -> Unit, save: (String) -> Unit) {
+    var number by remember { mutableStateOf(order.tracking) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Трек-номер") },
+        text = {
+            Column {
+                Text(order.name, color = TextSecondary, fontSize = Type.captionSize)
+                OutlinedTextField(
+                    number,
+                    { number = it },
+                    Modifier.fillMaxWidth().padding(top = Space.md),
+                    label = { Text("Номер відправлення") },
+                    singleLine = true
+                )
+            }
+        },
+        confirmButton = { Button({ save(number.trim()) }) { Text("Зберегти") } },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
+}
+
+@Composable
+fun NumberField(label: String, value: String, set: (String) -> Unit) = OutlinedTextField(
+    value, set, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text(label) }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+)
+
+/**
+ * The one hero figure on a screen. When the value is absent it is muted rather than
+ * accented: making a zero the brightest thing on the screen shouts that there is
+ * nothing here, which is the opposite of what an accent is for.
+ */
+@Composable
+fun SummaryCard(
+    label: String,
+    value: String,
+    isEmpty: Boolean,
+    hero: Boolean = true,
+    detail: String? = null
+) {
+    Card(
+        Modifier.fillMaxWidth().litEdge(Radius.md),
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.md
+    ) {
+        Column(Modifier.padding(Space.lg)) {
+            Text(label, color = TextSecondary, fontSize = Type.captionSize)
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                value,
+                fontSize = if (hero) Type.heroSize else Type.sectionSize,
+                lineHeight = if (hero) Type.heroLine else Type.sectionLine,
+                letterSpacing = if (hero) Type.heroTracking else 0.sp,
+                fontWeight = when {
+                    isEmpty -> Type.regular
+                    hero -> FontWeight.Black
+                    else -> Type.medium
+                },
+                color = if (isEmpty) TextDisabled else Accent
+            )
+            detail?.let {
+                Text(
+                    it,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.sm)
+                )
+            }
+        }
+    }
+}
+
+

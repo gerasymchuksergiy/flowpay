@@ -1,3 +1,8 @@
 <resources>
     <color name="launcher_background">#11130E</color>
+    <color name="app_background">#090A08</color>
+    <!-- The shortcut glyphs sit on the launcher's own light circle, so they bring
+         the app's dark ground with them rather than relying on finding one. -->
+    <color name="shortcut_background">#121410</color>
+    <color name="shortcut_glyph">#D7FF63</color>
 </resources>
