@@ -572,6 +572,48 @@ fun parseProduct(
 }
 
 /**
+ * What a page turned out to be worth adding.
+ *
+ * Three outcomes, because the add flow used to have two and the missing one was
+ * the common case at a shop that renders its price in the browser: a page read
+ * perfectly well, stating what the thing is and what it looks like, and stating no
+ * price. That is not the same event as a page nobody could read, and it does not
+ * ask the same thing of the person — one wants the link checked, the other wants a
+ * number typed.
+ */
+sealed interface PageAdd {
+    data class Priced(val wish: Wish) : PageAdd
+
+    /** Everything but the price. The wish is worth keeping; the figure is typed. */
+    data class Described(val wish: Wish) : PageAdd
+
+    /** No price, no name, no photograph: a listing page, or a wall. */
+    data object Blank : PageAdd
+}
+
+/**
+ * Reads a fetched page into whichever of the three outcomes it is.
+ *
+ * Pure, so that every one of the three can be tested against a saved page rather
+ * than against whatever a shop happens to be serving today.
+ */
+fun readForAdd(
+    html: String,
+    url: String,
+    id: String,
+    today: Long = 0L,
+    rate: FxRate = FxRate()
+): PageAdd {
+    val offers = extractOffers(html)
+    if (offers.isNotEmpty()) {
+        return PageAdd.Priced(wishFromOffer(html, url, id, offers.first(), today, rate))
+    }
+    val facts = pageFacts(html)
+    if (!facts.describable) return PageAdd.Blank
+    return PageAdd.Described(wishFromFacts(facts, url, id, 0.0, today))
+}
+
+/**
  * Builds a wish around one particular offer from a page.
  *
  * Separate from [parseProduct] because on a page with editions the price is not a
@@ -587,11 +629,12 @@ fun wishFromOffer(
     rate: FxRate = FxRate()
 ): Wish {
     val converted = toHryvnia(offer.price, offer.currency, rate)
+    val facts = pageFacts(html)
     return Wish(
         id = id,
-        name = cleanProductTitle(metaContent(html, "og:title")).ifBlank { "Новий товар" },
+        name = facts.name.ifBlank { "Новий товар" },
         url = url,
-        image = decodeEntities(metaContent(html, "og:image")),
+        image = facts.image,
         price = converted.uah,
         // A price nobody can convert is not a price to start a history with. The
         // wish is still worth keeping — the link is the part that cannot be typed
@@ -605,7 +648,7 @@ fun wishFromOffer(
         freshness = if (converted.noRate) Freshness.UNREADABLE else Freshness.OK,
         variant = offer.label,
         addedDay = today,
-        about = extractAbout(html),
+        about = facts.about,
         sources = listOf(
             WishSource(
                 url = url,
@@ -620,6 +663,39 @@ fun wishFromOffer(
         )
     )
 }
+
+/**
+ * What a page said about the thing, when it would not say what it costs.
+ *
+ * A shop that renders its price behind JavaScript, or hides it behind a
+ * challenge, still fills in its Open Graph tags: they decide how its link looks
+ * when someone pastes it into a messenger, so they are the one part of the page
+ * the shop cannot afford to leave out. The app used to read the title, read the
+ * photograph, read the description — and throw all three away over the one
+ * missing number.
+ */
+data class PageFacts(
+    val name: String = "",
+    val image: String = "",
+    val about: ProductAbout = ProductAbout()
+) {
+    /**
+     * Whether there is enough here to show a person what they are about to add.
+     *
+     * A name or a photograph is enough; the description alone is not, because a
+     * row reading "Товар з temu.com" under a paragraph of marketing is not a
+     * thing anybody would recognise a week later.
+     */
+    val describable: Boolean
+        get() = name.isNotBlank() || image.isNotBlank()
+}
+
+/** Everything the page gave up apart from the price. */
+fun pageFacts(html: String): PageFacts = PageFacts(
+    name = cleanProductTitle(metaContent(html, "og:title")),
+    image = decodeEntities(metaContent(html, "og:image")),
+    about = extractAbout(html)
+)
 
 /**
  * How to name an offer in a list of them.

@@ -80,6 +80,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -955,6 +956,11 @@ fun refreshedWish(
         history = appendPrice(previous.history, current.price, today, rate.sell, rate.source),
         checkedDay = today,
         freshness = if (current.price > 0.0) Freshness.OK else previous.freshness,
+        // What the page says about the thing is most of what a wish with no price
+        // has to show, and this is the one path a shared link takes into the list.
+        // Without it the description read from the page was dropped on the floor
+        // exactly where it was needed most.
+        about = if (current.about.isEmpty) previous.about else current.about,
         // The freshly read page knows what money it was priced in and what that
         // converted to; the placeholder this is filling in knows only the address.
         // Anything the new reading did not bring keeps what was there before.
@@ -1013,16 +1019,38 @@ suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
     connection.inputStream.bufferedReader().use { it.readText() }
 }
 
-suspend fun product(link: String, rate: FxRate = FxRate()): Wish {
-    val normalizedLink = link.trim()
-    val html = pageHtml(normalizedLink)
-    return parseProduct(
-        html,
-        normalizedLink,
-        System.currentTimeMillis().toString(),
-        LocalDate.now().toEpochDay(),
-        rate
-    )
+/**
+ * How long to wait before asking a silent page a second time.
+ *
+ * Long enough that the shop is answering a fresh request rather than the same one
+ * again, short enough that a person holding the phone still reads it as the app
+ * working rather than as the app hanging.
+ */
+const val RETRY_PAUSE_MS = 1_500L
+
+/**
+ * Fetches a page, and fetches it once more when the first answer carried no price.
+ *
+ * Not a workaround for one shop. The same address, seconds apart, genuinely
+ * answers differently: a page comes back half its usual size with its price
+ * stripped out, and the next request returns the whole thing. Nothing in the
+ * response says which kind arrived, so the only way to tell is to look for a
+ * price and ask again when there is not one.
+ *
+ * Exactly one retry, and only on the path where a person is waiting for an
+ * answer. The twice-daily pass deliberately does not use this: there it would
+ * double the traffic at every shop on the list to rescue a reading that will be
+ * attempted again in twelve hours anyway.
+ */
+suspend fun pricedPageHtml(link: String): String {
+    val first = pageHtml(link)
+    if (extractOffers(first).isNotEmpty()) return first
+    delay(RETRY_PAUSE_MS)
+    // A second fetch that fails outright changes nothing: the first answer is
+    // still the best account of the page there is, and it is the one whose title
+    // and photograph the add sheet is about to offer.
+    val second = runCatching { pageHtml(link) }.getOrNull() ?: return first
+    return if (extractOffers(second).isNotEmpty()) second else first
 }
 
 /**
@@ -1268,12 +1296,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     wishes = saved
                     store.saveWishes(saved)
                     say("Додано до бажань, шукаю ціну…")
-                    val fetched = runCatching { product(link.url, rate) }.getOrNull()
-                    if (fetched == null) {
-                        say("Сторінка не читається — впишіть ціну вручну")
-                    } else {
-                        // The shop's title replaces the placeholder, but the row
-                        // keeps its id so nothing else has to be told it changed.
+                    val read = runCatching {
+                        readForAdd(pricedPageHtml(link.url), link.url, id, day, rate)
+                    }.getOrNull()
+
+                    /** The shop's own title, photograph and words replace the
+                     * placeholder's, but the row keeps its id so nothing else has
+                     * to be told it changed. */
+                    fun fill(fetched: Wish) {
                         val filled = wishes.map {
                             if (it.id == id) {
                                 refreshedWish(it, fetched, day, rate).copy(name = fetched.name)
@@ -1283,7 +1313,23 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         }
                         wishes = filled
                         store.saveWishes(filled)
-                        say("Додано: ${fetched.name}")
+                    }
+
+                    when (read) {
+                        // No page at all, or one that named nothing. Either way
+                        // the link is safe in the list and the price is typed.
+                        null, PageAdd.Blank -> say("Сторінка не читається — впишіть ціну вручну")
+                        is PageAdd.Priced -> {
+                            fill(read.wish)
+                            say("Додано: ${read.wish.name}")
+                        }
+                        // The case the app used to throw away. The name, the
+                        // photograph and the description were all on the page;
+                        // only the number has to come from you.
+                        is PageAdd.Described -> {
+                            fill(read.wish)
+                            say("Додано: ${read.wish.name} — ціни на сторінці немає, впишіть її")
+                        }
                     }
                 }
             }
@@ -2207,6 +2253,54 @@ fun CategorySuggestions(known: List<String>, chosen: String, onPick: (String) ->
     }
 }
 
+/**
+ * What the page did give, shown before asking for the one thing it did not.
+ *
+ * The photograph and the title are here to be checked, not admired: a shared link
+ * is often not the link the person thought they shared, and typing a price into a
+ * sheet that has silently latched onto the wrong item is the one mistake this
+ * screen can make that nothing downstream would catch. Seeing the thing answers
+ * that before a number is typed.
+ */
+@Composable
+fun NoPricePreview(facts: PageFacts, link: String) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        if (facts.image.isNotBlank()) {
+            AsyncImage(
+                facts.image,
+                facts.name,
+                Modifier
+                    .size(64.dp)
+                    .clip(Radius.sm)
+                    .background(SurfaceRaised),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(Modifier.width(Space.md))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(
+                facts.name.ifBlank { placeholderName(link) },
+                fontSize = Type.bodySize,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                sourceName(link),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                maxLines = 1
+            )
+        }
+    }
+    Text(
+        noPriceNote(facts),
+        color = TextSecondary,
+        fontSize = Type.captionSize,
+        lineHeight = Type.captionLine,
+        modifier = Modifier.padding(top = Space.md)
+    )
+}
+
 @Composable
 fun AddWishSheet(
     close: () -> Unit,
@@ -2224,6 +2318,10 @@ fun AddWishSheet(
     // fetch it a second time and cannot land on a different version of it.
     var page by remember { mutableStateOf<String?>(null) }
     var offers by remember { mutableStateOf(emptyList<Offer>()) }
+    // Set only on the third path: the page was read, it says what the thing is,
+    // and it does not say what it costs. Null keeps the sheet on its usual form.
+    var facts by remember { mutableStateOf<PageFacts?>(null) }
+    var typedPrice by remember { mutableStateOf("") }
     val touch = rememberTouch()
     val scope = rememberCoroutineScope()
 
@@ -2248,15 +2346,44 @@ fun AddWishSheet(
         )
     }
 
+    /** The third way in: everything the page gave, plus the number it withheld. */
+    fun finishTyped(read: PageFacts) {
+        touch.landed()
+        add(
+            wishFromFacts(
+                read,
+                link.trim(),
+                System.currentTimeMillis().toString(),
+                parseAmount(typedPrice),
+                LocalDate.now().toEpochDay()
+            ).copy(
+                targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                category = canonicalCategory(category, known)
+            )
+        )
+    }
+
+    val read = facts
     FormSheet(
-        title = if (offers.size > 1) "Яка ціна ваша?" else "Новий товар",
+        title = when {
+            offers.size > 1 -> "Яка ціна ваша?"
+            read != null -> "Ціну доведеться вписати"
+            else -> "Новий товар"
+        },
         confirmLabel = if (loading) "Зчитую…" else "Додати",
-        confirmEnabled = isSupportedWebUrl(link) && !loading && offers.size <= 1,
+        confirmEnabled = when {
+            loading -> false
+            // Nothing to confirm while the picker is the question on screen: the
+            // rows themselves are the answer.
+            offers.size > 1 -> false
+            read != null -> parseAmount(typedPrice) > 0.0
+            else -> isSupportedWebUrl(link)
+        },
         onConfirm = {
-            scope.launch {
+            if (read != null) finishTyped(read) else scope.launch {
                 loading = true
                 error = null
-                runCatching { pageHtml(link) }
+                runCatching { pricedPageHtml(link) }
                     .onSuccess { html ->
                         val found = extractOffers(html)
                         // A page priced in money the app has no rate for cannot be
@@ -2265,8 +2392,13 @@ fun AddWishSheet(
                         // offer because a page prices every edition in one currency.
                         val money = found.firstOrNull()
                             ?.let { toHryvnia(it.price, it.currency, rate) }
+                        val whatItIs = pageFacts(html)
                         when {
-                            found.isEmpty() -> error = "Не вдалося знайти ціну на сторінці"
+                            // Read fine, priced nothing. Not a failure: the name
+                            // and the photograph are the parts that cannot be
+                            // typed again, and the number is the part that can.
+                            found.isEmpty() && whatItIs.describable -> facts = whatItIs
+                            found.isEmpty() -> error = NOTHING_READ_NOTE
                             money != null && money.noRate ->
                                 error = "Ціна в ${money.currency} — FlowPay знає курс лише долара"
                             // One price is not a question worth asking.
@@ -2275,17 +2407,28 @@ fun AddWishSheet(
                         }
                     }
                     .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
-                // Whichever way it failed — no price on the page, money with no
-                // rate, or no page at all. The error text says which; this says
-                // that the link you pasted did not become a wish, which is what
-                // you were waiting to find out with the phone in your hand.
+                // Whichever way it failed — nothing readable on the page, money
+                // with no rate, or no page at all. The error text says which; this
+                // says that the link you pasted did not become a wish, which is
+                // what you were waiting to find out with the phone in your hand.
                 if (error != null) touch.refused()
                 loading = false
             }
         },
         onDismiss = close
     ) {
-        if (offers.size > 1) {
+        if (read != null) {
+            NoPricePreview(read, link)
+            NumberField("Ціна, ₴", typedPrice) { typedPrice = it }
+            NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
+            OutlinedTextField(
+                category,
+                { category = it },
+                Modifier.fillMaxWidth().padding(top = Space.md),
+                label = { Text("Категорія") }
+            )
+            CategorySuggestions(known, category) { category = it }
+        } else if (offers.size > 1) {
             Text(
                 "На сторінці кілька цін. Оберіть ту, за якою стежити — " +
                     "далі FlowPay щоразу шукатиме саме її.",
@@ -2520,13 +2663,25 @@ fun AddSourceSheet(
                 if (hasSource(wish, link)) {
                     error = "Цей магазин уже в списку"
                 } else {
-                    runCatching { pageHtml(link) }
+                    runCatching { pricedPageHtml(link) }
                         .onSuccess { html ->
                             val offer = extractOffers(html).firstOrNull()
                             val converted = offer?.let { toHryvnia(it.price, it.currency, rate) }
                             when {
+                                // The same two outcomes the add sheet now tells
+                                // apart, and they ask for different things here
+                                // too: one means check the link, the other means
+                                // this shop is no use as a second opinion. Typing
+                                // a price is deliberately not offered — a shop
+                                // exists on a wish to be read, and this wish
+                                // already has one that answers.
                                 offer == null || converted == null ->
-                                    error = "Не вдалося знайти ціну на сторінці"
+                                    error = if (pageFacts(html).describable) {
+                                        "Сторінку прочитав, але ціни на ній немає. " +
+                                            "Другий магазин потрібен саме заради ціни."
+                                    } else {
+                                        NOTHING_READ_NOTE
+                                    }
                                 converted.noRate ->
                                     error = "Ціна в ${converted.currency} — курсу до гривні немає"
                                 else -> add(
@@ -5265,16 +5420,36 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
             scope.launch {
                 loading = true
                 error = null
-                runCatching { product(link) }
-                    .onSuccess { item ->
-                        add(
-                            Order(
-                                item.id, item.name, item.url, "Замовлено",
-                                tracking = trackingNumber.trim(),
-                                image = item.image,
-                                price = item.price
+                runCatching {
+                    readForAdd(
+                        pricedPageHtml(link),
+                        link.trim(),
+                        System.currentTimeMillis().toString()
+                    )
+                }
+                    .onSuccess { read ->
+                        // A purchase is a record of a thing you already own, so a
+                        // page that names it without pricing it is still worth
+                        // everything: the price of an order is typed on the card
+                        // anyway, because what you paid is rarely what the page
+                        // asks today.
+                        val item = when (read) {
+                            is PageAdd.Priced -> read.wish
+                            is PageAdd.Described -> read.wish
+                            PageAdd.Blank -> null
+                        }
+                        if (item == null) {
+                            error = NOTHING_READ_NOTE
+                        } else {
+                            add(
+                                Order(
+                                    item.id, item.name, item.url, "Замовлено",
+                                    tracking = trackingNumber.trim(),
+                                    image = item.image,
+                                    price = item.price
+                                )
                             )
-                        )
+                        }
                     }
                     .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
                 loading = false

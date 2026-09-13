@@ -943,6 +943,99 @@ fun placeholderWish(url: String, id: String, today: Long = LocalDate.now().toEpo
         sources = listOf(WishSource(url = url, freshness = Freshness.UNREADABLE))
     )
 
+/**
+ * The wish to keep when a page said what the thing is but not what it costs.
+ *
+ * A shop that gives up its title and its photograph and keeps its price behind
+ * JavaScript has not failed to be read — it has been read, and one field of it is
+ * missing. The app already had the word for that state: [Freshness.MANUAL], whose
+ * own definition is "typed in by hand, nothing is being read and nothing is
+ * claimed to be". Nothing routed to it from the add flow, so a page like that
+ * simply refused to become a wish.
+ *
+ * [ProductAbout] rides along because a description is worth most on exactly these
+ * wishes: with no price movement to look at, what the shop says about the thing is
+ * most of what the screen has to show.
+ */
+fun wishFromFacts(
+    facts: PageFacts,
+    url: String,
+    id: String,
+    price: Double = 0.0,
+    today: Long = LocalDate.now().toEpochDay()
+): Wish {
+    val typed = price.coerceAtLeast(0.0)
+    // A price makes it a hand-entered wish; no price yet leaves it in exactly the
+    // state [placeholderWish] produces — the page answered, and nothing usable
+    // came of it. Claiming MANUAL before anyone has typed anything would put "Ціна
+    // вручну" on a card showing nought, which is the app describing a price that
+    // does not exist.
+    val state = if (typed > 0.0) Freshness.MANUAL else Freshness.UNREADABLE
+    return Wish(
+        id = id,
+        name = facts.name.ifBlank { placeholderName(url) },
+        url = url,
+        image = facts.image,
+        price = typed,
+        // One point, the same as a wish read from a shop gets. It is honest: this
+        // is what the thing cost on the day it was added, as far as anyone knows.
+        // What it deliberately does not do is become a benchmark — [lowestTracked]
+        // refuses to judge a purchase against figures a person typed themselves.
+        history = if (typed > 0.0) listOf(PricePoint(typed, today)) else emptyList(),
+        // Set, and kept moving by every later pass, so that a target reached by
+        // lowering the price by hand still lights the pill: [targetHit] asks how
+        // fresh the reading behind the figure is.
+        checkedDay = today,
+        freshness = state,
+        addedDay = today,
+        about = facts.about,
+        sources = listOf(
+            WishSource(
+                url = url,
+                price = typed,
+                freshness = state,
+                checkedDay = today,
+                amount = typed,
+                currency = UAH,
+                rate = 1.0
+            )
+        )
+    )
+}
+
+/**
+ * What to say about a page that was read but priced nothing.
+ *
+ * Deliberately not «Не вдалося знайти ціну на сторінці», which the app showed for
+ * this and for a page nobody could read at all. Those ask different things of the
+ * person: one means the link is wrong and wants checking, the other means the link
+ * is fine and the number has to be typed. A single sentence for both left the
+ * useful one impossible to act on.
+ *
+ * Says which of the two things was actually read, rather than claiming both, so
+ * that a page that gave up only a photograph does not promise a name that is about
+ * to come out as "Товар з temu.com".
+ */
+fun noPriceNote(facts: PageFacts): String {
+    val read = when {
+        facts.name.isNotBlank() && facts.image.isNotBlank() -> "назву й фото"
+        facts.image.isNotBlank() -> "фото"
+        else -> "назву"
+    }
+    return "Прочитав $read, але ціни на сторінці немає. Впиши її сам — " +
+        "ціль, план і нагадування працюватимуть як завжди."
+}
+
+/**
+ * What to say about a page that gave up nothing at all.
+ *
+ * The other half of the split, and the one that is genuinely a failure. Names the
+ * likeliest cause the person can do something about: a link to a listing, a
+ * search or a shop's front page reads exactly like this.
+ */
+const val NOTHING_READ_NOTE: String =
+    "Сторінка не дала ні ціни, ні назви товару. Перевір, чи це посилання саме на товар."
+
 data class RefreshResult(val wishes: List<Wish>, val updated: Int)
 
 /**
