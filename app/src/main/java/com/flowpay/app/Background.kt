@@ -51,6 +51,27 @@ fun staleAfterHours(key: String): Int = when (key) {
     else -> 48
 }
 
+/**
+ * Whether a pass that fetched nothing should be retried rather than counted done.
+ *
+ * A pass that had things to read and read none of them is what a dropped
+ * connection looks like from inside the worker, and retrying is right. But a wish
+ * whose price was typed by hand is not something a pass can succeed at: its shop
+ * is asked, and answering "still no price here" is the expected outcome, not a
+ * failure. A list made only of those used to make every pass retry for ever and
+ * never stamp its last run — which lit "Фонове оновлення не працює" on a phone
+ * where the background work was running perfectly.
+ */
+fun shouldRetryPass(
+    wishes: List<Wish>,
+    trackableParcels: Int,
+    pricesRead: Int,
+    parcelsRead: Int
+): Boolean {
+    val fetchable = wishes.any { it.freshness != Freshness.MANUAL } || trackableParcels > 0
+    return fetchable && pricesRead == 0 && parcelsRead == 0
+}
+
 /** A pass, and when it last got all the way through. Zero means never. */
 data class WorkRun(val key: String, val atMillis: Long)
 

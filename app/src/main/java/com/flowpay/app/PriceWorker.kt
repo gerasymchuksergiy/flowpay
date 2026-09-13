@@ -130,9 +130,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
         // Retry only when there was something to fetch and none of it arrived,
         // which is what a dropped connection looks like from here.
-        val hadWork = old.isNotEmpty() || trackable.isNotEmpty()
-        val gotSomething = pricesRead > 0 || parcelsRead > 0
-        if (hadWork && !gotSomething) {
+        if (shouldRetryPass(old, trackable.size, pricesRead, parcelsRead)) {
             // Not stamped: a pass that fetched nothing is exactly the pass the
             // health panel exists to make visible, and recording it as a success
             // would paper over the silence it is meant to expose.

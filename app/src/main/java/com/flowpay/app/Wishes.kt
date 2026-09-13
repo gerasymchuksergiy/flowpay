@@ -236,8 +236,22 @@ fun readSource(
     OfferMatch.Missing -> SourceReading.Stale(
         previous.copy(checkedDay = today, freshness = Freshness.OUT_OF_STOCK)
     )
+    // A hand-typed price is not a failed reading, and a page that still states no
+    // price is not news about it. Without this clause the twice-daily pass turned
+    // every typed price into "Ціну не розпізнано" within twelve hours: the card
+    // went grey, the wish started counting as stale, and a purchase would then be
+    // judged against a number its own buyer had typed. The shop is still asked —
+    // the day moves, and the moment it does state a price the branch above takes
+    // over and the wish becomes a tracked one.
     OfferMatch.None -> SourceReading.Stale(
-        previous.copy(checkedDay = today, freshness = Freshness.UNREADABLE)
+        previous.copy(
+            checkedDay = today,
+            freshness = if (previous.freshness == Freshness.MANUAL) {
+                Freshness.MANUAL
+            } else {
+                Freshness.UNREADABLE
+            }
+        )
     )
 }
 
