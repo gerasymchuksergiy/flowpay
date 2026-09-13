@@ -322,6 +322,142 @@ private val MICRODATA_PRICE = listOf(
     Regex("""content=["']([^"']+)["'][^>]*itemprop=["']price["']""", RegexOption.IGNORE_CASE)
 )
 
+// ------------------------------------- prices a page renders instead of declaring
+
+/**
+ * Every `<script>` body on the page, including the ones holding data rather than code.
+ *
+ * Bounded to scripts on purpose. A shop's rendered price also appears in its
+ * layout, but the layout is where the prose lives — "від 199 ₴ за доставку",
+ * a banner, a related item's tag — and reading figures out of it is how a price
+ * tracker starts tracking a delivery charge.
+ */
+private val SCRIPT_BODY = Regex(
+    """<script[^>]*>(.*?)</script>""",
+    setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+)
+
+/**
+ * One double-quoted value out of a script body, and never a bare number.
+ *
+ * The quotes are the second bound. A page carries thousands of bare integers —
+ * ids, timestamps, pixel sizes, prices in minor units — and any rule that reads
+ * them would find a price on a page that has none. A figure a shop has already
+ * formatted for a person to read, with its own money written beside it, is a
+ * different kind of thing: it was written to be shown.
+ *
+ * The quantifier is possessive so the scan stays linear over a page that is
+ * mostly minified JavaScript. Without it, every string longer than the limit
+ * costs sixty-four failed attempts before the engine gives up on it, and that is
+ * a measurable pause on a six-hundred-kilobyte page.
+ */
+private val QUOTED_VALUE = Regex("\"([^\"\\\\\\n]{1,64}+)\"")
+
+/** The money words shops write, longest first so "грн." cannot be cut to "грн". */
+private const val CURRENCY_MARK =
+    """(?:грн\.|грн|₴|UAH|USD|EUR|GBP|PLN|us\$|\$|€|£|zł)"""
+
+/** The space characters that turn up inside a formatted figure. */
+private const val SPACE_CHARS = """    """
+private const val GAP = "[$SPACE_CHARS]"
+
+/**
+ * A figure, from a digit to a digit.
+ *
+ * Loose about what sits between, because grouping is written with spaces, commas
+ * and full stops depending on the shop, and [priceNumber] is the single place
+ * that decides whether a given run of those is actually a number. What it must
+ * not do is end on punctuation, which is why both ends are a digit.
+ */
+private const val FIGURE = """\d(?:[\d$SPACE_CHARS.,]*\d)?"""
+
+/** A figure with its money on one side or the other: "1 458.21₴", "$59.99". */
+private const val MONEY = """(?:$CURRENCY_MARK$GAP*$FIGURE|$FIGURE$GAP*$CURRENCY_MARK)"""
+
+/**
+ * A quoted string that is a price and nothing else.
+ *
+ * The third and most important bound: the *whole* string has to be the price. A
+ * sentence that merely mentions a figure — a delivery rule, a coupon condition,
+ * a promise about a discount — is rejected outright, and that is what keeps this
+ * from finding a dozen numbers on every page in the world.
+ *
+ * A short leading word is allowed through because the shop's own label is the
+ * most useful thing on offer here: "РРЦ 3 366.84₴" is a crossed-out recommended
+ * price, and carrying "РРЦ" into [Offer.label] is what lets the picker warn the
+ * person off it rather than the app quietly tracking a price nobody pays.
+ *
+ * Group 1 is that label, group 2 the first figure and group 3 the second, which
+ * a page writes when the variants span a range.
+ */
+private val PRICE_STRING = Regex(
+    """$GAP*(\p{L}[\p{L}.$SPACE_CHARS]{0,15}?)?$GAP*($MONEY)""" +
+        """(?:$GAP*[-–—]$GAP*($MONEY|$FIGURE))?$GAP*""",
+    RegexOption.IGNORE_CASE
+)
+
+private val FIGURE_ONLY = Regex(FIGURE)
+private val CURRENCY_ONLY = Regex(CURRENCY_MARK, RegexOption.IGNORE_CASE)
+
+/** Longer than this and it is prose with a number in it, not a price. */
+private const val PRICE_STRING_LIMIT = 64
+
+/**
+ * How many inferred prices are worth offering.
+ *
+ * A picker is a question, and a question with thirty answers is not one. Beyond a
+ * handful the person cannot tell which row is their item anyway, so the list is
+ * cut rather than allowed to become a wall of numbers.
+ */
+private const val INLINE_PRICE_LIMIT = 8
+
+/**
+ * Reads one quoted string as the price or prices it states.
+ *
+ * A range — "1 458.21₴-1 603.45₴" — is two offers rather than one, because that
+ * is a page telling you the variants cost different amounts, and collapsing it to
+ * a single figure would pick one of them at random.
+ */
+fun priceStringOffers(raw: String): List<Offer> {
+    val text = decodeEntities(raw)
+    if (text.length > PRICE_STRING_LIMIT) return emptyList()
+    val match = PRICE_STRING.matchEntire(text) ?: return emptyList()
+    val label = match.groupValues[1].trim().trimEnd('.').trim()
+    val currency = currencyCode(CURRENCY_ONLY.find(text)?.value.orEmpty())
+    return listOfNotNull(match.groups[2], match.groups[3])
+        .mapNotNull { part -> priceNumber(FIGURE_ONLY.find(part.value)?.value.orEmpty()) }
+        .map { Offer(it, label, currency) }
+}
+
+/**
+ * Every price the page renders out of its own scripts.
+ *
+ * The universal answer to a shop that ships its price as data for its own
+ * JavaScript instead of declaring it where a reader can find it. It asks nothing
+ * about the shop and nothing about the key the figure is stored under — the key
+ * names change between two fetches of the same page — only whether a string the
+ * shop formatted for a person to read is sitting in the page.
+ *
+ * This is inference, and it is treated as such: [extractOffers] consults it only
+ * when the page declared no price at all, and what it finds is offered as a
+ * choice rather than adopted as a fact.
+ */
+fun inlinePriceOffers(html: String): List<Offer> {
+    val found = LinkedHashMap<Long, Offer>()
+    SCRIPT_BODY.findAll(html).forEach { script ->
+        QUOTED_VALUE.findAll(script.groupValues[1]).forEach { quoted ->
+            if (found.size >= INLINE_PRICE_LIMIT) return found.values.toList()
+            priceStringOffers(quoted.groupValues[1]).forEach { offer ->
+                val key = Math.round(offer.price * 100)
+                if (found.size < INLINE_PRICE_LIMIT && !found.containsKey(key)) {
+                    found[key] = offer
+                }
+            }
+        }
+    }
+    return found.values.toList()
+}
+
 /**
  * Every distinct price the page states, richest source first.
  *
@@ -362,6 +498,14 @@ fun extractOffers(html: String): List<Offer> {
             ),
             ""
         )
+    }
+    // Last of all, and only on a page that declared nothing: the figures the shop
+    // formatted for its own scripts to render. Kept behind the emptiness check
+    // rather than merely ordered after the rest, because appending inferred prices
+    // to a declared one would turn every clean single-price page into a picker and
+    // would give a later refresh a crowd of near-misses to snap its variant onto.
+    if (found.isEmpty()) {
+        inlinePriceOffers(html).forEach { add(it.price, it.label, it.currency) }
     }
     return found.values.toList()
 }
