@@ -2795,6 +2795,16 @@ const val SECTION_SHOPS = "shops"
 const val SECTION_PLAN = "plan"
 
 /**
+ * The two folds inside «Про товар», stored the same way for the same reason.
+ *
+ * They are not [CollapsibleSection]s — see [CardFold] — but the choice they
+ * record is identical in kind: "do I read the shop's blurb when I open a thing",
+ * answered once for the app rather than once per pair of headphones.
+ */
+const val SECTION_ABOUT_TEXT = "abouttext"
+const val SECTION_ABOUT_SPECS = "aboutspecs"
+
+/**
  * A heading that can fold its own content away, and says what is inside while shut.
  *
  * The wish page was a wall: everything it knows, expanded, in one column, with the
@@ -2884,6 +2894,130 @@ fun CollapsibleSection(
     }
 }
 
+/**
+ * The same fold one level down: a heading *inside* a card rather than over one.
+ *
+ * [CollapsibleSection] was tried here first and does not fit, for three reasons
+ * that are all about scale rather than taste. It carries [Space.screen] of its own
+ * horizontal padding, so nested inside a card that is already inset by the screen
+ * margin its heading sits twenty dp adrift of the rows it introduces. It sets its
+ * title at [Type.sectionSize] — the same size as the «Про товар» heading standing
+ * directly above the card — so the block would have two equal headings, one inside
+ * the other, with nothing in the type to say which contains which. And its
+ * [Space.xxl] top break is a gap between screen sections; spent inside a card it is
+ * most of a phone's worth of empty.
+ *
+ * So this is a sibling rather than a reuse, and the whole of what it changes is
+ * weight: one row instead of two, card-title size instead of section size, the
+ * summary run on after a middle dot instead of set on a line of its own. It keeps
+ * what actually mattered about the original — the summary on the shut heading, so
+ * a closed fold still says what is in it and you are not opening things to find
+ * out which one you wanted — and it keeps the motion, so both folds in the app
+ * open with the same spring and both go still when the phone asks for no motion.
+ *
+ * No haptic here either, and for the identical reason: this changes the view and
+ * nothing else, and the fold opening under the finger is already the whole answer.
+ */
+@Composable
+fun CardFold(
+    title: String,
+    summary: String,
+    open: Boolean,
+    onToggle: (Boolean) -> Unit,
+    content: @Composable () -> Unit
+) {
+    val turn by animateFloatAsState(
+        if (open) 180f else 0f,
+        Motion.spatial(),
+        label = "card fold chevron"
+    )
+    Row(
+        Modifier.fillMaxWidth().clickable { onToggle(!open) }.padding(vertical = Space.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            title,
+            color = TextPrimary,
+            fontSize = Type.cardTitleSize,
+            lineHeight = Type.cardTitleLine,
+            fontWeight = Type.medium
+        )
+        if (summary.isNotBlank()) {
+            Text(
+                " · $summary",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = Tabular
+            )
+        }
+        Spacer(Modifier.weight(1f))
+        Icon(
+            Icons.Default.ExpandMore,
+            if (open) "Згорнути" else "Розгорнути",
+            Modifier.padding(start = Space.sm).size(20.dp).rotate(turn),
+            tint = TextSecondary
+        )
+    }
+    AnimatedVisibility(
+        visible = open,
+        enter = expandVertically(Motion.spatial(), expandFrom = Alignment.Top),
+        exit = shrinkVertically(Motion.spatial(), shrinkTowards = Alignment.Top)
+    ) {
+        content()
+    }
+}
+
+/**
+ * A run of the shop's own prose, cut to [ABOUT_CLAMP_LINES] with a way past the cut.
+ *
+ * A clamp rather than a fold, because these two states are not the same offer. A
+ * shut heading says "there is a description, open it to find out whether you
+ * wanted it"; four lines say what the thing is and let the rest be optional. The
+ * block exists to answer "what is this", so the answer has to be on screen.
+ *
+ * The «більше» appears only where the text is actually cut — Compose reports that
+ * from the layout rather than from a character count, which is the only way to be
+ * right about it at every text size the phone offers. A short description gets no
+ * affordance at all, because there is nothing behind it.
+ */
+@Composable
+fun ClampedText(text: String, expanded: Boolean, onToggle: (Boolean) -> Unit) {
+    // Whether the clamp is hiding anything. Measured while shut and then left
+    // alone: once open there is no overflow to see, and re-measuring would take
+    // the «менше» away at exactly the moment it is the only way back.
+    var clipped by remember(text) { mutableStateOf(false) }
+    // A description that fits is not a control. Without this the row is tappable,
+    // a tap does nothing visible, and «менше» appears over text with nothing
+    // behind it.
+    val offersMore = clipped || expanded
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .then(if (offersMore) Modifier.clickable { onToggle(!expanded) } else Modifier)
+    ) {
+        Text(
+            text,
+            color = TextSecondary,
+            fontSize = Type.bodySize,
+            lineHeight = Type.bodyLine,
+            maxLines = if (expanded) Int.MAX_VALUE else ABOUT_CLAMP_LINES,
+            overflow = TextOverflow.Ellipsis,
+            onTextLayout = { layout -> if (!expanded) clipped = layout.hasVisualOverflow }
+        )
+        if (offersMore) {
+            Text(
+                moreLabel(expanded),
+                color = Accent,
+                fontSize = Type.captionSize,
+                fontWeight = Type.medium,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
+    }
+}
+
 /** One number of the savings plan, muted while there is nothing to show yet. */
 @Composable
 fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted: Boolean = false) {
@@ -2968,6 +3102,11 @@ fun SharedTransitionScope.WishDetailScreen(
     var historyOpen by remember { mutableStateOf(store.sectionOpen(SECTION_HISTORY)) }
     var shopsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_SHOPS)) }
     var planOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PLAN)) }
+    // The two inside «Про товар», kept the same way and for the same reason:
+    // whether the blurb is worth reading in full is a fact about the reader, not
+    // about a pair of headphones, so it is not keyed on the wish.
+    var aboutTextOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ABOUT_TEXT)) }
+    var specsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ABOUT_SPECS)) }
 
     val today = remember { LocalDate.now() }
     // The day the stored rate was fetched, so a converted price can say how old
@@ -3215,21 +3354,38 @@ fun SharedTransitionScope.WishDetailScreen(
                                 Spacer(Modifier.height(Space.sm))
                             }
                             if (wish.about.description.isNotBlank()) {
-                                var expanded by remember(wish.id) { mutableStateOf(false) }
-                                Text(
-                                    wish.about.description,
-                                    color = TextSecondary,
-                                    fontSize = Type.bodySize,
-                                    lineHeight = Type.bodyLine,
-                                    maxLines = if (expanded) Int.MAX_VALUE else 4,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.clickable { expanded = !expanded }
-                                )
+                                ClampedText(wish.about.description, aboutTextOpen) {
+                                    aboutTextOpen = it
+                                    store.saveSectionOpen(SECTION_ABOUT_TEXT, it)
+                                }
                             }
                             if (wish.about.specs.isNotEmpty()) {
-                                Spacer(Modifier.height(Space.md))
-                                wish.about.specs.forEach { (name, value) ->
-                                    LeaderRow(name, value)
+                                Spacer(Modifier.height(Space.sm))
+                                // A short table is left standing; a long one goes
+                                // behind a heading that says how many rows it is.
+                                // The count is the whole point of the closed state —
+                                // «Характеристики · 14» is worth a tap and
+                                // «Характеристики» on its own is a guess.
+                                if (foldsSpecs(wish.about.specs.size)) {
+                                    CardFold(
+                                        title = "Характеристики",
+                                        summary = specsCountLabel(wish.about.specs.size),
+                                        open = specsOpen,
+                                        onToggle = {
+                                            specsOpen = it
+                                            store.saveSectionOpen(SECTION_ABOUT_SPECS, it)
+                                        }
+                                    ) {
+                                        Column {
+                                            wish.about.specs.forEach { (name, value) ->
+                                                LeaderRow(name, value)
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    wish.about.specs.forEach { (name, value) ->
+                                        LeaderRow(name, value)
+                                    }
                                 }
                             }
                         }
