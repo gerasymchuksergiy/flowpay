@@ -157,3 +157,104 @@ fun wishNameOrder(): Comparator<Wish> {
     val order = Collator.getInstance(UK)
     return Comparator { a, b -> order.compare(a.name, b.name) }
 }
+
+// ------------------------------------------------- what the whole list comes to
+
+/**
+ * What the wishlist in front of you comes to, and what that figure leaves out.
+ *
+ * [allCategoriesTotal] existed and was never once on screen: it is drawn on the
+ * «Усі» chip, the chip row appears only where there are two or more categories,
+ * and a list where everything is «Інше» has one. The figure was built and then
+ * hidden behind a condition.
+ *
+ * This is the same arithmetic asked a different question, and the difference
+ * matters. The chips sum [wishGoal] — the target where one is set, today's price
+ * where it is not — which is the right figure for "what am I aiming at in this
+ * category" and the wrong one for a headline, because it adds a hoped-for price to
+ * a real one and the sum is neither. The headline sums the price, and says so in
+ * words: what everything on this list costs right now.
+ */
+data class WishlistTotal(
+    /** Summed over the current price of every wish that has one. */
+    val total: Double,
+    /** How many wishes the sum is actually built from. */
+    val counted: Int,
+    /**
+     * Wishes with no readable price at all, which therefore add nothing.
+     *
+     * The reason this count exists: without it the total silently understates by
+     * however many pages refused to give up a price, and an incomplete sum
+     * presented as a complete one is worse than no sum.
+     */
+    val unpriced: Int,
+    /**
+     * Counted wishes whose price is the last one anybody read rather than a
+     * current one: out of stock, unreadable, or a page that has gone.
+     *
+     * They are counted rather than dropped, deliberately. A wish keeps its last
+     * known price precisely so it stays a wish while its shop is quiet, and a
+     * total that fell every time a page stopped answering would be the app
+     * charging you for its own failed fetch — and it would lurch about as pages
+     * go in and out of stock. So the money stays in the sum and the doubt is
+     * stated beside it. A hand-typed price is not doubtful and is not counted
+     * here: it is exactly as current as the person who typed it made it.
+     */
+    val doubtful: Int
+)
+
+/**
+ * The headline figure for whatever is currently on screen.
+ *
+ * Fed the *filtered* list rather than the whole one, because a total that
+ * describes the list while the screen shows one category of it is a number
+ * contradicting the thing it sits above.
+ *
+ * Held wishes count, for the same reason they count on the chips: a hold
+ * postpones the decision, not the price tag.
+ */
+fun wishlistTotal(items: List<Wish>): WishlistTotal {
+    val priced = items.filter(::hasReadablePrice)
+    return WishlistTotal(
+        total = priced.sumOf { it.price },
+        counted = priced.size,
+        unpriced = items.size - priced.size,
+        doubtful = priced.count { isStale(it.freshness) }
+    )
+}
+
+/**
+ * What the figure is a total of, worded so it cannot be read as anything else.
+ *
+ * «Зараз коштує» rather than a bare «Разом»: the same number could plausibly be
+ * what the savings goals add up to or what is left to put aside, and a headline
+ * that needs a footnote to say which is not a headline. It also names the filter,
+ * so narrowing the screen visibly narrows the claim.
+ */
+fun wishlistTotalLabel(category: String?, query: String): String = when {
+    query.isNotBlank() -> "Знайдене зараз коштує"
+    category != null -> "«${categoryName(category)}» зараз коштує"
+    else -> "Список зараз коштує"
+}
+
+/**
+ * The line under the figure: how many things it covers, and what it does not.
+ *
+ * Each count is introduced by a colon rather than run into the sentence, the same
+ * dodge [refreshMessage] makes and for the same reason — «не враховано 1 позиція»
+ * mixes the case the verb governs with the case the plural helper produces, and it
+ * is the sort of wrong a phone reads out loud.
+ */
+fun wishlistTotalNote(total: WishlistTotal): String {
+    if (total.counted == 0) {
+        return if (total.unpriced > 0) {
+            "Жодної ціни прочитати не вдалося: ${positionsLabel(total.unpriced)}"
+        } else {
+            "Рахувати ще нема чого"
+        }
+    }
+    val parts = mutableListOf(positionsLabel(total.counted))
+    if (total.doubtful > 0) parts += "з них за останньою відомою ціною: ${total.doubtful}"
+    if (total.unpriced > 0) parts += "не враховано: ${positionsLabel(total.unpriced)}"
+    return parts.joinToString(" · ")
+}

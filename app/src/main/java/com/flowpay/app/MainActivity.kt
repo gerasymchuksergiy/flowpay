@@ -1907,6 +1907,10 @@ fun WishlistScreen(
                     categories.any { categoryKey(it) == categoryKey(chosen) }
                 }
                 val shown = remember(items, category, query) { filterWishes(items, category, query) }
+                // Over the filtered list, not over everything. A headline saying
+                // eighty-four thousand while the screen shows one category of it
+                // would be a number arguing with the grid underneath it.
+                val sum = remember(shown) { wishlistTotal(shown) }
 
                 // The same controls in the large header and in the compact bar, so
                 // refreshing and searching stay reachable once you are down the grid
@@ -1971,6 +1975,28 @@ fun WishlistScreen(
                         refreshAction()
                     }
                 }
+                // The same actions plus the figure, for the bar the large title
+                // hands over to. The panel below the header scrolls away with the
+                // header; a total that is only visible at the very top of the list
+                // is a total you have to scroll back for, which is most of the way
+                // to not having one. Bare here rather than labelled: the panel has
+                // already said what it is, and this bar is one row tall.
+                val barActions: @Composable () -> Unit = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (shown.isNotEmpty()) {
+                            Text(
+                                approxMoney(sum.total),
+                                color = TextPrimary,
+                                fontSize = Type.captionSize,
+                                fontWeight = Type.medium,
+                                maxLines = 1,
+                                style = Tabular
+                            )
+                            Spacer(Modifier.width(Space.sm))
+                        }
+                        headerActions()
+                    }
+                }
                 val gridState = rememberLazyGridState()
                 // The box is item one, so opening it from the compact bar would
                 // otherwise put the field somewhere thirty cards above the screen.
@@ -2004,6 +2030,16 @@ fun WishlistScreen(
                                 inset = 0.dp,
                                 trailing = headerActions
                             )
+                        }
+                        // Unconditional, which is the whole fix. The figure already
+                        // existed — on the «Усі» chip, in a row drawn only where
+                        // there are two categories or more — so a list where
+                        // everything is «Інше» has never once shown its own total.
+                        // Nothing here asks how the list is arranged.
+                        if (shown.isNotEmpty()) {
+                            item(span = { GridItemSpan(maxLineSpan) }) {
+                                WishlistTotalPanel(sum, wishlistTotalLabel(category, query))
+                            }
                         }
                         if (searching) {
                             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -2135,7 +2171,7 @@ fun WishlistScreen(
                             }
                         }
                     }
-                    CollapsingTitle("Мої бажання", gridState, trailing = headerActions)
+                    CollapsingTitle("Мої бажання", gridState, trailing = barActions)
                 }
             }
         }
@@ -2180,6 +2216,62 @@ fun WishSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
             }
         }
     )
+}
+
+/**
+ * What the list on screen costs, said once, in words that cannot be misread.
+ *
+ * Not a [HeroPanel], and the reason is the rule written on [HeroPanel] itself:
+ * one lime block per screen. This screen already spends its lime on the action
+ * button and on whichever category chip is down, and a lime slab the width of the
+ * grid would out-shout the photographs that are the point of the page. So the
+ * emphasis comes from size and from being alone up there, not from colour.
+ *
+ * Three lines, in the order the questions arrive: what this is a total of, the
+ * figure, and what the figure does not include. The third line is not an
+ * apology — it is the difference between a sum and a sum you can act on, because
+ * a wish whose page states no price contributes nothing and would otherwise make
+ * the total quietly too small.
+ *
+ * Rounded to whole hryvnia, like the chips: this is a sum of many prices read on
+ * many days, and kopecks on it would claim a precision it does not have.
+ */
+@Composable
+fun WishlistTotalPanel(sum: WishlistTotal, label: String) {
+    Card(
+        Modifier.fillMaxWidth().padding(bottom = Space.lg).litEdge(Radius.md),
+        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
+        shape = Radius.md
+    ) {
+        Column(Modifier.padding(horizontal = Space.lg, vertical = Space.md)) {
+            Text(
+                label,
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                fontWeight = Type.medium
+            )
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                approxMoney(sum.total),
+                color = TextPrimary,
+                fontSize = Type.heroSize,
+                lineHeight = Type.heroLine,
+                letterSpacing = Type.heroTracking,
+                fontWeight = Type.strong,
+                style = Tabular
+            )
+            Spacer(Modifier.height(Space.xs))
+            Text(
+                wishlistTotalNote(sum),
+                // Never an alarm colour. Nothing has gone wrong — some pages
+                // simply do not state a price, and this line is the sum being
+                // honest about itself rather than the app reporting a fault.
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
+    }
 }
 
 /**
