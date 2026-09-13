@@ -62,8 +62,14 @@ fun freshnessNote(freshness: Freshness): String? = when (freshness) {
     Freshness.OK -> null
     Freshness.UNREADABLE ->
         "На сторінці більше немає ціни, яку вдається прочитати. Показана остання відома."
+    // Deliberately no longer "магазин більше не вказує цей варіант". That named one
+    // cause — the followed edition vanishing from the list — and the state now
+    // arrives just as often from a page that lists the thing plainly and declares
+    // it sold out. Naming the wrong cause is worse than naming none: it sends the
+    // person looking for a variant picker on a page whose problem is the shelf.
     Freshness.OUT_OF_STOCK ->
-        "Магазин більше не вказує цей варіант. Показана остання відома ціна."
+        "Магазин зараз не продає це. Показана остання відома ціна — за нею не стежимо, " +
+            "поки товар не повернеться."
     Freshness.GONE ->
         "Сторінка не відповідає. Показана остання відома ціна."
     Freshness.MANUAL ->
@@ -204,7 +210,30 @@ fun readSource(
 ) {
     is OfferMatch.Found -> {
         val converted = toHryvnia(match.offer.price, match.offer.currency, rate)
-        if (converted.noRate) {
+        if (blocksPrice(match.offer.availability)) {
+            // The page still lists the variant and still prints a figure beside it,
+            // and the shop has said in the same breath that nobody can buy it. That
+            // figure is routinely a placeholder or a stale low, so letting it
+            // through as a reading is how the app came to announce a price drop on
+            // a thing that was not there — and the cost is not the wrong label but
+            // the wrong number: it would enter the history, become the thirty-day
+            // reference, become the lowest ever seen, and win the wish's price
+            // against a shop that actually has the thing in a box.
+            //
+            // So it takes the route every other unbelievable figure takes. The row
+            // keeps the price it last had rather than adopting this one, the
+            // checked day still moves because the page was genuinely read, and the
+            // state says which of the unbuyable kinds the shop declared. When the
+            // shop says it is back, the branch below takes over and [priceAlertFor]
+            // sees a stale wish turning priced, which is a BACK_IN_STOCK.
+            SourceReading.Stale(
+                previous.copy(
+                    checkedDay = today,
+                    freshness = Freshness.OUT_OF_STOCK,
+                    availability = match.offer.availability
+                )
+            )
+        } else if (converted.noRate) {
             SourceReading.Stale(
                 previous.copy(
                     checkedDay = today,
@@ -214,7 +243,8 @@ fun readSource(
                     // and "priced in kronor" look identical without it.
                     amount = converted.amount,
                     currency = converted.currency,
-                    rate = 0.0
+                    rate = 0.0,
+                    availability = match.offer.availability
                 )
             )
         } else {
@@ -225,7 +255,11 @@ fun readSource(
                     freshness = Freshness.OK,
                     amount = converted.amount,
                     currency = converted.currency,
-                    rate = converted.rate
+                    rate = converted.rate,
+                    // Rewritten every read, not merely set when it is bad news, so
+                    // that a shop which stocks the thing again cannot leave "знято
+                    // з продажу" sitting under a live price for ever.
+                    availability = match.offer.availability
                 ),
                 extractAbout(html)
             )
@@ -233,8 +267,16 @@ fun readSource(
     }
     // The checked day still moves: the page was genuinely looked at, and how long
     // ago that was is worth saying whatever the answer turned out to be.
+    //
+    // The declaration is cleared rather than kept: it belonged to a variant this
+    // page no longer lists, and nothing about the page now says which kind of gone
+    // that is. The state is still OUT_OF_STOCK, which is the honest amount to say.
     OfferMatch.Missing -> SourceReading.Stale(
-        previous.copy(checkedDay = today, freshness = Freshness.OUT_OF_STOCK)
+        previous.copy(
+            checkedDay = today,
+            freshness = Freshness.OUT_OF_STOCK,
+            availability = Availability.UNKNOWN
+        )
     )
     // A hand-typed price is not a failed reading, and a page that still states no
     // price is not news about it. Without this clause the twice-daily pass turned
@@ -250,7 +292,11 @@ fun readSource(
                 Freshness.MANUAL
             } else {
                 Freshness.UNREADABLE
-            }
+            },
+            // A page with no prices on it at all has said nothing about any of
+            // them, so a declaration read on some earlier day no longer describes
+            // anything and is not carried forward.
+            availability = Availability.UNKNOWN
         )
     )
 }
@@ -380,7 +426,31 @@ fun sourceNote(source: WishSource): String? = when {
     source.freshness == Freshness.UNREADABLE && source.currency != UAH &&
         source.currency.isNotBlank() && source.amount > 0.0 ->
         "Ціна ${amountLabel(source.amount, source.currency)} — курсу до гривні немає"
+    // The one distinction [Freshness] does not draw, and the only one that changes
+    // what the person should do: a thing that is out of stock is worth waiting for,
+    // and a thing the shop has stopped selling is worth looking for elsewhere.
+    source.availability == Availability.DISCONTINUED ->
+        "Магазин зняв товар з продажу. Показана остання відома ціна."
     else -> freshnessNote(source.freshness)
+}
+
+/**
+ * What one shop's row says about the thing being there, or null when it is silent.
+ *
+ * Silent on the ordinary case, which is most rows: the overwhelming majority of
+ * shops declare nothing, and a row inventing "є в наявності" for them would be the
+ * app making the shop's claim on its behalf — the precise failure that put a price
+ * drop on a sold-out item in the first place.
+ *
+ * A shop that *does* declare it gets a line either way, because on a wish watched
+ * in three shops the useful sentence is not "this one is out" but "that one has
+ * it", and the row that stays quiet next to a warning reads as undecided rather
+ * than as fine.
+ */
+fun sourceStockNote(source: WishSource): String? = when {
+    isStale(source.freshness) -> sourceNote(source)
+    source.availability == Availability.IN_STOCK -> "Є в наявності"
+    else -> null
 }
 
 /** What one shop's row says on the right: its price, or why there is not one. */

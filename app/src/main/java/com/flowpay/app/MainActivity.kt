@@ -126,7 +126,22 @@ data class WishSource(
     /** ISO code of [amount]. Hryvnia unless the page said otherwise. */
     val currency: String = UAH,
     /** Hryvnia per unit of [currency] when [price] was worked out. One for hryvnia. */
-    val rate: Double = 0.0
+    val rate: Double = 0.0,
+    /**
+     * What this shop's page last declared about being able to buy the thing.
+     *
+     * Kept beside [freshness] rather than folded into it because the two answer
+     * different questions and the row needs both: [freshness] says whether the
+     * figure can be believed, which is all the arithmetic cares about, while this
+     * says why — and it is the only thing that can tell "немає в наявності" from
+     * "знято з продажу", which are the same amount of not-buyable and opposite
+     * advice about whether to keep waiting.
+     *
+     * [Availability.UNKNOWN] on everything saved before this existed, and on the
+     * majority of shops, which declare nothing. Nothing is derived from it that a
+     * shop's silence could get wrong.
+     */
+    val availability: Availability = Availability.UNKNOWN
 )
 
 data class Wish(
@@ -729,6 +744,9 @@ fun sourceJson(source: WishSource): JSONObject = JSONObject()
     .put("u", source.url).put("p", source.price).put("v", source.variant)
     .put("fr", source.freshness.name).put("cd", source.checkedDay)
     .put("a", source.amount).put("cur", source.currency).put("r", source.rate)
+    // By name, like the freshness beside it, so that the stored file stays readable
+    // and adding a value later cannot silently renumber the ones already written.
+    .put("av", source.availability.name)
 
 fun sourceOf(o: JSONObject): WishSource = WishSource(
     url = o.optString("u"),
@@ -740,7 +758,11 @@ fun sourceOf(o: JSONObject): WishSource = WishSource(
     // A price stored before currencies existed is hryvnia, which is what every
     // shop the app could read at the time was pricing in.
     currency = o.optString("cur", UAH).ifBlank { UAH },
-    rate = o.optDouble("r", 0.0)
+    rate = o.optDouble("r", 0.0),
+    // A source stored before availability was read declared nothing as far as this
+    // app is concerned, which is exactly what [Availability.UNKNOWN] means, so old
+    // data reads back behaving precisely as it did.
+    availability = availabilityStored(o.optString("av"))
 )
 
 /**
@@ -2448,13 +2470,32 @@ fun AddWishSheet(
                         Modifier.fillMaxWidth().padding(Space.lg),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            offerLabel(offer, index),
-                            Modifier.weight(1f).padding(end = Space.md),
-                            fontSize = Type.bodySize,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Column(Modifier.weight(1f).padding(end = Space.md)) {
+                            Text(
+                                offerLabel(offer, index),
+                                fontSize = Type.bodySize,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            // A page of editions routinely has one of them sold
+                            // out, and the figure beside a sold-out edition is
+                            // often the lowest on the page — so without this the
+                            // cheapest-looking row in the picker is the one that
+                            // cannot be bought. Stated rather than hidden: tracking
+                            // a thing until it comes back is the point of the list.
+                            offerStockLabel(offer)?.let { stock ->
+                                Text(
+                                    stock,
+                                    color = if (blocksPrice(offer.availability)) {
+                                        Negative
+                                    } else {
+                                        TextSecondary
+                                    },
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                        }
                         // In the shop's own money, because that is what is printed
                         // on the page the person is choosing from.
                         Text(
@@ -2597,12 +2638,13 @@ fun SourceRow(
                 }
             }
         }
-        // Why this row reads the way it does: a dead page, or money the app has no
-        // rate for. Silent on the ordinary case, which is most rows most of the time.
-        sourceNote(source).takeIf { dead }?.let { note ->
+        // Why this row reads the way it does: a dead page, money the app has no
+        // rate for, or a shop that has said outright it has the thing. Silent on the
+        // ordinary case, which is most rows most of the time.
+        sourceStockNote(source)?.let { note ->
             Text(
                 note,
-                color = Negative,
+                color = if (dead) Negative else TextSecondary,
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine,
                 modifier = Modifier.padding(top = Space.xs)

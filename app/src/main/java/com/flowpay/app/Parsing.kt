@@ -239,8 +239,123 @@ data class Offer(
      * because "the page said nothing" and "the page said UAH" are different
      * facts and only the reader downstream should decide what to do about it.
      */
-    val currency: String = ""
+    val currency: String = "",
+    /**
+     * Whether the page said this particular offer can be bought.
+     *
+     * Defaults to [Availability.UNKNOWN] for the same reason [currency] defaults to
+     * empty: most Ukrainian shops declare nothing, and "the page said nothing" has
+     * to stay distinguishable from "the page said yes".
+     */
+    val availability: Availability = Availability.UNKNOWN
 )
+
+/**
+ * What a page declared about being able to buy the thing.
+ *
+ * schema.org has nine tokens for this and the app has three answers, because
+ * three is how many distinct things it can actually do with the information: go
+ * on as normal, refuse to believe the number, or say the thing is not coming
+ * back. Every token is folded into one of them here, once, so that no part of the
+ * app downstream has to have an opinion about what `BackOrder` means.
+ *
+ * The mapping, and why:
+ *
+ * - `InStock` → [IN_STOCK]. The plain case.
+ * - `LimitedAvailability` → [IN_STOCK]. "Few left" is a stock level, not an
+ *   absence; the price is a price and the thing is in a basket today.
+ * - `OnlineOnly` → [IN_STOCK]. It is buyable, and the page being read *is* the
+ *   online channel.
+ * - `InStoreOnly` → [IN_STOCK]. Not buyable through this link, but the figure is
+ *   a real price somebody can pay by walking in, and the whole point of this
+ *   wishlist is deciding when to go and get something.
+ * - `PreOrder` → [IN_STOCK]. A pre-order price is a price the shop will take
+ *   money at today; it is a commitment, not a guess.
+ * - `BackOrder` → [IN_STOCK]. The same bargain as a pre-order for a thing that
+ *   already exists: the shop is quoting a figure it will honour. It is a promise
+ *   about delivery, which is a fact about waiting rather than about the price.
+ * - `OutOfStock`, `SoldOut` → [SOLD_OUT]. The figure beside these is not a price
+ *   anybody can pay, and it is very often lower than the real one.
+ * - `Discontinued` → [DISCONTINUED]. Also not buyable, and handled identically
+ *   everywhere money is concerned — but it is the one of these that is not going
+ *   to end, and "знято з продажу" tells the person to stop waiting where "немає
+ *   в наявності" tells them to keep waiting.
+ * - Anything else, including nothing at all → [UNKNOWN], which must behave in
+ *   every respect exactly as the app behaved before availability was read. Most
+ *   shops this app is pointed at declare nothing, and treating "not exactly
+ *   InStock" as sold out would grey out the entire wishlist.
+ */
+enum class Availability {
+    /** The page said nothing usable. Changes nothing, anywhere. */
+    UNKNOWN,
+
+    /** The page said it can be bought, now or on a promise it named a price for. */
+    IN_STOCK,
+
+    /** The page said it cannot be bought. The number beside it is not a price. */
+    SOLD_OUT,
+
+    /** The page said it is not sold any more, and will not be again. */
+    DISCONTINUED
+}
+
+/**
+ * Whether an availability means the figure beside it must not be believed.
+ *
+ * One predicate rather than a comparison repeated at each of the places that has
+ * to make this decision, because the whole bug was that those places disagreed
+ * about a question nobody had written down.
+ */
+fun blocksPrice(availability: Availability): Boolean = when (availability) {
+    Availability.SOLD_OUT, Availability.DISCONTINUED -> true
+    Availability.UNKNOWN, Availability.IN_STOCK -> false
+}
+
+/** The schema.org tokens, already reduced to letters, and what each one means here. */
+private val AVAILABILITY_TOKENS = mapOf(
+    "instock" to Availability.IN_STOCK,
+    "limitedavailability" to Availability.IN_STOCK,
+    "onlineonly" to Availability.IN_STOCK,
+    "instoreonly" to Availability.IN_STOCK,
+    "preorder" to Availability.IN_STOCK,
+    "presale" to Availability.IN_STOCK,
+    "backorder" to Availability.IN_STOCK,
+    "outofstock" to Availability.SOLD_OUT,
+    "soldout" to Availability.SOLD_OUT,
+    "discontinued" to Availability.DISCONTINUED
+)
+
+/**
+ * Reads whatever a page wrote for availability into one of the three answers.
+ *
+ * Shops write every one of `https://schema.org/InStock`, `http://schema.org/InStock`,
+ * `InStock`, `inStock`, `in_stock` and `out of stock`, sometimes two of them on the
+ * same page, so the token is reduced to its letters before it is looked up: the
+ * vocabulary word is what carries the meaning and the rest is punctuation.
+ *
+ * Anything unrecognised comes back [Availability.UNKNOWN] rather than being
+ * guessed at. A shop that invents its own word must leave the app exactly as it
+ * would have been had the attribute been absent.
+ */
+fun availabilityFrom(raw: String): Availability {
+    val text = decodeEntities(raw).trim()
+    if (text.isBlank()) return Availability.UNKNOWN
+    val token = text.substringAfterLast('/').substringAfterLast('#')
+        .filter { it.isLetter() }
+        .lowercase()
+    return AVAILABILITY_TOKENS[token] ?: Availability.UNKNOWN
+}
+
+/**
+ * Reads a stored availability back, defaulting to what a silent page means.
+ *
+ * The sibling of [freshnessFrom], and unknown is the right fallback for both the
+ * absent key of older data and a name this build no longer has: a value the app
+ * cannot interpret must leave every judgement exactly where a shop's silence
+ * leaves it.
+ */
+fun availabilityStored(name: String): Availability =
+    Availability.entries.firstOrNull { it.name == name } ?: Availability.UNKNOWN
 
 /** Symbols shops write instead of a code, and the code each one means. */
 private val CURRENCY_SYMBOLS = mapOf(
@@ -292,6 +407,43 @@ fun pageCurrency(html: String): String {
         if (found.isNotBlank()) return found
     }
     return ""
+}
+
+/**
+ * schema.org availability written as an attribute rather than in a script.
+ *
+ * Unlike the price, this is written as often on a `<link href>` as on a
+ * `<meta content>`: the value is a URL, so the markup that carries URLs is the
+ * one the vocabulary's own examples use. Both attribute orders, because shops
+ * write both.
+ */
+private val MICRODATA_AVAILABILITY = listOf(
+    Regex("""itemprop=["']availability["'][^>]*(?:content|href)=["']([^"']+)["']""", RegexOption.IGNORE_CASE),
+    Regex("""(?:content|href)=["']([^"']+)["'][^>]*itemprop=["']availability["']""", RegexOption.IGNORE_CASE)
+)
+
+/**
+ * Whether the page, taken as a whole, says the thing can be bought.
+ *
+ * One answer per page for the same reason [pageCurrency] gives one: this is the
+ * fallback for offers that did not state it themselves. Where JSON-LD states it
+ * per offer that wins, because a page of editions genuinely can have one edition
+ * sold out and the next in stock, and that distinction is the whole reason the
+ * picker needs to say anything.
+ *
+ * A page that states nothing comes back [Availability.UNKNOWN] and every reader
+ * downstream then behaves exactly as it did before any of this was read.
+ */
+fun pageAvailability(html: String): Availability {
+    MICRODATA_AVAILABILITY.forEach { pattern ->
+        val found = availabilityFrom(pattern.find(html)?.groupValues?.get(1).orEmpty())
+        if (found != Availability.UNKNOWN) return found
+    }
+    listOf("product:availability", "og:availability", "availability").forEach { property ->
+        val found = availabilityFrom(metaContent(html, property))
+        if (found != Availability.UNKNOWN) return found
+    }
+    return Availability.UNKNOWN
 }
 
 /** Any space a shop might put inside a number, including the ones that are not spaces. */
@@ -470,14 +622,31 @@ fun extractOffers(html: String): List<Offer> {
     // Read once and used for every offer that did not name its own, so a page
     // whose currency lives in microdata still labels prices found in attributes.
     val stated = pageCurrency(html)
+    // The same arrangement for availability, and it matters more here: a price
+    // found in a `data-price` attribute carries nothing about itself, so the only
+    // thing that can tell the app the page is sold out is the page's own
+    // declaration elsewhere in the markup.
+    val declared = pageAvailability(html)
 
-    fun add(price: Double?, label: String, currency: String = "") {
+    fun add(
+        price: Double?,
+        label: String,
+        currency: String = "",
+        availability: Availability = Availability.UNKNOWN
+    ) {
         val value = price ?: return
         val key = Math.round(value * 100)
-        if (!found.containsKey(key)) found[key] = Offer(value, label, currency.ifBlank { stated })
+        if (!found.containsKey(key)) {
+            found[key] = Offer(
+                value,
+                label,
+                currency.ifBlank { stated },
+                if (availability == Availability.UNKNOWN) declared else availability
+            )
+        }
     }
 
-    jsonLdOffers(html).forEach { add(it.price, it.label, it.currency) }
+    jsonLdOffers(html).forEach { add(it.price, it.label, it.currency, it.availability) }
     MICRODATA_PRICE.forEach { pattern ->
         pattern.findAll(html).forEach { add(priceNumber(it.groupValues[1]), "") }
     }
@@ -630,6 +799,18 @@ fun wishFromOffer(
 ): Wish {
     val converted = toHryvnia(offer.price, offer.currency, rate)
     val facts = pageFacts(html)
+    // A page that declares the thing sold out states a figure that is not a price:
+    // very often a placeholder, and very often lower than the real one. It is kept
+    // and shown as the last known figure, because that is what the person is
+    // watching for, but it may not start a history — a benchmark whose very first
+    // point is a sold-out placeholder would report a rise on the day the thing
+    // actually came back and could be bought.
+    val blocked = blocksPrice(offer.availability)
+    val state = when {
+        converted.noRate -> Freshness.UNREADABLE
+        blocked -> Freshness.OUT_OF_STOCK
+        else -> Freshness.OK
+    }
     return Wish(
         id = id,
         name = facts.name.ifBlank { "Новий товар" },
@@ -640,12 +821,12 @@ fun wishFromOffer(
         // wish is still worth keeping — the link is the part that cannot be typed
         // again — so it comes back the way an unreadable page does, and the card
         // offers the same way out of it.
-        history = if (converted.noRate) {
+        history = if (converted.noRate || blocked) {
             emptyList()
         } else {
             listOf(PricePoint(converted.uah, today, rate.sell, rate.source))
         },
-        freshness = if (converted.noRate) Freshness.UNREADABLE else Freshness.OK,
+        freshness = state,
         variant = offer.label,
         addedDay = today,
         about = facts.about,
@@ -654,11 +835,12 @@ fun wishFromOffer(
                 url = url,
                 price = converted.uah,
                 variant = offer.label,
-                freshness = if (converted.noRate) Freshness.UNREADABLE else Freshness.OK,
+                freshness = state,
                 checkedDay = today,
                 amount = converted.amount,
                 currency = converted.currency,
-                rate = converted.rate
+                rate = converted.rate,
+                availability = offer.availability
             )
         )
     )
@@ -706,6 +888,27 @@ fun pageFacts(html: String): PageFacts = PageFacts(
  */
 fun offerLabel(offer: Offer, index: Int): String =
     offer.label.ifBlank { "Варіант ${index + 1}" }
+
+/**
+ * What to say beside an edition the page declared unbuyable, or null for the rest.
+ *
+ * Only the two states that are a warning get a line. A page that declared
+ * `InStock` says so in the picker too — on a page where one edition is sold out,
+ * silence on the others would read as the app having no opinion about them rather
+ * than as the shop having said they are fine.
+ *
+ * The row stays choosable. Somebody looking at a sold-out edition is usually
+ * looking at exactly the thing they want and are waiting for, and refusing to
+ * track it would remove the one feature that tells them when it returns — so the
+ * picker states the fact and lets them decide, and the wish it builds is marked
+ * from its first day rather than starting out pretending to be a live price.
+ */
+fun offerStockLabel(offer: Offer): String? = when (offer.availability) {
+    Availability.SOLD_OUT -> "немає в наявності"
+    Availability.DISCONTINUED -> "знято з продажу"
+    Availability.IN_STOCK -> "є в наявності"
+    Availability.UNKNOWN -> null
+}
 
 /** Monobank: what a bank actually buys and sells dollars at today. */
 const val SOURCE_MONOBANK = "mono"
@@ -850,7 +1053,7 @@ private fun collectOffers(raw: String, into: MutableList<Offer>, depth: Int) {
         raw.startsWith("{") -> org.json.JSONObject(raw)
         else -> return
     }
-    offersInNode(root, into, depth, label = "", currency = "")
+    offersInNode(root, into, depth, label = "", currency = "", stock = Availability.UNKNOWN)
 }
 
 private fun offersInNode(
@@ -858,12 +1061,13 @@ private fun offersInNode(
     into: MutableList<Offer>,
     depth: Int,
     label: String,
-    currency: String
+    currency: String,
+    stock: Availability
 ) {
     if (depth > 6) return
     when (node) {
         is JSONArray -> (0 until node.length()).forEach {
-            offersInNode(node.opt(it), into, depth + 1, label, currency)
+            offersInNode(node.opt(it), into, depth + 1, label, currency, stock)
         }
         is org.json.JSONObject -> {
             // A node names itself, and that name belongs to any price directly on it.
@@ -871,14 +1075,22 @@ private fun offersInNode(
             // Inherited the same way, because the currency is usually stated once on
             // the Product and the prices hang off the offers nested inside it.
             val money = currencyCode(node.optString("priceCurrency")).ifBlank { currency }
+            // Availability rides along the same path and for the same reason: an
+            // AggregateOffer commonly declares it once for the group, and the
+            // individual offers nested under it state only their own price. A node
+            // that does state its own always wins over what it inherited, which is
+            // what lets one sold-out edition sit beside an available one.
+            val here = availabilityFrom(node.optString("availability"))
+            val stocked = if (here == Availability.UNKNOWN) stock else here
             listOf("price", "lowPrice", "highPrice").forEach { key ->
                 if (node.has(key)) {
-                    priceNumber(node.opt(key).toString())?.let { into.add(Offer(it, own, money)) }
+                    priceNumber(node.opt(key).toString())
+                        ?.let { into.add(Offer(it, own, money, stocked)) }
                 }
             }
             node.keys().forEach { key ->
                 if (key !in setOf("price", "lowPrice", "highPrice")) {
-                    offersInNode(node.opt(key), into, depth + 1, own, money)
+                    offersInNode(node.opt(key), into, depth + 1, own, money, stocked)
                 }
             }
         }
