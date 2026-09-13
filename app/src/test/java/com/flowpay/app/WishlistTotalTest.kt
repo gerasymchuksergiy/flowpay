@@ -29,16 +29,31 @@ class WishlistTotalTest {
 
     @Test
     fun `the headline is what the things cost, not what the targets ask`() {
-        // The chips sum wishGoal, which is the target where one is set. A
-        // headline may not mix a hoped-for price into a real one: the sum would
+        // A headline may not mix a hoped-for price into a real one: the sum would
         // be neither figure and there would be no true sentence to label it with.
         val items = listOf(
             wish("a", price = 1000.0, target = 700.0),
             wish("b", price = 2000.0)
         )
         assertEquals(3000.0, wishlistTotal(items).total, 0.001)
-        // And it is deliberately not the same number as the «Усі» chip.
-        assertEquals(2700.0, allCategoriesTotal(items), 0.001)
+        // The goal basis is still 2700 and still has a home — «Огляд» sums it as
+        // the denominator under what has been saved. It is simply not this figure,
+        // and no longer any figure on the wishlist.
+        assertEquals(2700.0, items.sumOf { wishGoal(it) }, 0.001)
+    }
+
+    @Test
+    fun `the chip that selects everything shows the headline figure`() {
+        // Not "happens to equal": it is the same call. Two totals of one list on
+        // one screen, differing by whatever the targets asked off and neither
+        // explaining itself, is how a person stops trusting all of them.
+        val items = listOf(
+            wish("a", price = 1000.0, target = 700.0),
+            wish("b", price = 2000.0, freshness = Freshness.OUT_OF_STOCK),
+            wish("c", price = 0.0, freshness = Freshness.UNREADABLE)
+        )
+        assertEquals(wishlistTotal(items).total, allCategoriesTotal(items), 0.001)
+        assertEquals(3000.0, allCategoriesTotal(items), 0.001)
     }
 
     @Test

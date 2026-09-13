@@ -164,9 +164,11 @@ class BrowseTest {
     // ------------------------------------------------------------------- totals
 
     @Test
-    fun `a category totals what its wishes are aiming at`() {
+    fun `a category totals what its wishes cost now`() {
         val items = listOf(
-            // A target price is what this one is asking for, not its 30 000 sticker.
+            // The target is what this one is being waited for at, not what it
+            // costs. The chip has no room to say which of the two it is showing,
+            // so it shows the one the headline above it shows: the sticker.
             wish("1", category = "Техніка", price = 30_000.0, target = 25_000.0),
             wish("2", category = "техніка", price = 5_000.0),
             wish("3", category = "Одяг", price = 2_000.0)
@@ -177,8 +179,40 @@ class BrowseTest {
         assertEquals(listOf("Одяг", "Техніка"), totals.map { it.name })
         assertEquals(2_000.0, totals.first { it.name == "Одяг" }.total, 0.01)
         assertEquals(1, totals.first { it.name == "Одяг" }.count)
-        assertEquals(30_000.0, totals.first { it.name == "Техніка" }.total, 0.01)
+        assertEquals(35_000.0, totals.first { it.name == "Техніка" }.total, 0.01)
+        // The count is still every wish in the category, target or no target.
         assertEquals(2, totals.first { it.name == "Техніка" }.count)
+    }
+
+    @Test
+    fun `the chips and the headline state one figure, not two`() {
+        // The whole reason these were moved onto one basis. A target set on one
+        // wish used to make the «Усі» chip and the panel above it disagree by the
+        // difference, with nothing on either of them saying why.
+        val items = listOf(
+            wish("1", category = "Техніка", price = 30_000.0, target = 25_000.0),
+            wish("2", category = "Одяг", price = 2_000.0)
+        )
+
+        assertEquals(wishlistTotal(items).total, allCategoriesTotal(items), 0.001)
+        assertEquals(
+            wishlistTotal(items).total,
+            categoryTotals(items).sumOf { it.total },
+            0.001
+        )
+    }
+
+    @Test
+    fun `a wish nobody could price adds nothing to its chip either`() {
+        // The chip and the headline agree about the hole as well as the sum.
+        val items = listOf(
+            wish("1", category = "Техніка", price = 4_000.0),
+            wish("2", category = "Техніка", price = 0.0).copy(freshness = Freshness.UNREADABLE)
+        )
+
+        assertEquals(4_000.0, categoryTotals(items).single().total, 0.01)
+        assertEquals(2, categoryTotals(items).single().count)
+        assertEquals(1, wishlistTotal(items).unpriced)
     }
 
     @Test

@@ -110,12 +110,31 @@ fun filterWishes(items: List<Wish>, category: String?, query: String): List<Wish
 data class CategoryTotal(
     val name: String,
     val count: Int,
-    /** Summed over [wishGoal], so a target counts for what it asks rather than today's price. */
+    /** What this category costs now — the same basis as [wishlistTotal], via it. */
     val total: Double
 )
 
 /**
  * Money per category, in the order the chips are shown in.
+ *
+ * These summed [wishGoal] until the wishlist grew a headline figure, and then two
+ * totals of one list sat on one screen disagreeing by however much the targets
+ * asked off. Both were defensible and neither said which it was, and a person who
+ * cannot read the code to settle it stops trusting every number on the screen
+ * rather than just the two.
+ *
+ * They now sum what the headline sums: what the things cost now. A chip is a name
+ * and an eleven-point figure — there is nowhere on it to explain a mixed basis, so
+ * it does not get to have one. The goal question keeps the home it already had:
+ * «Огляд» sums [wishGoal] into `wishTotal` and prints it as «з X на N позицій»
+ * directly beneath what has been saved towards it, which is the one place that
+ * basis is both labelled and useful, because there it is the denominator of the
+ * ring beside it.
+ *
+ * Routed through [wishlistTotal] rather than repeating its arithmetic. Two copies
+ * of "sum the price" is exactly how these two figures drifted apart the first
+ * time; now the chips cannot disagree with the headline without the headline
+ * changing too.
  *
  * Held wishes count. A hold postpones the decision, not the price tag, and a
  * category that looked cheap because half of it was set aside would be lying about
@@ -125,11 +144,16 @@ fun categoryTotals(items: List<Wish>): List<CategoryTotal> =
     knownCategories(items).map { name ->
         val key = categoryKey(name)
         val group = items.filter { categoryKey(it.category) == key }
-        CategoryTotal(name, group.size, group.sumOf { wishGoal(it) })
+        CategoryTotal(name, group.size, wishlistTotal(group).total)
     }
 
-/** What the whole list adds up to, for the chip that selects all of it. */
-fun allCategoriesTotal(items: List<Wish>): Double = items.sumOf { wishGoal(it) }
+/**
+ * What the whole list adds up to, for the chip that selects all of it.
+ *
+ * The same figure the headline shows, because it is literally the same call. The
+ * «Усі» chip and the panel above it are now incapable of disagreeing.
+ */
+fun allCategoriesTotal(items: List<Wish>): Double = wishlistTotal(items).total
 
 /** A single chip is not a choice, so the row only earns its height at two. */
 fun showsCategoryRow(items: List<Wish>): Boolean = knownCategories(items).size > 1
@@ -168,12 +192,16 @@ fun wishNameOrder(): Comparator<Wish> {
  * and a list where everything is «Інше» has one. The figure was built and then
  * hidden behind a condition.
  *
- * This is the same arithmetic asked a different question, and the difference
- * matters. The chips sum [wishGoal] — the target where one is set, today's price
- * where it is not — which is the right figure for "what am I aiming at in this
- * category" and the wrong one for a headline, because it adds a hoped-for price to
- * a real one and the sum is neither. The headline sums the price, and says so in
- * words: what everything on this list costs right now.
+ * It sums the price rather than [wishGoal], and says so in words: what everything
+ * on this list costs right now. A goal-basis sum adds a hoped-for price to a real
+ * one, and the result is neither figure — fine as a savings denominator, which is
+ * where «Огляд» uses it, and no use at all as a headline, because there is no true
+ * sentence to put under it.
+ *
+ * This is now the single definition. [categoryTotals] and [allCategoriesTotal]
+ * both come through here, so the chips and the panel above them cannot state two
+ * different totals of one list — see the note on [categoryTotals] for why that
+ * mattered enough to move them.
  */
 data class WishlistTotal(
     /** Summed over the current price of every wish that has one. */
