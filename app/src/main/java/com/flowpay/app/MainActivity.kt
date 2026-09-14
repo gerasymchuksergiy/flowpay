@@ -57,6 +57,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -89,6 +90,7 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.text.NumberFormat
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.util.Locale
 
 /**
@@ -328,7 +330,23 @@ data class Order(
     /** How many times the thing has actually been used. Zero means uncounted. */
     val uses: Int = 0,
     /** Epoch day the purchase was closed and filed. Zero means it is still open. */
-    val archivedDay: Long = 0L
+    val archivedDay: Long = 0L,
+    /**
+     * The rest of what the carrier last said about this parcel.
+     *
+     * Stored rather than re-fetched, so opening a parcel shows something at once
+     * and shows it on a train with no signal. Empty until the first check.
+     */
+    val details: ParcelDetails = ParcelDetails(),
+    /**
+     * Every status change this app has seen, with the time it saw it.
+     *
+     * The one record here that cannot be fetched back from anywhere: Nova Poshta's
+     * public method answers with the current status and nothing before it. Losing
+     * this list would lose the only movement history the app is in a position to
+     * have, which is why it travels through the bin and the backup like the rest.
+     */
+    val sightings: List<Sighting> = emptyList()
 )
 
 class MainActivity : ComponentActivity() {
@@ -927,6 +945,12 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     // nothing on screen would say the verdict had been thrown away.
     .put("pd", order.paid).put("lw", order.lowestSeen)
     .put("us", order.uses).put("ar", order.archivedDay)
+    // Both halves of each of these are in Tracking.kt, next to each other. The
+    // observation log especially: it is the only thing on a parcel that no
+    // refetch can rebuild, so a backup that dropped it would quietly throw away
+    // the whole movement history of everything in flight.
+    .put("dt", detailsJson(order.details))
+    .put("sg", sightingsJson(order.sightings))
 
 fun orderOf(o: JSONObject): Order = Order(
     o.optString("id"), o.optString("n"), o.optString("u"),
@@ -942,7 +966,12 @@ fun orderOf(o: JSONObject): Order = Order(
     paid = o.optDouble("pd", 0.0),
     lowestSeen = o.optDouble("lw", 0.0),
     uses = o.optInt("us", 0),
-    archivedDay = o.optLong("ar", 0L)
+    archivedDay = o.optLong("ar", 0L),
+    // Absent on every parcel saved before the detail screen existed. An empty
+    // record reads as "nothing has been fetched yet", which is exactly true of
+    // those, and the screen says so rather than drawing an empty journey.
+    details = detailsOf(o.optJSONObject("dt")),
+    sightings = sightingsOf(o.optJSONArray("sg"))
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -1279,6 +1308,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     var orders by remember { mutableStateOf(store.orders()) }
     var adding by remember { mutableStateOf(false) }
     var openedWish by remember { mutableStateOf<String?>(null) }
+    // Held here rather than inside the purchases screen, for the same reason the
+    // wish page is: the action button and the status pill both have to know that
+    // an item page is open, and neither of them lives down there.
+    var openedOrder by remember { mutableStateOf<String?>(null) }
     // Both read pruned: a month that fell out of the year, or an entry past its
     // thirty days, is dropped on the way out of the store rather than lingering
     // in memory until something happens to write the list back.
@@ -1289,6 +1322,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     LaunchedEffect(tab) {
         adding = false
         openedWish = null
+        openedOrder = null
     }
 
     val notices = remember { SnackbarHostState() }
@@ -1382,7 +1416,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     }
 
     // System back closes the item page before it leaves the app.
-    BackHandler(enabled = openedWish != null) { openedWish = null }
+    BackHandler(enabled = openedWish != null || openedOrder != null) {
+        openedWish = null
+        openedOrder = null
+    }
 
     // Read once, so the pill cannot change its mind about what is due partway
     // through a session that happens to cross midnight, and so the budget and the
@@ -1397,7 +1434,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
-        openedWish != null -> null
+        openedWish != null || openedOrder != null -> null
         tab == TAB_WISHES -> "Додати бажання"
         tab == TAB_PAYMENTS -> "Додати витрату"
         tab == TAB_ORDERS -> "Додати покупку"
@@ -1406,7 +1443,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
 
     // Suppressed on an item page for the same reason as the action button: that
     // page is one thing at a time, and the pill would be a second one.
-    val note = if (openedWish == null) statusNote(orders, pays, wishes, today, usdSell) else null
+    val note = if (openedWish == null && openedOrder == null) {
+        statusNote(orders, pays, wishes, today, usdSell)
+    } else {
+        null
+    }
 
     /**
      * A deletion, with both ways back out of it.
@@ -1723,6 +1764,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             context = context,
                             adding = adding,
                             setAdding = { adding = it },
+                            store = store,
+                            opened = openedOrder,
+                            setOpened = { openedOrder = it },
                             onDelete = { deleteOrder(it) }
                         )
                         // The overview is where "how am I doing" is asked, and every
@@ -5417,6 +5461,13 @@ fun OrdersScreen(
     context: Context,
     adding: Boolean,
     setAdding: (Boolean) -> Unit,
+    store: Store,
+    /**
+     * Which parcel's page is open, held by id so the page keeps showing the live
+     * parcel after a status refresh rewrites it.
+     */
+    opened: String?,
+    setOpened: (String?) -> Unit,
     /** Owned above this screen, which is where the undo and the bin live. */
     onDelete: (Order) -> Unit
 ) {
@@ -5425,6 +5476,9 @@ fun OrdersScreen(
     var checking by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
+    // Read once, so a session that crosses midnight cannot change its mind partway
+    // down the list about which scans count as "сьогодні".
+    val today = remember { LocalDate.now() }
     // A closed purchase is history, not a parcel: it is not asked about again, and
     // it does not sit in the list of things still on their way.
     val open = items.filter { it.archivedDay == 0L }
@@ -5467,6 +5521,23 @@ fun OrdersScreen(
         }
     }
     val listState = rememberLazyListState()
+    // Keyed on the id rather than on the parcel, so a status refresh landing while
+    // the page is open rewrites the rows in place instead of cross-fading the whole
+    // page out and back in under the finger that asked for it.
+    AnimatedContent(opened, label = "parcel") { openedId ->
+    val openedOrder = openedId?.let { id -> items.firstOrNull { it.id == id } }
+    if (openedOrder != null) {
+        OrderDetailScreen(
+            order = openedOrder,
+            store = store,
+            context = context,
+            onBack = { setOpened(null) },
+            onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
+            onEditTracking = { tracking = openedOrder },
+            onDelete = { onDelete(openedOrder); setOpened(null) },
+            onClose = { closing = openedOrder }
+        )
+    } else {
     Box {
         LazyColumn(
             state = listState,
@@ -5505,7 +5576,16 @@ fun OrdersScreen(
                     Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
                     shape = Radius.md
                 ) {
-                    Row(Modifier.padding(Space.lg)) {
+                    // Only this block opens the parcel, not the whole card. The
+                    // rail underneath it sets the stage by tapping a stop, and the
+                    // row below that carries four controls — a card-wide target
+                    // would sit under all of them, and every correction of a stage
+                    // would be a race between two handlers on the same pixel.
+                    Row(
+                        Modifier
+                            .clickable { setOpened(order.id) }
+                            .padding(Space.lg)
+                    ) {
                         AsyncImage(
                             order.image, order.name,
                             Modifier.size(72.dp).background(SurfaceRaised, Radius.sm),
@@ -5612,10 +5692,26 @@ fun OrdersScreen(
                                 )
                             }
                             if (order.checkedAt > 0) {
+                                // Two lines, because this card used to carry one —
+                                // «перевірено 18:11» — and that is when the app
+                                // asked, not when the parcel moved. A parcel that
+                                // had sat still since yesterday looked, from that
+                                // line, exactly like one that had just arrived
+                                // somewhere. The scan goes first and in the
+                                // brighter ink, because it is the one that is about
+                                // the parcel.
                                 Text(
-                                    "перевірено ${timeLabel(order.checkedAt)}",
+                                    "$SCAN_LABEL: ${scanValue(order.details.scannedAt, today)}",
+                                    color = TextSecondary,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine,
+                                    modifier = Modifier.padding(top = Space.xs)
+                                )
+                                Text(
+                                    "$ASKED_LABEL: ${askedValue(order.checkedAt)}",
                                     color = TextDisabled,
-                                    fontSize = Type.captionSize
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
                                 )
                             } else if (order.tracking.isNotBlank() &&
                                 detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA
@@ -5628,6 +5724,16 @@ fun OrdersScreen(
                                 )
                             }
                         }
+                        // The one thing on the card that says the block is a door.
+                        // Top aligned, so it sits beside the name rather than
+                        // floating in the middle of a card whose height depends on
+                        // how much the carrier happened to say.
+                        Icon(
+                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                            "Детальніше про посилку",
+                            Modifier.padding(start = Space.xs),
+                            tint = TextDisabled
+                        )
                     }
                     StageRail(
                         stages = PARCEL_STAGES,
@@ -5723,10 +5829,17 @@ fun OrdersScreen(
         }
         CollapsingTitle("Мої покупки", listState, trailing = checkAction)
     }
+    }
+    }
+    // Outside the swap, so a sheet opened from the parcel page is not torn down
+    // by the page closing underneath it.
     closing?.let { selected ->
         CloseOrderSheet(selected, { closing = null }) { closed ->
             save(items.map { if (it.id == closed.id) closed else it })
             closing = null
+            // A closed purchase is history and leaves the list of things in
+            // flight, so the page about where it is has nothing left to say.
+            setOpened(null)
         }
     }
     if (adding) AddOrderSheet({ setAdding(false) }) {
@@ -5737,6 +5850,429 @@ fun OrdersScreen(
         TrackingDialog(selected, { tracking = null }) { number ->
             save(items.map { if (it.id == selected.id) it.copy(tracking = number) else it })
             tracking = null
+        }
+    }
+}
+
+/** A label and a figure on one dotted row, drawn only when there is a figure. */
+@Composable
+private fun Fact(label: String, value: String, alarm: Boolean = false) {
+    if (value.isBlank()) return
+    LeaderRow(label, value, Modifier.padding(horizontal = Space.screen), alarm)
+}
+
+/**
+ * A label over its value, for the ones too long for a dotted row.
+ *
+ * A warehouse address is most of a line by itself, and pushed to the right of a
+ * leader it would wrap into a ragged column under the dots.
+ */
+@Composable
+private fun FactBlock(label: String, value: String) {
+    if (value.isBlank()) return
+    Column(Modifier.padding(horizontal = Space.screen).padding(vertical = Space.xs)) {
+        Text(label, color = TextSecondary, fontSize = Type.captionSize)
+        Text(
+            value,
+            color = TextPrimary,
+            fontSize = Type.bodySize,
+            lineHeight = Type.bodyLine
+        )
+    }
+}
+
+/** A sentence under a section, for the things that are explanations rather than facts. */
+@Composable
+private fun FactNote(text: String, color: Color = TextDisabled) {
+    Text(
+        text,
+        Modifier.padding(horizontal = Space.screen).padding(top = Space.xs, bottom = Space.xs),
+        color = color,
+        fontSize = Type.captionSize,
+        lineHeight = Type.captionLine
+    )
+}
+
+/** Where the two folded sections of the parcel page remember their state. */
+const val SECTION_PARCEL_BOX = "parcelbox"
+const val SECTION_PARCEL_PAY = "parcelpay"
+
+/**
+ * Everything the carrier will say about one parcel, on a page of its own.
+ *
+ * **A screen rather than a sheet, and that is a considered call.** Every
+ * [FormSheet] in this app is a form: a title, some fields, «Скасувати» and a
+ * confirm button, dismissed by finishing or abandoning a task. This is the
+ * opposite kind of surface — nothing is being entered, there is no confirm, and
+ * the content is a dozen rows across five groups plus a list that grows for as
+ * long as the parcel is in transit. A sheet would put all of that in a scroller
+ * inside the scroller it was opened from, with a drag handle at the top that
+ * competes with the list for the same vertical gesture, and with the purchases
+ * list dimmed but still visible behind it as though the parcel were a modal
+ * interruption of itself. The two reading surfaces this app already has — the
+ * wish page and the recap — are both full screens, and this is the third of that
+ * kind: something you open, read, scroll, act on, and come back from. So it
+ * follows them, down to the back arrow, the overline, and the system back button
+ * closing the page before it leaves the app.
+ *
+ * **What is not here.** `getStatusDocuments` returns a hundred and twenty-eight
+ * fields. Left out: every `Ref…` identifier, the sender's internal paperwork, the
+ * recipient's own name and phone number (he is the recipient), loyalty cards,
+ * masked card numbers, the money-transfer ledger, marketplace tokens, and the
+ * redelivery block, which is written for the shop rather than for the person
+ * waiting. What is left is the parcel as an errand: where it is going, when it
+ * last moved, what it weighs, who pays, and what can still be done with it.
+ */
+@Composable
+fun OrderDetailScreen(
+    order: Order,
+    store: Store,
+    context: Context,
+    onBack: () -> Unit,
+    onChange: (Order) -> Unit,
+    onEditTracking: () -> Unit,
+    onDelete: () -> Unit,
+    onClose: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var boxOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_BOX)) }
+    var payOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_PAY)) }
+    val trackable = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
+    // Read once, so a page left open across midnight cannot start disagreeing with
+    // itself about which of its dates is "сьогодні".
+    val now = remember { LocalDateTime.now() }
+    val today = remember { now.toLocalDate() }
+    val zone = remember { java.time.ZoneId.systemDefault() }
+    val details = order.details
+
+    fun refresh() {
+        scope.launch {
+            busy = true
+            val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+            busy = false
+            if (status == null) {
+                message = "Не вдалося отримати статус"
+            } else {
+                message = null
+                onChange(applyStatus(order, status, System.currentTimeMillis()))
+            }
+        }
+    }
+
+    // A parcel added before this page existed has none of these fields stored, and
+    // opening it to a page of blanks would read as a carrier that knows nothing.
+    // One fetch fills it in; afterwards the button above does.
+    LaunchedEffect(order.id) {
+        if (trackable && details.isEmpty) refresh()
+    }
+
+    LazyColumn(contentPadding = PaddingValues(bottom = navClearance() + Space.huge)) {
+        item {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = Space.sm, vertical = Space.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onBack) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = TextPrimary)
+                }
+                Text(
+                    "ПОСИЛКА",
+                    color = Accent,
+                    fontSize = Type.overlineSize,
+                    fontWeight = Type.strong,
+                    letterSpacing = Type.overlineTracking
+                )
+                Spacer(Modifier.weight(1f))
+                IconButton(onClick = { refresh() }, enabled = trackable && !busy) {
+                    if (busy) BusyMark() else Icon(Icons.Default.Sync, "Оновити", tint = TextSecondary)
+                }
+                IconButton(onEditTracking) {
+                    Icon(Icons.Default.Edit, "Трек-номер", tint = TextSecondary)
+                }
+                IconButton(onDelete) {
+                    Icon(Icons.Default.DeleteOutline, "Видалити", tint = TextSecondary)
+                }
+            }
+
+            if (order.image.isNotBlank()) {
+                PhotoHeader(
+                    imageUrl = order.image,
+                    description = order.name,
+                    modifier = Modifier.padding(horizontal = Space.screen),
+                    height = 200.dp
+                ) { imageModifier ->
+                    AsyncImage(
+                        order.image, order.name,
+                        imageModifier.clip(Radius.md),
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Spacer(Modifier.height(Space.md))
+            }
+
+            Column(Modifier.padding(horizontal = Space.screen)) {
+                Text(
+                    order.name,
+                    fontSize = Type.screenTitleSize,
+                    lineHeight = Type.screenTitleLine,
+                    letterSpacing = Type.screenTitleTracking,
+                    fontWeight = FontWeight.Black
+                )
+                if (order.price > 0) {
+                    Text(
+                        money(order.price),
+                        fontSize = Type.bodySize,
+                        fontWeight = Type.strong,
+                        style = Tabular,
+                        modifier = Modifier.padding(top = Space.xs)
+                    )
+                }
+                if (order.statusDetail.isNotBlank()) {
+                    Text(
+                        order.statusDetail,
+                        color = TextPrimary,
+                        fontSize = Type.bodySize,
+                        lineHeight = Type.bodyLine,
+                        modifier = Modifier.padding(top = Space.sm)
+                    )
+                }
+                if (order.tracking.isNotBlank()) {
+                    Text(
+                        "Трек: ${order.tracking}",
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.xs)
+                    )
+                }
+                if (order.problem) {
+                    Text(
+                        "Потрібна увага: перевірте номер або статус у перевізника",
+                        color = Negative,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(top = Space.xs)
+                    )
+                }
+                if (!trackable && order.tracking.isNotBlank()) {
+                    Text(
+                        "Автоперевірка працює для номерів Нової Пошти",
+                        color = TextDisabled,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(top = Space.xs)
+                    )
+                }
+            }
+            message?.let {
+                FactNote(it, Negative)
+            }
+            StageRail(
+                stages = PARCEL_STAGES,
+                current = order.status,
+                modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md)
+            ) { picked -> onChange(order.copy(status = picked)) }
+        }
+
+        // The block this whole screen was asked for. Two times that look alike and
+        // are not: one is the parcel moving, one is the app asking.
+        item {
+            Card(
+                Modifier.padding(horizontal = Space.screen).fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+                shape = Radius.md
+            ) {
+                Column(Modifier.padding(Space.lg)) {
+                    LeaderRow(SCAN_LABEL, scanValue(details.scannedAt, today))
+                    LeaderRow(ASKED_LABEL, askedValue(order.checkedAt))
+                    standstillNote(details.scannedAt, now, order.status)?.let {
+                        Text(
+                            it,
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            fontWeight = Type.strong,
+                            modifier = Modifier.padding(top = Space.sm)
+                        )
+                    }
+                    Text(
+                        TIMES_NOTE,
+                        color = TextDisabled,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(top = Space.sm)
+                    )
+                }
+            }
+        }
+
+        item {
+            SectionTitle("Куди їде")
+            Fact("Звідки", details.citySender)
+            FactBlock("Відділення відправника", details.warehouseSender)
+            FactBlock("Адреса відправника", details.warehouseSenderAddress)
+            Fact("Куди", details.cityRecipient)
+            Fact(
+                "Відділення",
+                details.warehouseNumber.takeIf { it.isNotBlank() }?.let { "№$it" }.orEmpty()
+            )
+            FactBlock("Точка видачі", details.warehouseRecipient)
+            FactBlock("Адреса", details.warehouseRecipientAddress)
+            Fact("Тип точки", warehouseCategoryLabel(details.warehouseCategory))
+            Fact("Спосіб доставки", serviceTypeLabel(details.serviceType))
+            // A locker and a counter are different errands, so this is a sentence
+            // rather than the value of a field called CategoryOfWarehouse.
+            collectionNote(details.warehouseCategory, order.paidStorageFrom > 0)?.let {
+                FactNote(it, TextSecondary)
+            }
+            // Nova Poshta's public method answers with where the parcel is and
+            // nothing about how it got there. Saying so once here is the honest
+            // alternative to drawing a line between two cities.
+            FactNote(
+                "Проміжних зупинок Нова Пошта в цій відповіді не дає, тож FlowPay " +
+                    "їх не вигадує."
+            )
+        }
+
+        item {
+            SectionTitle("Коли")
+            Fact(
+                "Передано перевізнику",
+                details.createdAt?.let { momentLabel(it, today) }.orEmpty()
+            )
+            Fact(
+                "Обіцяють доставити",
+                order.scheduledDelivery.takeIf { it > 0 && order.status != RECEIVED }
+                    ?.let { formatDate(LocalDate.ofEpochDay(it)) }.orEmpty()
+            )
+            if (order.paidStorageFrom > 0) {
+                val left = freeStorageDaysLeft(
+                    LocalDate.ofEpochDay(order.paidStorageFrom),
+                    today
+                ) ?: 0
+                Fact(
+                    "Безкоштовне зберігання",
+                    if (left > 0) daysLabel(left) else "закінчилось",
+                    alarm = left <= 2
+                )
+                FactNote("платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}")
+            }
+            Fact(
+                "Перевізник оновив запис",
+                details.trackingUpdatedAt?.let { momentLabel(it, today) }.orEmpty()
+            )
+        }
+
+        val weight = details.factualWeight.takeIf { it > 0 } ?: details.documentWeight
+        val boxSummary = listOfNotNull(
+            weightLabel(weight).takeIf { weight > 0 },
+            seatsLabel(details.seats).takeIf { details.seats > 0 },
+            cargoTypeLabel(details.cargoType).takeIf { it.isNotBlank() }
+        ).joinToString(" · ").ifBlank { "Перевізник ще не зважив" }
+        item {
+            CollapsibleSection("Сама посилка", boxSummary, boxOpen, {
+                boxOpen = it
+                store.saveSectionOpen(SECTION_PARCEL_BOX, it)
+            }) {
+                Column {
+                    Fact("Фактична вага", weightLabel(details.factualWeight).takeIf { details.factualWeight > 0 }.orEmpty())
+                    Fact("Заявлена вага", weightLabel(details.documentWeight).takeIf { details.documentWeight > 0 }.orEmpty())
+                    Fact("Об'ємна вага", weightLabel(details.volumeWeight).takeIf { details.volumeWeight > 0 }.orEmpty())
+                    Fact("Місць", seatsLabel(details.seats).takeIf { details.seats > 0 }.orEmpty())
+                    Fact("Тип відправлення", cargoTypeLabel(details.cargoType))
+                }
+            }
+        }
+
+        val paySummary = listOfNotNull(
+            money(order.amountToPay).takeIf { order.amountToPay > 0 },
+            payerLabel(details.payerType).takeIf { it.isNotBlank() }?.let { "платить $it" }
+        ).joinToString(" · ").ifBlank { "Нічого доплачувати" }
+        item {
+            CollapsibleSection("Оплата", paySummary, payOpen, {
+                payOpen = it
+                store.saveSectionOpen(SECTION_PARCEL_PAY, it)
+            }) {
+                Column {
+                    Fact(
+                        "До сплати при отриманні",
+                        money(order.amountToPay).takeIf { order.amountToPay > 0 }.orEmpty()
+                    )
+                    Fact("Доставку оплачує", payerLabel(details.payerType))
+                    Fact("Спосіб оплати", paymentMethodLabel(details.paymentMethod))
+                }
+            }
+        }
+
+        val options = parcelOptions(details)
+        if (options.isNotEmpty()) {
+            item {
+                SectionTitle("Що з нею ще можна зробити")
+                Column {
+                    for (option in options) FactNote(option, TextSecondary)
+                }
+                FactNote("Робиться це в застосунку або на сайті Нової Пошти.")
+            }
+        }
+
+        item {
+            SectionTitle(SIGHTINGS_TITLE)
+            FactNote(sightingsNote(order.sightings, order.checkedAt))
+        }
+        // Newest first: the question this list is opened with is what happened
+        // last, and a journey read from the bottom of the screen upwards is a
+        // journey nobody reads.
+        itemsIndexed(
+            order.sightings.reversed(),
+            // Position, not content: two checks in the same millisecond would
+            // otherwise collide on a key and take the list down with them.
+            key = { position, _ -> "sighting-$position" }
+        ) { _, seen ->
+            Column(
+                Modifier
+                    .padding(horizontal = Space.screen)
+                    .padding(vertical = Space.sm)
+                    .fillMaxWidth()
+            ) {
+                Text(
+                    seen.text,
+                    fontSize = Type.bodySize,
+                    lineHeight = Type.bodyLine,
+                    color = TextPrimary
+                )
+                Text(
+                    "FlowPay побачив це ${sightingLabel(seen, today, zone)}",
+                    color = TextDisabled,
+                    fontSize = Type.captionSize
+                )
+            }
+        }
+
+        if (order.status == RECEIVED) {
+            item {
+                OutlinedButton(
+                    onClose,
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = Space.screen)
+                        .padding(top = Space.xl),
+                    shape = Radius.sm,
+                    border = BorderStroke(1.dp, Accent),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
+                ) {
+                    Icon(Icons.Default.TaskAlt, null)
+                    Text("  Завершити покупку")
+                }
+            }
+        }
+
+        if (order.url.isNotBlank()) {
+            item {
+                TextButton(
+                    { context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) },
+                    Modifier.padding(horizontal = Space.sm).padding(top = Space.sm)
+                ) { Text("До магазину ↗") }
+            }
         }
     }
 }
