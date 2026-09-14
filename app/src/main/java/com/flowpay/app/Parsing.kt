@@ -12,24 +12,154 @@ import org.json.JSONArray
  * fragments without touching the network.
  */
 
-private val ENTITIES = listOf(
-    "&quot;" to "\"",
-    "&#34;" to "\"",
-    "&apos;" to "'",
-    "&#39;" to "'",
-    "&nbsp;" to " ",
-    "&#160;" to " ",
-    "&lt;" to "<",
-    "&gt;" to ">",
-    "&amp;" to "&"
+/**
+ * The named references worth carrying by hand.
+ *
+ * Short on purpose. HTML defines over two thousand names, and a table typed out
+ * from memory only ever covers the spellings somebody happened to think of —
+ * which is how "&#039;" sat unread in a parcel's title while "&#39;" one row away
+ * was fine. Numeric references are decoded by rule below, so this list only has
+ * to carry the names that actually turn up in og: tags.
+ *
+ * "&nbsp;" becomes an ordinary space rather than U+00A0 deliberately: the title
+ * tidying downstream collapses whitespace with `\s+`, which in Java does not
+ * match a non-breaking space, so keeping one here would leave it welded into the
+ * middle of a product name. The same normalisation is applied to code point 160
+ * in [decodeCodePoint], so the two spellings cannot disagree.
+ */
+private val NAMED_ENTITIES = mapOf(
+    "quot" to "\"",
+    "apos" to "'",
+    "nbsp" to " ",
+    "lt" to "<",
+    "gt" to ">",
+    "amp" to "&"
 )
 
-/** Decodes the handful of entities that actually turn up in og: tags. */
+/**
+ * What HTML says a reference in the C1 range means.
+ *
+ * Numerically 0x80..0x9F are control characters, and a control character dropped
+ * into a product title is worse than the raw "&#151;" it replaced. Every browser
+ * reads these as the windows-1252 characters the author meant, because that is
+ * what the HTML standard tells them to do, and old shop back ends emit them
+ * constantly — "&#146;" for an apostrophe and "&#151;" for a dash above all.
+ */
+private val WINDOWS_1252 = mapOf(
+    0x80 to '€', 0x82 to '‚', 0x83 to 'ƒ', 0x84 to '„',
+    0x85 to '…', 0x86 to '†', 0x87 to '‡', 0x88 to 'ˆ',
+    0x89 to '‰', 0x8A to 'Š', 0x8B to '‹', 0x8C to 'Œ',
+    0x8E to 'Ž', 0x91 to '‘', 0x92 to '’', 0x93 to '“',
+    0x94 to '”', 0x95 to '•', 0x96 to '–', 0x97 to '—',
+    0x98 to '˜', 0x99 to '™', 0x9A to 'š', 0x9B to '›',
+    0x9C to 'œ', 0x9E to 'ž', 0x9F to 'Ÿ'
+)
+
+/**
+ * The longest "&...;" this will even consider.
+ *
+ * A stray ampersand in running text is far more common than an entity, and with
+ * no bound the scanner would hunt to the next semicolon anywhere in the string —
+ * across a whole title — before giving up. Thirty-one characters clears the
+ * longest real name and any amount of zero padding a shop plausibly writes.
+ */
+private const val REFERENCE_LIMIT = 31
+
+/**
+ * Turns character references back into the characters they stand for.
+ *
+ * One left-to-right pass, and output is never looked at again. That is the whole
+ * defence against double decoding: "&amp;quot;" yields a literal "&" followed by
+ * the plain text "quot;", and because the scanner has already moved past what it
+ * wrote, the "&" it just produced cannot begin a second reference. The same holds
+ * for "&amp;#39;", which has to come out as the six characters "&#39;" and not as
+ * an apostrophe, and for "&#38;#39;", which the old replace-in-order table would
+ * have got wrong however the rows were sorted.
+ *
+ * Anything that is not a reference is copied through untouched, so a title
+ * reading "5 & 6" and a malformed "&#;" both survive exactly as typed.
+ */
 fun decodeEntities(value: String): String {
-    var text = value
-    // Ampersand last, so "&amp;quot;" cannot be turned into a quote mark.
-    for ((entity, char) in ENTITIES) text = text.replace(entity, char, ignoreCase = true)
-    return text
+    if (!value.contains('&')) return value
+    val out = StringBuilder(value.length)
+    var index = 0
+    while (index < value.length) {
+        val char = value[index]
+        if (char != '&') {
+            out.append(char)
+            index++
+            continue
+        }
+        val close = value.indexOf(';', index + 1)
+        val decoded = if (close < 0 || close - index > REFERENCE_LIMIT) {
+            null
+        } else {
+            decodeReference(value.substring(index + 1, close))
+        }
+        if (decoded == null) {
+            // Not a reference this understands, so the ampersand is ordinary text.
+            out.append(char)
+            index++
+        } else {
+            out.append(decoded)
+            index = close + 1
+        }
+    }
+    return out.toString()
+}
+
+/** The body of one "&...;", without the ampersand and the semicolon. */
+private fun decodeReference(body: String): String? {
+    if (body.isEmpty()) return null
+    if (body[0] != '#') {
+        // Kotlin's no-argument lowercase() is locale independent, unlike Java's
+        // toLowerCase(), so "&QUOT;" reads the same on a Turkish phone as here.
+        return NAMED_ENTITIES[body.lowercase()]
+    }
+    val digits = body.substring(1)
+    val hex = digits.firstOrNull() == 'x' || digits.firstOrNull() == 'X'
+    val figures = if (hex) digits.substring(1) else digits
+    // "&#;" and "&#x;" are malformed, not references.
+    if (figures.isEmpty()) return null
+    // ASCII figures only. toIntOrNull would accept a leading sign and Arabic-Indic
+    // digits, and neither of those is a character reference.
+    val valid = figures.all {
+        if (hex) it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' else it in '0'..'9'
+    }
+    if (!valid) return null
+    // Zero padding is unbounded in the standard, so "&#000000039;" is legal and the
+    // raw string can overflow an Int. Trimming first keeps the conversion honest;
+    // anything still long enough to exceed U+10FFFF is out of range whatever it says.
+    val trimmed = figures.trimStart('0')
+    if (trimmed.isEmpty()) return null
+    // U+10FFFF is six hexadecimal figures and seven decimal ones, so the cap has
+    // to follow the radix rather than being one number for both.
+    if (trimmed.length > if (hex) 6 else 7) return null
+    val code = trimmed.toIntOrNull(if (hex) 16 else 10) ?: return null
+    return decodeCodePoint(code)
+}
+
+/**
+ * One code point as text, or null when it cannot honestly be one.
+ *
+ * Out of Unicode's range, half of a surrogate pair, or a control character: each
+ * of those would either throw or land a replacement box in the middle of a
+ * product name, so the reference is left standing as the text it already was.
+ * That is always readable, which a black diamond is not.
+ */
+private fun decodeCodePoint(code: Int): String? {
+    // A non-breaking space normalises to an ordinary one, for the reason given
+    // over NAMED_ENTITIES.
+    if (code == 0x00A0) return " "
+    WINDOWS_1252[code]?.let { return it.toString() }
+    if (code > 0x10FFFF) return null
+    // A surrogate is half of a pair and means nothing on its own.
+    if (code in 0xD800..0xDFFF) return null
+    // Controls, NUL included. Tab and newline are let through because they are
+    // real whitespace that the tidying downstream knows how to collapse.
+    if (code < 0x20 && code != 0x09 && code != 0x0A) return null
+    if (code in 0x7F..0x9F) return null
+    return String(Character.toChars(code))
 }
 
 /**
