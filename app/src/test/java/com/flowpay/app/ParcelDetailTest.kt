@@ -222,8 +222,16 @@ class ParcelDetailTest {
 
     @Test
     fun `every wording of the note disclaims being the carrier's own journal`() {
+        // The single-entry wording says only the caveat. What it used to say as
+        // well — that there is one mark, and that it came from the first check —
+        // the one entry drawn directly under it already says with its own time on
+        // it, and a paragraph repeating the list beneath it is the wall of text
+        // this page was complained about for.
         val one = listOf(Sighting(4, "В дорозі", 1L))
-        assertTrue(sightingsNote(one, 1L).contains("до неї сюди не потрапляють"))
+        val first = sightingsNote(one, 1L)
+        assertTrue(first, first.contains("до першої перевірки"))
+        assertTrue(first, first.contains("Нова Пошта"))
+        assertFalse(first, first.contains("одна відмітка"))
         val many = one + Sighting(7, "У відділенні", 2L)
         val note = sightingsNote(many, 2L)
         assertTrue(note, note.contains("бачив FlowPay"))
@@ -413,5 +421,156 @@ class ParcelDetailTest {
         assertTrue(order.sightings.isEmpty())
         // And the screen explains that rather than implying it has not moved.
         assertTrue(sightingsNote(order.sightings, order.checkedAt).contains("раніше, ніж FlowPay"))
+    }
+
+    // -- rows that repeat the row beside them -----------------------------------
+
+    // The parcel that prompted this, read off the owner's screen. Both address
+    // fields are the branch beside them with the city glued on the front, and both
+    // cities are already rows of their own.
+    private val postomat = ParcelDetails(
+        citySender = "Запоріжжя",
+        cityRecipient = "Чернівці",
+        warehouseSender = "Відділення №23 (до 30 кг на одне місце ): Профспілок Майдан, 4",
+        warehouseSenderAddress =
+            "м. Запоріжжя, Відділення №23 (до 30 кг на одне місце ): Профспілок Майдан, 4",
+        warehouseRecipient =
+            "Поштомат \"Нова Пошта\" №36706: вул. Руська, 255а (магазин Україночка)",
+        warehouseRecipientAddress =
+            "м. Чернівці, Поштомат \"Нова Пошта\" №36706: вул. Руська, 255а (магазин Україночка)",
+        warehouseNumber = "36706",
+        warehouseCategory = "Postomat",
+        serviceType = "WarehouseWarehouse"
+    )
+
+    @Test
+    fun `an address that is the branch with the city in front is dropped`() {
+        assertEquals(
+            "",
+            addressBeyond(
+                postomat.warehouseSenderAddress,
+                postomat.warehouseSender,
+                postomat.citySender
+            )
+        )
+        assertEquals(
+            "",
+            addressBeyond(
+                postomat.warehouseRecipientAddress,
+                postomat.warehouseRecipient,
+                postomat.cityRecipient
+            )
+        )
+    }
+
+    @Test
+    fun `an address that says something else is kept in full`() {
+        // A courier delivery: the address is a street, and it is the only line on
+        // the page that has one.
+        val doorstep = "м. Київ, вул. Хрещатик, 22, кв. 5"
+        assertEquals(doorstep, addressBeyond(doorstep, "", "Київ"))
+        // And the fixture at the top of this file, where the carrier's own address
+        // field genuinely differs from its warehouse field.
+        assertEquals(
+            "вул. Наукова, 1",
+            addressBeyond("вул. Наукова, 1", "Відділення №12", "Львів")
+        )
+    }
+
+    @Test
+    fun `a street is not mistaken for the city merely because the city is named`() {
+        // The bound on the leading segment: "вул. Львівська" is longer than "Львів"
+        // can account for, so nothing is taken off and the street survives.
+        val street = "вул. Львівська, 14, Львів"
+        assertEquals(street, addressBeyond(street, "Відділення №3", "Львів"))
+    }
+
+    @Test
+    fun `an address the carrier left empty draws no row`() {
+        assertEquals("", addressBeyond("", "Відділення №12", "Львів"))
+        assertEquals("", addressBeyond("   ", "Відділення №12", "Львів"))
+        // Nothing but the city, which the row above already said.
+        assertEquals("", addressBeyond("Чернівці", "", "Чернівці"))
+    }
+
+    @Test
+    fun `a spacing difference is not a difference`() {
+        // Nova Poshta writes the same bracket with and without a space before it in
+        // two fields of one response, and two sentences differing only in that are
+        // the same sentence to a reader.
+        assertEquals(
+            "",
+            addressBeyond(
+                "м. Запоріжжя,  Відділення №23 (до 30 кг ):  Профспілок Майдан, 4",
+                "Відділення №23 (до 30 кг ): Профспілок Майдан, 4",
+                "Запоріжжя"
+            )
+        )
+    }
+
+    @Test
+    fun `the branch number and the kind of place are already in the point's name`() {
+        assertTrue(alreadySaid(postomat.warehouseNumber, postomat.warehouseRecipient))
+        assertTrue(
+            alreadySaid(
+                warehouseCategoryLabel(postomat.warehouseCategory),
+                postomat.warehouseRecipient
+            )
+        )
+        // A carrier that does not spell the number into the name still gets a row,
+        // because then it is the only place the number appears.
+        assertFalse(alreadySaid("36706", "Поштомат на Руській"))
+        // A field the carrier left blank takes the same route out as a redundant
+        // one, so the caller has one condition rather than two.
+        assertTrue(alreadySaid("", "Поштомат на Руській"))
+    }
+
+    @Test
+    fun `the section is five rows once the repeats are gone`() {
+        // Nine rows as the carrier sends them; five once each is checked against
+        // the one beside it. Counted here rather than eyeballed, because the whole
+        // complaint was the count.
+        val rows = listOfNotNull(
+            postomat.citySender.takeIf { it.isNotBlank() },
+            postomat.warehouseSender.takeIf { it.isNotBlank() },
+            addressBeyond(
+                postomat.warehouseSenderAddress,
+                postomat.warehouseSender,
+                postomat.citySender
+            ).takeIf { it.isNotBlank() },
+            postomat.cityRecipient.takeIf { it.isNotBlank() },
+            postomat.warehouseNumber
+                .takeIf { !alreadySaid(it, postomat.warehouseRecipient) },
+            postomat.warehouseRecipient.takeIf { it.isNotBlank() },
+            addressBeyond(
+                postomat.warehouseRecipientAddress,
+                postomat.warehouseRecipient,
+                postomat.cityRecipient
+            ).takeIf { it.isNotBlank() },
+            warehouseCategoryLabel(postomat.warehouseCategory)
+                .takeIf { !alreadySaid(it, postomat.warehouseRecipient) },
+            serviceTypeLabel(postomat.serviceType).takeIf { it.isNotBlank() }
+        )
+        assertEquals(rows.toString(), 5, rows.size)
+    }
+
+    // -- what a shut fold says for itself ---------------------------------------
+
+    @Test
+    fun `a folded options section names what is inside it`() {
+        assertEquals(
+            "переадресація · продовження зберігання",
+            parcelOptionsSummary(parsed().details)
+        )
+        assertEquals(
+            "переадресація · відмова · продовження зберігання",
+            parcelOptionsSummary(
+                ParcelDetails(canRedirect = true, canRefuse = true, canExtendTerm = true)
+            )
+        )
+        // Nothing allowed means no section at all, which [parcelOptions] already
+        // decides; the summary simply has nothing to say either.
+        assertEquals("", parcelOptionsSummary(ParcelDetails()))
+        assertTrue(parcelOptions(ParcelDetails()).isEmpty())
     }
 }

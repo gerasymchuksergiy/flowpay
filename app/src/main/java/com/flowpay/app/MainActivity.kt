@@ -3056,16 +3056,36 @@ fun AddSourceSheet(
     }
 }
 
-/** A heading that sits closer to its own content than to whatever came before. */
+/**
+ * A heading that sits closer to its own content than to whatever came before.
+ *
+ * [icon] is optional and most headings do without one. Where it is given, it is one
+ * mark at the head of a whole section rather than one per row: an eye scanning a
+ * long page finds a section by its shape, and that is the entire job being asked of
+ * it. The same mark repeated down every row of the section would be nine more
+ * things to look at on a page whose complaint is that there is too much to look at
+ * — decoration is density too.
+ *
+ * Drawn in [TextSecondary] rather than in the accent, because the accent on this
+ * app means "this is the thing", and a heading is a signpost, not the thing.
+ */
 @Composable
-fun SectionTitle(text: String) {
-    Text(
-        text,
+fun SectionTitle(text: String, icon: ImageVector? = null) {
+    Row(
         Modifier.padding(horizontal = Space.screen).padding(top = Space.xxl, bottom = Space.md),
-        fontSize = Type.sectionSize,
-        lineHeight = Type.sectionLine,
-        fontWeight = Type.medium
-    )
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        icon?.let {
+            Icon(it, null, Modifier.size(Space.lg), tint = TextSecondary)
+            Spacer(Modifier.width(Space.md))
+        }
+        Text(
+            text,
+            fontSize = Type.sectionSize,
+            lineHeight = Type.sectionLine,
+            fontWeight = Type.medium
+        )
+    }
 }
 
 /**
@@ -3121,6 +3141,8 @@ fun CollapsibleSection(
     summary: String,
     open: Boolean,
     onToggle: (Boolean) -> Unit,
+    /** One mark at the head of the section, on the same terms as [SectionTitle]. */
+    icon: ImageVector? = null,
     content: @Composable () -> Unit
 ) {
     // The chevron is the same gesture as the opening, so it rides the same spring
@@ -3141,6 +3163,10 @@ fun CollapsibleSection(
             .padding(top = Space.xxl, bottom = Space.md),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        icon?.let {
+            Icon(it, null, Modifier.size(Space.lg), tint = TextSecondary)
+            Spacer(Modifier.width(Space.md))
+        }
         Column(Modifier.weight(1f)) {
             Text(
                 title,
@@ -5957,9 +5983,10 @@ private fun FactNote(text: String, color: Color = TextDisabled) {
     )
 }
 
-/** Where the two folded sections of the parcel page remember their state. */
+/** Where the folded sections of the parcel page remember their state. */
 const val SECTION_PARCEL_BOX = "parcelbox"
 const val SECTION_PARCEL_PAY = "parcelpay"
+const val SECTION_PARCEL_OPTIONS = "parcelopts"
 
 /**
  * Everything the carrier will say about one parcel, on a page of its own.
@@ -6003,6 +6030,7 @@ fun OrderDetailScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var boxOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_BOX)) }
     var payOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_PAY)) }
+    var optionsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_OPTIONS)) }
     val trackable = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
     // Read once, so a page left open across midnight cannot start disagreeing with
     // itself about which of its dates is "сьогодні".
@@ -6170,19 +6198,48 @@ fun OrderDetailScreen(
             }
         }
 
+        // Nine rows once, and four of them said nothing the rows beside them had not
+        // already said: two full-length addresses that were the branch with the city
+        // glued on the front, the branch number that the pickup point's own name
+        // quotes, and the kind of place that the same name starts with. They are
+        // dropped by rule rather than by deletion — [addressBeyond] and
+        // [alreadySaid] check each one against its neighbour, so a courier delivery,
+        // where the address really is the only line with a street on it, still
+        // prints it.
         item {
-            SectionTitle("Куди їде")
+            SectionTitle("Куди їде", Icons.Default.Place)
             Fact("Звідки", details.citySender)
             FactBlock("Відділення відправника", details.warehouseSender)
-            FactBlock("Адреса відправника", details.warehouseSenderAddress)
+            FactBlock(
+                "Адреса відправника",
+                addressBeyond(
+                    details.warehouseSenderAddress,
+                    details.warehouseSender,
+                    details.citySender
+                )
+            )
             Fact("Куди", details.cityRecipient)
             Fact(
                 "Відділення",
-                details.warehouseNumber.takeIf { it.isNotBlank() }?.let { "№$it" }.orEmpty()
+                details.warehouseNumber
+                    .takeIf { !alreadySaid(it, details.warehouseRecipient) }
+                    ?.let { "№$it" }.orEmpty()
             )
             FactBlock("Точка видачі", details.warehouseRecipient)
-            FactBlock("Адреса", details.warehouseRecipientAddress)
-            Fact("Тип точки", warehouseCategoryLabel(details.warehouseCategory))
+            FactBlock(
+                "Адреса",
+                addressBeyond(
+                    details.warehouseRecipientAddress,
+                    details.warehouseRecipient,
+                    details.cityRecipient
+                )
+            )
+            Fact(
+                "Тип точки",
+                warehouseCategoryLabel(details.warehouseCategory)
+                    .takeIf { !alreadySaid(it, details.warehouseRecipient) }
+                    .orEmpty()
+            )
             Fact("Спосіб доставки", serviceTypeLabel(details.serviceType))
             // A locker and a counter are different errands, so this is a sentence
             // rather than the value of a field called CategoryOfWarehouse.
@@ -6199,7 +6256,7 @@ fun OrderDetailScreen(
         }
 
         item {
-            SectionTitle("Коли")
+            SectionTitle("Коли", Icons.Default.Schedule)
             Fact(
                 "Передано перевізнику",
                 details.createdAt?.let { momentLabel(it, today) }.orEmpty()
@@ -6237,7 +6294,7 @@ fun OrderDetailScreen(
             CollapsibleSection("Сама посилка", boxSummary, boxOpen, {
                 boxOpen = it
                 store.saveSectionOpen(SECTION_PARCEL_BOX, it)
-            }) {
+            }, icon = Icons.Default.Inventory2) {
                 Column {
                     Fact("Фактична вага", weightLabel(details.factualWeight).takeIf { details.factualWeight > 0 }.orEmpty())
                     Fact("Заявлена вага", weightLabel(details.documentWeight).takeIf { details.documentWeight > 0 }.orEmpty())
@@ -6256,7 +6313,7 @@ fun OrderDetailScreen(
             CollapsibleSection("Оплата", paySummary, payOpen, {
                 payOpen = it
                 store.saveSectionOpen(SECTION_PARCEL_PAY, it)
-            }) {
+            }, icon = Icons.Default.Payments) {
                 Column {
                     Fact(
                         "До сплати при отриманні",
@@ -6268,19 +6325,33 @@ fun OrderDetailScreen(
             }
         }
 
+        // Three lines about things that are done in Nova Poshta's own app rather
+        // than in this one, so they arrive folded: the page is opened to find out
+        // where the parcel is, and this is the part of it nobody came for. The
+        // summary names them, so a shut fold still says what is inside it.
         val options = parcelOptions(details)
         if (options.isNotEmpty()) {
             item {
-                SectionTitle("Що з нею ще можна зробити")
-                Column {
-                    for (option in options) FactNote(option, TextSecondary)
+                CollapsibleSection(
+                    "Що з нею ще можна зробити",
+                    parcelOptionsSummary(details),
+                    optionsOpen,
+                    {
+                        optionsOpen = it
+                        store.saveSectionOpen(SECTION_PARCEL_OPTIONS, it)
+                    },
+                    icon = Icons.Default.Tune
+                ) {
+                    Column {
+                        for (option in options) FactNote(option, TextSecondary)
+                        FactNote("Робиться це в застосунку або на сайті Нової Пошти.")
+                    }
                 }
-                FactNote("Робиться це в застосунку або на сайті Нової Пошти.")
             }
         }
 
         item {
-            SectionTitle(SIGHTINGS_TITLE)
+            SectionTitle(SIGHTINGS_TITLE, Icons.Default.Visibility)
             FactNote(sightingsNote(order.sightings, order.checkedAt))
         }
         // Newest first: the question this list is opened with is what happened

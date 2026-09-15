@@ -446,9 +446,11 @@ fun sightingsNote(seen: List<Sighting>, checkedAt: Long): String = when {
     seen.isEmpty() ->
         "Ця посилка з'явилась раніше, ніж FlowPay почав вести цей список. " +
             "Того, що було до першої перевірки, Нова Пошта в цій відповіді не віддає."
-    seen.size == 1 ->
-        "Поки що одна відмітка — та, що була на момент першої перевірки. " +
-            "Рухи до неї сюди не потрапляють."
+    // The one entry is drawn directly underneath with its own wording and its own
+    // time on it, so a paragraph announcing that there is one entry was the same
+    // sentence twice — which on the page that was called a wall of text is the
+    // wall. What is left is only the part the list cannot say for itself.
+    seen.size == 1 -> "Рухів до першої перевірки Нова Пошта в цій відповіді не дає."
     else ->
         "Це те, що бачив FlowPay, а не журнал Нової Пошти. " +
             "Рухи до першої перевірки сюди не потрапляють."
@@ -469,6 +471,103 @@ fun sightingLabel(seen: Sighting, today: LocalDate, zone: java.time.ZoneId): Str
         java.time.Instant.ofEpochMilli(seen.atMillis).atZone(zone).toLocalDateTime(),
         today
     )
+
+// ------------------------------------------------- rows that repeat their neighbour
+
+/**
+ * Whitespace collapsed, for comparing two strings the same carrier wrote.
+ *
+ * Nova Poshta's own fields disagree about spacing — "(до 30 кг на одне місце )"
+ * has a space before the bracket in one field and not in another — and two
+ * sentences that differ only in that are the same sentence to a reader.
+ */
+private fun tidySpaces(text: String): String = text.trim().replace(Regex("""\s+"""), " ")
+
+/**
+ * How much longer than the city name its own segment is allowed to be.
+ *
+ * Room for "м. ", "смт " and the like in front of it, and no room for a street:
+ * the point of the bound is that "вул. Наукова" must not be mistaken for the city
+ * merely because the city is named further along the same line.
+ */
+private const val CITY_MARK_SLACK = 6
+
+/** An address with its leading "м. Чернівці," taken off, when that is what it is. */
+private fun withoutLeadingCity(address: String, city: String): String {
+    if (city.isBlank()) return address
+    val comma = address.indexOf(',')
+    if (comma < 0) return address
+    val head = address.substring(0, comma)
+    val isCity = head.contains(city, ignoreCase = true) &&
+        head.length <= city.length + CITY_MARK_SLACK
+    return if (isCity) address.substring(comma + 1).trim() else address
+}
+
+/**
+ * The address row, or nothing at all when it is the row beside it said again.
+ *
+ * `WarehouseSenderAddress` is, on a branch-to-branch parcel, exactly
+ * `WarehouseSender` with the city glued on the front — and the city is already its
+ * own row directly above. Same at the other end. So the page was printing this,
+ * twice over:
+ *
+ * ```
+ * Відділення        Поштомат "Нова Пошта" №36706: вул. Руська, 255а
+ * Адреса            м. Чернівці, Поштомат "Нова Пошта" №36706: вул. Руська, 255а
+ * ```
+ *
+ * Two of the longest lines on the screen, saying one thing. The complaint that
+ * prompted this was density, and the cheapest density to remove is the kind that
+ * carries no information at all — so this is checked rather than assumed: an
+ * address that genuinely differs from the point beside it is kept in full, because
+ * on a courier delivery it is the only line with a street on it.
+ */
+fun addressBeyond(address: String, point: String, city: String): String {
+    val text = tidySpaces(address)
+    if (text.isBlank()) return ""
+    val spot = tidySpaces(point)
+    val town = tidySpaces(city)
+    val stripped = withoutLeadingCity(text, town)
+    return when {
+        stripped.isBlank() -> ""
+        stripped.equals(spot, ignoreCase = true) -> ""
+        // Nothing but the city, which the row above already said.
+        spot.isBlank() && stripped.equals(town, ignoreCase = true) -> ""
+        else -> text
+    }
+}
+
+/**
+ * Whether a short value is already spelled out inside the longer one beside it.
+ *
+ * The branch number and the kind of place are both rows of their own, and on a
+ * Nova Poshta locker both are already inside the pickup point's own name —
+ * «Поштомат "Нова Пошта" №36706: …» contains the word and the number. A row that
+ * quotes part of the row under it is a row that costs attention and returns none.
+ *
+ * Blank counts as already said, so a field the carrier left empty takes the same
+ * route out as one that is redundant, and the caller has a single condition rather
+ * than two.
+ */
+fun alreadySaid(value: String, beside: String): Boolean {
+    val short = tidySpaces(value)
+    if (short.isBlank()) return true
+    return tidySpaces(beside).contains(short, ignoreCase = true)
+}
+
+/**
+ * What the carrier still allows, in the two or three words a shut fold has room for.
+ *
+ * The section it heads is three sentences about things that are done in Nova
+ * Poshta's own app rather than here, so it arrives folded — but a fold that says
+ * only its title makes you open it to find out whether you wanted it, which is the
+ * wall of text again with a tap in front of it.
+ */
+fun parcelOptionsSummary(details: ParcelDetails): String = listOfNotNull(
+    "переадресація".takeIf { details.canRedirect },
+    "відмова".takeIf { details.canRefuse },
+    "продовження зберігання".takeIf { details.canExtendTerm }
+).joinToString(" · ")
 
 /**
  * Which two ends of the journey are a counter and which are a doorstep.
