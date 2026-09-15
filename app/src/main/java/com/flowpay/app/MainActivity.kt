@@ -236,7 +236,22 @@ data class Wish(
      * — so unlike the folded sections it belongs in [Store.exportJson], which it
      * reaches by being part of [wishJson].
      */
-    val searchQuery: String = ""
+    val searchQuery: String = "",
+    /**
+     * What a model last wrote about what kind of thing this is, and for which price.
+     *
+     * Null on every wish nobody has asked about, which is most of them and is not
+     * a failure — see [appraisalGate], which keeps the whole section off the
+     * screen for a wish the app cannot honestly ask about at all.
+     *
+     * Cached rather than regenerated on every open for two reasons that pull the
+     * same way: each generation is a paid call, and a verdict whose wording
+     * changes every time the screen is opened reads as noise rather than as an
+     * opinion. It carries the price it was written against so that
+     * [appraisalStale] can say the price has moved instead of the screen quietly
+     * showing an old judgement about a different number.
+     */
+    val appraisal: Appraisal? = null
 )
 
 data class Pay(
@@ -807,6 +822,45 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     // Written even when empty, like the array above, so that what comes back out
     // of the bin is exactly what went in.
     .put("sq", wish.searchQuery)
+    // Unlike the two above this one is genuinely absent rather than empty on a
+    // wish nobody has asked about, and the difference is load-bearing: absent
+    // means the section offers to write one, and an empty object would mean a
+    // model was asked and said nothing. So the key is written only when there is
+    // an answer, and [wishOf] reads its absence back as null.
+    .let { if (wish.appraisal != null) it.put("ap", appraisalJson(wish.appraisal)) else it }
+
+/**
+ * A model's verdict, stored beside the wish.
+ *
+ * A nested object for the same reason [aboutJson] is one: the bin's restore and
+ * the backup file carry it whole or not at all, and a half-restored verdict — the
+ * paragraph without the price it was written for — would be a judgement about a
+ * number nobody could name, which is the exact failure this feature is built
+ * around avoiding.
+ */
+fun appraisalJson(appraisal: Appraisal): JSONObject = JSONObject()
+    .put("k", appraisal.kind)
+    .put("w", JSONArray().apply { appraisal.weigh.forEach { put(it) } })
+    .put("q", appraisal.shopSays)
+    .put("p", appraisal.price)
+    .put("d", appraisal.day)
+    .put("m", appraisal.model)
+
+fun appraisalOf(o: JSONObject?): Appraisal? {
+    if (o == null) return null
+    val listed = o.optJSONArray("w") ?: JSONArray()
+    val appraisal = Appraisal(
+        kind = o.optString("k"),
+        weigh = (0 until listed.length()).map { listed.optString(it) }.filter { it.isNotBlank() },
+        shopSays = o.optString("q"),
+        price = o.optDouble("p", 0.0),
+        day = o.optLong("d", 0L),
+        model = o.optString("m")
+    )
+    // A stored object with nothing in it is not a verdict, and reading it back as
+    // one would put an empty paragraph under a heading that promises words.
+    return appraisal.takeIf { !it.isEmpty }
+}
 
 /**
  * One shop, stored.
@@ -918,7 +972,11 @@ fun wishOf(o: JSONObject): Wish {
         // Absent on every wish saved before the search existed, which reads back as
         // empty — and empty is precisely right for them: nobody has corrected the
         // query for a wish that never had one.
-        searchQuery = o.optString("sq")
+        searchQuery = o.optString("sq"),
+        // Absent on every wish saved before this existed and on every wish nobody
+        // has asked about, both of which are the same thing: no model has written
+        // about it, so the section offers to.
+        appraisal = appraisalOf(o.optJSONObject("ap"))
     )
 }
 
@@ -3430,6 +3488,10 @@ fun SharedTransitionScope.WishDetailScreen(
     var historyOpen by remember { mutableStateOf(store.sectionOpen(SECTION_HISTORY)) }
     var shopsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_SHOPS)) }
     var planOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PLAN)) }
+    // Kept the same way as the three above and shut by default for the same
+    // reason: a section that arrives open is the wall this page spent a release
+    // folding down, and this one is also the only section that can spend money.
+    var appraisalOpen by remember { mutableStateOf(store.sectionOpen(SECTION_APPRAISAL)) }
     // The two inside «Про товар», kept the same way and for the same reason:
     // whether the blurb is worth reading in full is a fact about the reader, not
     // about a pair of headphones, so it is not keyed on the wish.
@@ -3747,6 +3809,27 @@ fun SharedTransitionScope.WishDetailScreen(
                         }
                     }
                 }
+            }
+
+            // After «Про товар» and before the chart, because the order of the
+            // three questions is "what is this", "what do I make of it", "what has
+            // it cost". Absent entirely — not folded, not hedged — for a wish the
+            // app cannot honestly ask about, and absent in every build with no key,
+            // which is every debug build. See [appraisalGate] for the whole rule.
+            if (appraisalShows(wish, hasAppraisalKey(BuildConfig.GEMINI_KEY))) {
+                AppraisalSection(
+                    wish = wish,
+                    insight = insight,
+                    freeCash = freeCash,
+                    today = today.toEpochDay(),
+                    key = BuildConfig.GEMINI_KEY,
+                    open = appraisalOpen,
+                    onToggle = {
+                        appraisalOpen = it
+                        store.saveSectionOpen(SECTION_APPRAISAL, it)
+                    },
+                    onChange = onChange
+                )
             }
 
             // The chart, the verdict and the notes under them. First of the three
