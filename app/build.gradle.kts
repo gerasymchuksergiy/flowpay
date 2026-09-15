@@ -30,14 +30,19 @@ android {
   // provider, who revokes it — so a key in the source would stop working rather
   // than merely leak. Empty in a local build, which the app reads as "no
   // assessment available" instead of failing.
-  // Accepted only if it is shaped like a Google API key, and emitted as empty
-  // otherwise. The v3.10.0 release failed to compile because the secret held
-  // something multi-line with backslashes in it — a service-account JSON rather
-  // than an AI Studio key — and it was pasted straight into a Java string
-  // literal. A wrong secret must make the feature absent, which the app already
-  // handles, rather than break the build for everything else in the release.
+  // Kept only if it is one line of characters that cannot break the Java string
+  // literal this is pasted into. Deliberately not a check on the key's shape:
+  // the first attempt required it to start with "AIza" and would have silently
+  // discarded a perfectly good key in Google's other format, which begins
+  // "AQ." and carries a dot. Guessing a provider's format is not this build's
+  // job; producing valid Java is.
+  //
+  // The v3.10.0 release failed to compile because the secret held something
+  // multi-line with backslashes in it, pasted straight into the literal. A
+  // secret that is wrong now yields an empty key, which the app already reads
+  // as "no appraisal available", instead of taking the whole release down.
   val geminiKey = (System.getenv("GEMINI_API_KEY") ?: "").trim()
-   .takeIf { it.matches(Regex("AIza[A-Za-z0-9_-]{20,60}")) }
+   .takeIf { it.length in 20..200 && it.all { ch -> ch.isLetterOrDigit() || ch in "._-" } }
    .orEmpty()
   buildConfigField("String", "GEMINI_KEY", "\"" + geminiKey + "\"")
  }
