@@ -30,11 +30,16 @@ android {
   // provider, who revokes it — so a key in the source would stop working rather
   // than merely leak. Empty in a local build, which the app reads as "no
   // assessment available" instead of failing.
-  buildConfigField(
-   "String",
-   "GEMINI_KEY",
-   "\"" + (System.getenv("GEMINI_API_KEY") ?: "") + "\""
-  )
+  // Accepted only if it is shaped like a Google API key, and emitted as empty
+  // otherwise. The v3.10.0 release failed to compile because the secret held
+  // something multi-line with backslashes in it — a service-account JSON rather
+  // than an AI Studio key — and it was pasted straight into a Java string
+  // literal. A wrong secret must make the feature absent, which the app already
+  // handles, rather than break the build for everything else in the release.
+  val geminiKey = (System.getenv("GEMINI_API_KEY") ?: "").trim()
+   .takeIf { it.matches(Regex("AIza[A-Za-z0-9_-]{20,60}")) }
+   .orEmpty()
+  buildConfigField("String", "GEMINI_KEY", "\"" + geminiKey + "\"")
  }
 
  compileOptions {
