@@ -449,7 +449,7 @@ fun appraisalFacts(
         rows += AppraisalRow("Найнижча за весь час", money(insight.lowest))
     }
     if (insight.changes > 0) {
-        rows += AppraisalRow("Записано цін", changesLabel(insight.changes))
+        rows += AppraisalRow("В історії", changesLabel(insight.changes))
     }
     wantedDays(wish, today)?.let { rows += AppraisalRow("У списку", daysLabel(it)) }
     ratingLine(wish.about).takeIf { it.isNotBlank() }?.let {

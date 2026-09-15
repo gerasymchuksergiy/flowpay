@@ -231,7 +231,8 @@ class AppraisalTest {
         val labels = facts.rows.map { it.label }
         assertTrue(labels.contains("Діапазон за 30 днів"))
         assertTrue(labels.contains("Найнижча за весь час"))
-        assertTrue(labels.contains("Записано цін"))
+        assertTrue(labels.contains("В історії"))
+        assertEquals("4 зміни", facts.rows.first { it.label == "В історії" }.value)
         assertEquals("40 днів", facts.rows.first { it.label == "У списку" }.value)
         assertEquals("4,6 / 5 · 900 відгуків", facts.rows.first { it.label == "Оцінка магазину" }.value)
         assertEquals("50%", facts.rows.first { it.label == "Частка вільних коштів" }.value)
