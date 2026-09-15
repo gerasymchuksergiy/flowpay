@@ -325,6 +325,81 @@ class DigestTest {
         assertEquals("Безкоштовне зберігання закінчилось", urgentStorageText(0))
     }
 
+    // -------------------------------------- bills he has already ticked off
+
+    @Test
+    fun `a bill already marked paid is not named in the morning message`() {
+        // The digest is rebuilt from state every morning, which is what makes it
+        // survive the app being killed — and it is also why an expense already paid
+        // would otherwise be announced again every single morning until its date
+        // went past. A notification cannot be waved away in place the way the pill
+        // can, so this is the same defect reaching him through the worse channel.
+        val marks = listOf(PaidMark("Інтернет", monthKey(today), 300.0))
+
+        val nagging = digest(
+            wishes = emptyList(),
+            pays = listOf(internet),
+            orders = emptyList(),
+            today = today,
+            usdSellRate = 0.0,
+            income = 40_000.0
+        )
+        assertFalse(nagging.empty)
+        assertTrue(shown(nagging.title).contains("Інтернет"))
+
+        val settled = digest(
+            wishes = emptyList(),
+            pays = listOf(internet),
+            orders = emptyList(),
+            today = today,
+            usdSellRate = 0.0,
+            income = 40_000.0,
+            paid = marks
+        )
+        // And with nothing else to report the message is not sent at all, rather
+        // than arriving with the free-cash trailer and no news above it.
+        assertTrue(settled.empty)
+    }
+
+    @Test
+    fun `a settled bill does not silence the one beside it`() {
+        val marks = listOf(PaidMark("Інтернет", monthKey(today), 300.0))
+
+        val summary = digest(
+            wishes = emptyList(),
+            pays = listOf(internet, Pay("Комуналка", 2400.0, day = 16, warnDays = 1)),
+            orders = emptyList(),
+            today = today,
+            usdSellRate = 0.0,
+            income = 40_000.0,
+            paid = marks
+        )
+
+        assertEquals("Комуналка 2 400 ₴ — завтра", shown(summary.title))
+    }
+
+    @Test
+    fun `the parcel and price lines were already refusing to nag`() {
+        // Said out loud because it is the reason only the payment lines needed
+        // fixing: a purchase that has been filed and a wish deliberately put aside
+        // have both been dealt with, and both of those lines already knew it.
+        val filed = digest(
+            wishes = listOf(
+                wish("Навушники", 2400.0, listOf(PricePoint(2700.0, epochToday - 3)))
+                    .copy(holdUntil = epochToday + 10)
+            ),
+            pays = emptyList(),
+            orders = listOf(
+                parcel("Чайник", AT_BRANCH, today.plusDays(1), archivedDay = epochToday)
+            ),
+            today = today,
+            usdSellRate = 0.0,
+            income = 40_000.0
+        )
+
+        assertTrue(filed.body + filed.title, filed.empty)
+    }
+
     @Test
     fun `the digest says when a payment was moved off a day off`() {
         // The 13th of September 2026 is a Sunday.

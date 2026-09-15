@@ -371,6 +371,114 @@ class PaymentsTest {
         )
     }
 
+    // ---------------------------------------- a bill that has already been paid
+
+    @Test
+    fun `an expense ticked off this month is left out of the morning message`() {
+        // The same defect the status pill had, reaching him through the one channel
+        // he cannot wave away in place.
+        val utilities = Pay("Комуналка", 2400.0, day = 12, warnDays = 3)
+        val marks = listOf(PaidMark("Комуналка", monthKey(today), 2400.0))
+
+        assertEquals(1, remindersDue(listOf(utilities), today).size)
+        assertTrue(remindersDue(listOf(utilities), today, emptySet(), marks).isEmpty())
+    }
+
+    @Test
+    fun `a settled bill does not take an unsettled one down with it`() {
+        // Each expense is asked separately, so this could not have gone wrong the
+        // way it did on the pill — but it is the property that matters, so it is
+        // pinned rather than reasoned about.
+        val items = listOf(
+            Pay("Комуналка", 2400.0, day = 12, warnDays = 3),
+            Pay("Інтернет", 300.0, day = 13, warnDays = 3)
+        )
+        val marks = listOf(PaidMark("Комуналка", monthKey(today), 2400.0))
+
+        assertEquals(
+            listOf("Інтернет"),
+            remindersDue(items, today, emptySet(), marks).map { it.pay.name }
+        )
+    }
+
+    @Test
+    fun `the mark has to be for the month the charge falls in`() {
+        // Billed on the first, ticked off on the twelfth of September: the next
+        // charge is the first of October, and asking about September instead would
+        // silence October's charge and every one after it.
+        val rent = Pay("Оренда", 8000.0, day = 1, warnDays = 30)
+        val september = listOf(PaidMark("Оренда", monthKey(today), 8000.0))
+
+        val due = remindersDue(listOf(rent), today, emptySet(), september)
+
+        assertEquals(1, due.size)
+        assertEquals(19, due.single().daysAway)
+
+        // And the October mark does silence the October charge.
+        val october = listOf(PaidMark("Оренда", monthKey(today.plusMonths(1)), 8000.0))
+        assertTrue(remindersDue(listOf(rent), today, emptySet(), october).isEmpty())
+    }
+
+    @Test
+    fun `the pill and the morning message settle a bill the same way`() {
+        // One definition, asked through one function. Two implementations of
+        // "settled" is how the tick, the pill and the notification would come to
+        // disagree about whether the rent is paid.
+        val items = listOf(
+            Pay("Комуналка", 2400.0, day = 12, warnDays = 3),
+            Pay("Інтернет", 300.0, day = 13, warnDays = 3),
+            Pay("Оренда", 8000.0, day = 1, warnDays = 30)
+        )
+        val marks = listOf(PaidMark("Комуналка", monthKey(today), 2400.0))
+
+        assertEquals(
+            stillOwing(items, marks, today).map { it.name },
+            listOf("Інтернет", "Оренда")
+        )
+        // Whatever the reminder still reports is drawn from exactly that list.
+        assertTrue(
+            remindersDue(items, today, emptySet(), marks)
+                .all { it.pay in stillOwing(items, marks, today) }
+        )
+    }
+
+    @Test
+    fun `no record of what was paid leaves the reminder exactly as it was`() {
+        val utilities = Pay("Комуналка", 2400.0, day = 12, warnDays = 3)
+        assertEquals(
+            remindersDue(listOf(utilities), today).map { it.daysAway },
+            remindersDue(listOf(utilities), today, emptySet(), emptyList()).map { it.daysAway }
+        )
+    }
+
+    @Test
+    fun `a renewal that is still free is not announced as a charge`() {
+        // Checked rather than assumed. A subscription on the 13th, free until the
+        // first of December: on the tenth of October its renewal is three days away
+        // and squarely inside a three-day window, so a reminder path that only knew
+        // about dates would announce it — and announce a charge of nought, spending
+        // the one message a day on the wrong date. [remindersDue] asks [nextCharge],
+        // which counts from the end of the free period, so it stays quiet.
+        val trial = Pay(
+            "Підписка",
+            400.0,
+            day = 13,
+            warnDays = 3,
+            trialEnd = LocalDate.of(2026, 12, 1).toEpochDay()
+        )
+
+        assertTrue(remindersDue(listOf(trial), LocalDate.of(2026, 10, 10)).isEmpty())
+        assertTrue(remindersDue(listOf(trial), today).isEmpty())
+
+        // Once the free period has run out the same expense is announced normally.
+        // The 13th of December 2026 is a Sunday, so the money has to be there by
+        // the Friday — which is what the three days here are counted to.
+        val charging = remindersDue(listOf(trial), LocalDate.of(2026, 12, 8))
+        assertEquals(1, charging.size)
+        assertEquals("Підписка", charging.single().pay.name)
+        assertEquals(3, charging.single().daysAway)
+    }
+
     @Test
     fun `a week of warning is what lets a subscription be cancelled in time`() {
         val subscription = Pay("Підписка", 400.0, day = 18, warnDays = 7)

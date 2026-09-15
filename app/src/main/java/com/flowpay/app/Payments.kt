@@ -874,6 +874,31 @@ data class DueReminder(
 )
 
 /**
+ * The expenses that still owe money, with the ones already settled taken out.
+ *
+ * **The one definition of "settled" in the app, and it has to stay the one.** The
+ * tick on the payments screen, the month rows on the overview, the status pill and
+ * the morning notification all have to be incapable of disagreeing about whether
+ * the rent is paid — and the way they would come to disagree is each deciding it
+ * for itself. So this is a function rather than a line repeated at two call sites.
+ *
+ * Two things about it are load-bearing and both were paid for once already:
+ *
+ * The month is the month **the charge falls in**, from [nextCharge], not the month
+ * it is [today]. A subscription billed on the first, ticked off on the fifteenth of
+ * March, has its next charge on the first of April; asking whether March is marked
+ * would silence April's charge and every one after it.
+ *
+ * And it filters the *expenses*, before anything works out which date is next.
+ * Filtering what was found on a date instead lets a settled charge on the tenth
+ * hide an unsettled one on the twelfth: the earlier date is found, emptied, and the
+ * whole question dropped, with the bill that actually needed the notice never
+ * looked at.
+ */
+fun stillOwing(items: List<Pay>, marks: List<PaidMark>, today: LocalDate): List<Pay> =
+    items.filterNot { isPaid(marks, it.name, monthKey(nextCharge(it, today))) }
+
+/**
  * Everything worth saying on [today], soonest first.
  *
  * The window is per expense: a subscription set to seven days starts appearing a
@@ -884,13 +909,22 @@ data class DueReminder(
  * [holidays] is allowed to be empty and usually is on the first run of a year.
  * With it, a charge falling on a weekend or a public holiday counts from the last
  * working day before it, because that is the day the money actually has to move.
+ *
+ * [marks] is what stops the morning message naming a bill that was ticked off last
+ * week. It was the same hole the status pill had, reaching the person through the
+ * one channel he cannot wave away in place: a notification interrupts, and an app
+ * that agrees he has paid on two screens and disagrees in his notification shade is
+ * worse than one that never offered the tick. Empty is the honest default for a
+ * caller that has no record of what was paid, and it is exactly the behaviour this
+ * had before.
  */
 fun remindersDue(
     items: List<Pay>,
     today: LocalDate,
-    holidays: Set<Long> = emptySet()
+    holidays: Set<Long> = emptySet(),
+    marks: List<PaidMark> = emptyList()
 ): List<DueReminder> =
-    items.mapNotNull { pay ->
+    stillOwing(items, marks, today).mapNotNull { pay ->
         // The first REAL charge. A subscription free until October renews in
         // September taking nothing, and a reminder three days before that is a
         // reminder about a charge of nought.

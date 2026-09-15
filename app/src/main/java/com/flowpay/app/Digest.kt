@@ -99,7 +99,18 @@ fun digest(
      * so says nothing — the safe way round for a default, since a caller that
      * forgets it goes quiet rather than quoting a rate it cannot vouch for.
      */
-    rateDay: Long = 0L
+    rateDay: Long = 0L,
+    /**
+     * What has already been ticked off, month by month.
+     *
+     * The digest is rebuilt from state every morning, which is what makes it
+     * robust — and it is also why an expense already paid would otherwise be
+     * announced again every single morning until its date went past. The other two
+     * kinds of line here already knew this: [parcelLine] skips a purchase that has
+     * been filed, [priceLines] skips a wish deliberately put on hold. The payment
+     * lines were the one place still nagging about something already dealt with.
+     */
+    paid: List<PaidMark> = emptyList()
 ): Digest {
     val news = buildList {
         // Leads, because it is the only line here the user asked for by name. The
@@ -118,7 +129,7 @@ fun digest(
         // deadline you cannot see and an outcome you have to act to change.
         problemLine(orders)?.let { add(it) }
         parcelLine(orders, today)?.let { add(it) }
-        addAll(paymentLines(pays, today, holidays))
+        addAll(paymentLines(pays, today, holidays, paid))
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay()))
     }
@@ -187,12 +198,18 @@ private fun parcelLine(orders: List<Order>, today: LocalDate): String? {
  *
  * The shift is already inside the number of days, so the note only has to explain
  * why the date the user wrote down is not the date being talked about.
+ *
+ * [marks] take out what has already been settled, and a free trial is taken out by
+ * [remindersDue] itself: it asks [nextCharge] for the first date money actually
+ * moves, so a subscription renewing in September while still free until October is
+ * not announced in September as a charge that is not going to happen.
  */
 private fun paymentLines(
     pays: List<Pay>,
     today: LocalDate,
-    holidays: Set<Long>
-): List<String> = remindersDue(pays, today, holidays).map { reminder ->
+    holidays: Set<Long>,
+    marks: List<PaidMark>
+): List<String> = remindersDue(pays, today, holidays, marks).map { reminder ->
     val amount = amountLabel(reminder.pay.amount, reminder.pay.currency)
     val moved = reminder.movedFrom?.let { " (перенесено з ${dayMonth(it)})" }.orEmpty()
     "${reminder.pay.name} $amount — ${dueLabel(reminder.daysAway)}$moved"

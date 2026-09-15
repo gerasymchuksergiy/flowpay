@@ -69,7 +69,13 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             income = store.income(),
             holidays = store.holidays(today.year),
             rateTarget = rateTarget,
-            rateDay = rateDay
+            rateDay = rateDay,
+            // Read here rather than defaulted, because a default of "nothing was
+            // ever paid" is the behaviour this call is being fixed out of: the
+            // morning message named bills that had been ticked off on the payments
+            // screen days earlier, and a notification cannot be waved away in place
+            // the way the pill now can.
+            paid = store.paidMarks(today)
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.

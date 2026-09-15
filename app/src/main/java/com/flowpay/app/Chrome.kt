@@ -202,16 +202,12 @@ private fun parcelNote(orders: List<Order>, today: LocalDate): StatusNote? {
  * the payments screen went on being announced above every screen in the app until
  * the date passed, and swiping it away would only have brought it back tomorrow.
  *
- * Settled means exactly what the rest of the app means by it: a [PaidMark] against
- * this expense for the month the charge falls in. Not a second notion invented
- * here — the tick on the payments screen, the month rows on the overview and this
- * bar have to be incapable of disagreeing about whether the rent is paid.
- *
- * The filter is applied to the expenses *before* the next date is worked out
- * rather than to the ones found on it. Otherwise a settled charge on the tenth
- * would hide an unsettled one on the twelfth: the date would be found, emptied,
- * and the note dropped, with the payment that actually needs the notice never
- * looked at.
+ * Settled means exactly what the rest of the app means by it, and it is asked
+ * through the one function that decides it — [stillOwing], which the morning
+ * notification asks as well. Not a second notion invented here: the tick on the
+ * payments screen, the month rows on the overview, this bar and the message that
+ * arrives at nine have to be incapable of disagreeing about whether the rent is
+ * paid, and a second implementation is precisely how they would come to.
  */
 private fun paymentNote(
     pays: List<Pay>,
@@ -219,8 +215,7 @@ private fun paymentNote(
     today: LocalDate,
     usdSellRate: Double
 ): StatusNote? {
-    val owing = pays.filterNot { isPaid(paid, it.name, monthKey(nextCharge(it, today))) }
-    val next = nextPayment(owing, today, usdSellRate) ?: return null
+    val next = nextPayment(stillOwing(pays, paid, today), today, usdSellRate) ?: return null
     // How much notice a charge deserves is the user's to set, and it was being
     // decided twice: the daily reminder honoured warnDays while this kept its own
     // "today or tomorrow". An expense set to a week's warning reached one seven
