@@ -24,6 +24,17 @@ android {
   targetSdk = 36
   versionCode = providers.gradleProperty("versionCode").orNull?.toIntOrNull() ?: 1
   versionName = providers.gradleProperty("versionName").orNull ?: "1.0.0"
+
+  // Injected by CI from a repository secret, never committed. This repository is
+  // public, and GitHub's secret scanning reports a committed key straight to the
+  // provider, who revokes it — so a key in the source would stop working rather
+  // than merely leak. Empty in a local build, which the app reads as "no
+  // assessment available" instead of failing.
+  buildConfigField(
+   "String",
+   "GEMINI_KEY",
+   "\"" + (System.getenv("GEMINI_API_KEY") ?: "") + "\""
+  )
  }
 
  compileOptions {

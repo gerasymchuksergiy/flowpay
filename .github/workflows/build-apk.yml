@@ -116,6 +116,10 @@ jobs:
           FLOWPAY_KEYSTORE_TYPE: ${{ secrets.FLOWPAY_KEYSTORE_TYPE || 'jks' }}
           VERSION_CODE: ${{ steps.version.outputs.code }}
           VERSION_NAME: ${{ steps.version.outputs.name }}
+          # Baked into the APK at the owner's explicit instruction, so nothing has
+          # to be typed into the app. It is readable by anyone who downloads a
+          # release; the mitigation is a spend cap on the key, not this file.
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           ./gradlew assembleRelease -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME"
           # One APK per release, with the version in its name: the in-app updater
