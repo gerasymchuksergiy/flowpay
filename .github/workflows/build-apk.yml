@@ -23,7 +23,13 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # packages: "" because the action's default asks sdkmanager for "tools",
+      # which Google removed from the SDK repository — the step then fails with
+      # "Failed to find package 'tools'" before any of our code is touched. The
+      # packages this build actually needs are installed on the next line.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ""
       - name: Install Android 16 SDK
         run: yes | sdkmanager --install "platforms;android-36" "build-tools;36.0.0" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
@@ -85,7 +91,11 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      # Same reason as in the build job: the action's default package list still
+      # names "tools", which no longer exists.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ""
       - name: Install Android 16 SDK
         run: yes | sdkmanager --install "platforms;android-36" "build-tools;36.0.0" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
