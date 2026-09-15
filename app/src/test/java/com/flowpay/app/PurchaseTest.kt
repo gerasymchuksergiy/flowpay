@@ -223,6 +223,7 @@ class PurchaseTest {
         statusDetail = "Отримано · Одеса, відділення №12",
         checkedAt = 1_700_000_000_000L,
         problem = false,
+        statusCode = 9,
         paidStorageFrom = 20_118L,
         scheduledDelivery = 20_115L,
         amountToPay = 0.0,
@@ -254,6 +255,9 @@ class PurchaseTest {
         assertEquals(7_800.0, restored.lowestSeen, 0.001)
         assertEquals(12, restored.uses)
         assertEquals(20_120L, restored.archivedDay)
+        // Both halves of the mapping, or the sentence saying which trouble a
+        // parcel is in would come back as the vague one after every restore.
+        assertEquals(9, restored.statusCode)
         assertEquals(
             PurchaseVerdict.HASTY,
             purchaseReview(restored.paid, restored.lowestSeen, restored.uses).verdict

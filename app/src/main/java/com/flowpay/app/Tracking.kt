@@ -171,22 +171,96 @@ fun detectCarrier(number: String): String {
 }
 
 /**
+ * Every status code Nova Poshta defines, so that none of them can arrive unhandled.
+ *
+ * The carrier publishes twenty-one codes and a parcel walks through a handful of
+ * them, so the ones this app has never seen are exactly the ones that used to fall
+ * through [stageForStatusCode]'s `else` and quietly change nothing. The list is
+ * here so a test can walk it: every code below is asserted against a stage and
+ * against [isProblemCode], which is the only way the mapping keeps matching the
+ * carrier as a parcel moves on rather than only on the day it was written.
+ *
+ * Numbers are not contiguous — 41 sits between 12 and 101, and 13..40 and 107..110
+ * do not exist — so this is written out rather than generated from a range.
+ */
+val NOVA_POSHTA_STATUS_CODES = listOf(
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 41,
+    101, 102, 103, 104, 105, 106, 111, 112
+)
+
+/**
  * Maps a Nova Poshta status code onto one of this app's stages.
  *
- * Returns an empty stage for codes that are not forward progress: a deleted or
- * unknown number, a refusal, a return. Those keep whatever stage the user had set,
- * because overwriting it with a guess would lose information.
+ * Every code the carrier defines is named here on purpose — see
+ * [NOVA_POSHTA_STATUS_CODES]. Returns an empty stage only for the states that are
+ * not a point on the line from ordered to received at all: a deleted or unknown
+ * number, a refusal, storage stopped, a doorstep nobody answered. Those keep
+ * whatever stage the user had set, because overwriting it with a guess would lose
+ * information — but the parcel is then flagged by [isProblemCode] and the screens
+ * say so in words, so an unmoved dot is never the only thing a person is told.
+ *
+ * Two of these were wrong for a long time and both were wrong in the expensive
+ * direction. 11 is «грошовий переказ видано» — the very end of a cash-on-delivery
+ * journey — and it used to map to [ORDERED], so the rail jumped back to its first
+ * dot exactly on the parcels that carry money. 12 is «Нова Пошта комплектує ваше
+ * відправлення», ordinary early progress, and it used to count as a problem, so a
+ * parcel being packed was announced in red as something to go and check.
  */
 fun stageForStatusCode(code: Int): String = when (code) {
-    1, 11 -> ORDERED
-    4, 5, 6, 101, 104 -> IN_TRANSIT
+    // 1 — the sender made the waybill but has not handed the parcel over.
+    // 12 — Nova Poshta is assembling it. Neither has started moving.
+    1, 12 -> ORDERED
+    // 4 in the sender's city, 41 the same thing on a same-city delivery, 5 on its
+    // way, 6 in the destination city, 101 with a courier, 104 redirected,
+    // 112 the recipient moved the delivery date — all still on the road.
+    4, 41, 5, 6, 101, 104, 112 -> IN_TRANSIT
+    // 7 a counter, 8 a parcel locker. Both are "come and collect it".
     7, 8 -> AT_BRANCH
-    9, 10, 106 -> RECEIVED
+    // 9 collected; 10 collected with the money order still to arrive; 11 collected
+    // and the money order paid out; 106 collected and sent back again. All four
+    // have the parcel out of the carrier's hands, which is the last dot.
+    9, 10, 11, 106 -> RECEIVED
+    // 2, 3, 102, 103, 105, 111 — see isProblemCode. Not stages.
     else -> ""
 }
 
-/** Codes that mean something went wrong rather than something moved. */
-fun isProblemCode(code: Int): Boolean = code in setOf(2, 3, 12, 102, 103, 105)
+/**
+ * Codes that mean something went wrong rather than something moved.
+ *
+ * None of these is a dot on the rail, so without this flag a parcel in trouble
+ * would read as one quietly parked wherever it last got to. 111 — a courier came
+ * and nobody opened the door — was missing from both this and the ladder, which
+ * meant the app went on showing such a parcel as on its way.
+ */
+fun isProblemCode(code: Int): Boolean = code in setOf(2, 3, 102, 103, 105, 111)
+
+/**
+ * What the trouble actually is, rather than that there is some.
+ *
+ * The screens used to print one sentence for all of it, which said the same thing
+ * about a mistyped number as about a courier who found nobody home — and the two
+ * ask completely different things of the person. Codes outside the carrier's
+ * problem set, and a parcel restored from a backup written before the code was
+ * kept, fall back to that old sentence: it is vague, but it is not wrong.
+ */
+fun problemNote(code: Int): String = when (code) {
+    2 -> "Перевізник видалив цю накладну. Посилка більше не в дорозі."
+    3 -> "Нова Пошта не знає такого номера. Перевірте трек-номер."
+    102 -> "Відправник оформив повернення — посилка їде назад до нього."
+    103 -> "Від посилки відмовились, вона не приїде."
+    105 -> "Зберігання припинено — посилку відправляють назад відправнику."
+    111 -> "Кур'єр не застав нікого за адресою. Доставку треба узгодити з Новою Поштою."
+    else -> "Потрібна увага: перевірте номер або статус у перевізника"
+}
+
+/**
+ * What the rail is saying when the parcel is in trouble.
+ *
+ * The rail has four dots and a refusal is not among them, so the dot stays where
+ * the parcel genuinely last was. Left unexplained that reads as "still there,
+ * fine"; this is the one line that turns it back into what it is.
+ */
+const val STAGE_HELD_NOTE = "Крапка нижче — останнє, де посилка справді була. Далі вона не пішла."
 
 /**
  * Pulls the status out of a Nova Poshta tracking response.
@@ -308,6 +382,10 @@ fun applyStatus(order: Order, status: ParcelStatus, atMillis: Long): Order = ord
     statusDetail = statusLine(status),
     checkedAt = atMillis,
     problem = status.problem,
+    // Kept alongside the flag, not instead of it: the flag is what every screen
+    // and the digest already branch on, and the code is what lets the sentence
+    // beside it say which trouble this is rather than that there is some.
+    statusCode = status.code,
     paidStorageFrom = status.paidStorageFrom?.toEpochDay() ?: 0L,
     scheduledDelivery = status.scheduledDelivery?.toEpochDay() ?: 0L,
     amountToPay = status.amountToPay,
@@ -458,6 +536,23 @@ fun sightingsNote(seen: List<Sighting>, checkedAt: Long): String = when {
 
 /** The heading for that list, worded so it cannot be mistaken for the carrier's. */
 const val SIGHTINGS_TITLE = "Що бачив FlowPay"
+
+/**
+ * Why Nova Poshta's own app shows stops this one never will.
+ *
+ * The page already said the app does not invent intermediate stops, and that is
+ * still true: the public response carries a hundred and twenty-two fields and not
+ * one of them is a movement list — only the current status, the last scan and the
+ * last record update. What it did not say is the half a person actually runs into,
+ * which is that the carrier's *own* app does show those stops, as timestamped
+ * events. Someone holding the two screens side by side reads a correct app as a
+ * broken one, and no amount of correctness in the status ladder fixes that; only
+ * naming it does.
+ */
+const val NO_STOPS_NOTE = "У застосунку Нової Пошти видно окремі події — приїзд у " +
+    "сортувальний центр і таке інше. Публічна відповідь, яку читає FlowPay, дає " +
+    "тільки поточний статус, без списку зупинок. Тож тут їх не буде — і FlowPay " +
+    "їх не вигадує."
 
 /**
  * When one observation was made, in the phone's own zone.

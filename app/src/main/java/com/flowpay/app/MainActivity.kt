@@ -346,7 +346,16 @@ data class Order(
      * this list would lose the only movement history the app is in a position to
      * have, which is why it travels through the bin and the backup like the rest.
      */
-    val sightings: List<Sighting> = emptyList()
+    val sightings: List<Sighting> = emptyList(),
+    /**
+     * The carrier's own status code as of the last check. Zero means never asked.
+     *
+     * [problem] says that something is wrong; this is what lets the screen say
+     * which thing, through [problemNote]. Stored rather than derived, because the
+     * response it came from is not kept and a parcel opened on a train with no
+     * signal still has to be able to explain itself.
+     */
+    val statusCode: Int = 0
 )
 
 class MainActivity : ComponentActivity() {
@@ -967,7 +976,7 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("id", order.id).put("n", order.name).put("u", order.url)
     .put("s", order.status).put("t", order.tracking).put("i", order.image)
     .put("p", order.price).put("sd", order.statusDetail).put("ca", order.checkedAt)
-    .put("pr", order.problem).put("ps", order.paidStorageFrom)
+    .put("pr", order.problem).put("sc", order.statusCode).put("ps", order.paidStorageFrom)
     .put("sdl", order.scheduledDelivery).put("atp", order.amountToPay)
     // The record of the purchase itself travels with the parcel, which is what
     // lets a binned purchase come back still knowing what it cost and how the
@@ -1022,7 +1031,11 @@ fun orderOf(o: JSONObject): Order = Order(
     // record reads as "nothing has been fetched yet", which is exactly true of
     // those, and the screen says so rather than drawing an empty journey.
     details = detailsOf(o.optJSONObject("dt")),
-    sightings = sightingsOf(o.optJSONArray("sg"))
+    sightings = sightingsOf(o.optJSONArray("sg")),
+    // Zero on every parcel saved before the code was kept. Those still carry the
+    // `pr` flag, so a restored parcel in trouble says the old general sentence
+    // rather than nothing, and says the specific one again after the next check.
+    statusCode = o.optInt("sc", 0)
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -5724,7 +5737,7 @@ fun OrdersScreen(
                             }
                             if (order.problem) {
                                 Text(
-                                    "Потрібна увага: перевірте номер або статус у перевізника",
+                                    problemNote(order.statusCode),
                                     color = Negative,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine,
@@ -6140,7 +6153,7 @@ fun OrderDetailScreen(
                 }
                 if (order.problem) {
                     Text(
-                        "Потрібна увага: перевірте номер або статус у перевізника",
+                        problemNote(order.statusCode),
                         color = Negative,
                         fontSize = Type.captionSize,
                         lineHeight = Type.captionLine,
@@ -6159,6 +6172,13 @@ fun OrderDetailScreen(
             }
             message?.let {
                 FactNote(it, Negative)
+            }
+            // A refusal, a stopped storage, a door nobody opened — none of them is
+            // one of the four dots, so the dot below stays where the parcel really
+            // was. Saying that is the difference between a parcel visibly stuck and
+            // a parcel that looks like it is still fine where it is.
+            if (order.problem) {
+                FactNote(STAGE_HELD_NOTE, TextSecondary)
             }
             StageRail(
                 stages = PARCEL_STAGES,
@@ -6248,11 +6268,10 @@ fun OrderDetailScreen(
             }
             // Nova Poshta's public method answers with where the parcel is and
             // nothing about how it got there. Saying so once here is the honest
-            // alternative to drawing a line between two cities.
-            FactNote(
-                "Проміжних зупинок Нова Пошта в цій відповіді не дає, тож FlowPay " +
-                    "їх не вигадує."
-            )
+            // alternative to drawing a line between two cities — and saying that
+            // their own app does show those stops is what stops this page reading
+            // as the broken one when the two are held side by side.
+            FactNote(NO_STOPS_NOTE)
         }
 
         item {

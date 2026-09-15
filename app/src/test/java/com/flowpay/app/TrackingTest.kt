@@ -39,29 +39,15 @@ class TrackingTest {
         assertEquals(CARRIER_UNKNOWN, detectCarrier("2045000000000A"))
     }
 
-    @Test
-    fun `status codes map onto the four stages`() {
-        assertEquals(ORDERED, stageForStatusCode(1))
-        assertEquals(ORDERED, stageForStatusCode(11))
-        assertEquals(IN_TRANSIT, stageForStatusCode(4))
-        assertEquals(IN_TRANSIT, stageForStatusCode(5))
-        assertEquals(IN_TRANSIT, stageForStatusCode(101))
-        assertEquals(AT_BRANCH, stageForStatusCode(7))
-        assertEquals(AT_BRANCH, stageForStatusCode(8))
-        assertEquals(RECEIVED, stageForStatusCode(9))
-        assertEquals(RECEIVED, stageForStatusCode(10))
-    }
+    // Every code the carrier defines is pinned one by one in StatusLadderTest.
+    // Deliberately not sampled again here: two partial lists of the same mapping
+    // is how a code ends up decided in one place and forgotten in the other, which
+    // is the exact failure this ladder was rebuilt to stop.
 
     @Test
-    fun `codes that are not progress map to no stage at all`() {
-        // A missing number or a refusal must not be turned into a stage.
-        assertEquals("", stageForStatusCode(3))
-        assertEquals("", stageForStatusCode(12))
-        assertEquals("", stageForStatusCode(103))
+    fun `a code the carrier has not published changes no stage`() {
         assertEquals("", stageForStatusCode(999))
-        assertTrue(isProblemCode(3))
-        assertTrue(isProblemCode(103))
-        assertFalse(isProblemCode(7))
+        assertFalse(isProblemCode(999))
     }
 
     @Test
@@ -104,6 +90,26 @@ class TrackingTest {
 
         val unlocated = parseNovaPoshtaStatus(response("1", "Створено ЕН"))!!
         assertEquals("Створено ЕН", statusLine(unlocated))
+    }
+
+    @Test
+    fun `the carrier's own code is kept on the parcel`() {
+        // Without it every trouble reads as the same trouble.
+        val order = Order("1", "Кросівки", "https://shop/x", IN_TRANSIT, tracking = "20450000000001")
+        val stuck = parseNovaPoshtaStatus(
+            response("111", "Невдала спроба доставки")
+        )!!
+
+        val updated = applyStatus(order, stuck, atMillis = 1_700_000_000_000L)
+
+        assertEquals(111, updated.statusCode)
+        assertTrue(updated.problem)
+        // Not overwritten with a guess: the parcel really was in transit.
+        assertEquals(IN_TRANSIT, updated.status)
+        assertEquals(
+            "Кур'єр не застав нікого за адресою. Доставку треба узгодити з Новою Поштою.",
+            problemNote(updated.statusCode)
+        )
     }
 
     @Test
