@@ -578,6 +578,36 @@ class Store(context: Context) {
     fun saveRecapSeen(month: String) = prefs.edit { putString("recap", month) }
 
     /**
+     * The status pill the owner last waved away, or null when none stands.
+     *
+     * Two keys rather than one packed string, so neither half can be read back
+     * without the other. Out of [exportJson] alongside the recap mark and the rate
+     * target, and for the same reason: it says what this phone has already shown
+     * its owner today, and a restore must not silence today's pill on the strength
+     * of a swipe made a year ago.
+     *
+     * The rule this feeds, and why the day is stored at all, is written out over
+     * [NoteDismissal].
+     */
+    fun dismissedNote(): NoteDismissal? {
+        val key = prefs.getString("pill", "").orEmpty()
+        if (key.isBlank()) return null
+        return NoteDismissal(key, prefs.getLong("pill_day", 0L))
+    }
+
+    fun saveDismissedNote(dismissal: NoteDismissal?) = prefs.edit {
+        if (dismissal == null) {
+            // Cleared rather than blanked, for the reason given over the rate
+            // target: two spellings of "nothing was dismissed" is one too many.
+            remove("pill")
+            remove("pill_day")
+        } else {
+            putString("pill", dismissal.key)
+            putLong("pill_day", dismissal.day)
+        }
+    }
+
+    /**
      * Whether a foldable section on the wish page is left open.
      *
      * One answer per section for the whole app rather than one per wish: the
@@ -1441,10 +1471,16 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         else -> null
     }
 
+    // What the owner has already waved away today. Held in state as well as in the
+    // preferences so that a swipe takes effect on the spot rather than on the next
+    // launch — the pill is the one surface where "it will be gone next time" is
+    // indistinguishable from the bug this was fixed alongside.
+    var dismissedNote by remember { mutableStateOf(store.dismissedNote()) }
+
     // Suppressed on an item page for the same reason as the action button: that
     // page is one thing at a time, and the pill would be a second one.
     val note = if (openedWish == null && openedOrder == null) {
-        statusNote(orders, pays, wishes, today, usdSell)
+        statusNote(orders, pays, wishes, today, usdSell, paid, dismissedNote)
     } else {
         null
     }
@@ -1711,7 +1747,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                 // Above the screen rather than over it: the pill and a screen's own
                 // compact title both want the top strip, and one covering the other
                 // would leave you unable to read either.
-                StatusPill(note) { target -> tab = target }
+                StatusPill(
+                    note,
+                    onDismiss = { shown ->
+                        val mark = NoteDismissal(shown.key, today.toEpochDay())
+                        dismissedNote = mark
+                        store.saveDismissedNote(mark)
+                    }
+                ) { target -> tab = target }
                 Box(Modifier.weight(1f)) {
                     when (tab) {
                         TAB_WISHES -> WishlistScreen(

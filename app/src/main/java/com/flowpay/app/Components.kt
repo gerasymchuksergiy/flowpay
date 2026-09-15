@@ -53,12 +53,15 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -1448,9 +1451,31 @@ fun PhotoHeader(
  *
  * [note] being null draws nothing: a bar that is always there with nothing in it
  * teaches you to stop looking at it.
+ *
+ * **It can be swiped away, either direction.** Not because the pill is often
+ * wrong — the things it reports are things that cost money to miss — but because
+ * some of them are true for days at a stretch and cannot be ticked off anywhere:
+ * a parcel's free storage runs out whether or not you have read about it, and a
+ * price stays under its target. A bar you cannot silence is a bar you stop
+ * reading, and this is the app's only channel for the handful of things that
+ * genuinely cannot wait. What a swipe buys, and for how long, is [NoteDismissal].
+ *
+ * No haptic on the swipe, on the same argument [CollapsibleSection] makes: the
+ * budget in Haptics.kt is spent on two-state changes to the person's own data,
+ * and this changes what the screen shows and nothing else. The pill sliding out
+ * from under the finger is already the whole answer.
+ *
+ * The dismiss state is keyed on [StatusNote.key] so that a different note gets a
+ * fresh one. Without that, the box would still be sitting in its swiped-away
+ * position when the next piece of news arrived, and the news would never be drawn.
  */
 @Composable
-fun StatusPill(note: StatusNote?, modifier: Modifier = Modifier, onOpen: (Int) -> Unit) {
+fun StatusPill(
+    note: StatusNote?,
+    modifier: Modifier = Modifier,
+    onDismiss: (StatusNote) -> Unit = {},
+    onOpen: (Int) -> Unit
+) {
     AnimatedVisibility(
         visible = note != null,
         modifier = modifier,
@@ -1463,57 +1488,76 @@ fun StatusPill(note: StatusNote?, modifier: Modifier = Modifier, onOpen: (Int) -
     ) {
         // Null only while the pill is closing, when there is nothing left to draw.
         note?.let { shown ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = Space.screen, vertical = Space.sm)
-                    .clip(Radius.pill)
-                    .clickable { onOpen(shown.tab) }
-                    // Translucent, so the page tint shows through and it reads as
-                    // something resting on the screen rather than part of it.
-                    .background(SurfaceHigh.copy(alpha = 0.92f), Radius.pill)
-                    .border(Dp.Hairline, HairLine, Radius.pill)
-                    .padding(horizontal = Space.lg, vertical = Space.md),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    // The tab's own icon, so the pill shows where tapping it lands.
-                    when (shown.kind) {
-                        StatusKind.PARCEL -> Icons.Default.LocalShipping
-                        StatusKind.PAYMENT -> Icons.Default.ReceiptLong
-                        StatusKind.TARGET -> Icons.Default.FavoriteBorder
-                    },
-                    null,
-                    Modifier.size(Space.lg),
-                    tint = if (shown.urgent) Negative else Accent
-                )
-                Spacer(Modifier.width(Space.md))
-                Column(Modifier.weight(1f)) {
-                    Text(
-                        shown.title,
-                        color = TextPrimary,
-                        fontSize = Type.captionSize,
-                        fontWeight = Type.medium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        shown.detail,
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+            key(shown.key) {
+                val swipe = rememberSwipeToDismissBoxState()
+                SwipeToDismissBox(
+                    state = swipe,
+                    // Nothing behind it. A coloured panel with a bin on it is the
+                    // grammar of deleting a row out of a list; this deletes
+                    // nothing, so the pill simply leaves and the screen it was
+                    // resting on is what was always underneath.
+                    backgroundContent = {},
+                    onDismiss = { onDismiss(shown) }
+                ) {
+                    StatusPillBody(shown, onOpen)
                 }
-                Icon(
-                    Icons.Default.ChevronRight,
-                    null,
-                    Modifier.size(Space.lg),
-                    tint = TextDisabled
-                )
             }
         }
+    }
+}
+
+/** The pill itself, split out so the swipe wrapper above stays readable. */
+@Composable
+private fun StatusPillBody(shown: StatusNote, onOpen: (Int) -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = Space.screen, vertical = Space.sm)
+            .clip(Radius.pill)
+            .clickable { onOpen(shown.tab) }
+            // Translucent, so the page tint shows through and it reads as
+            // something resting on the screen rather than part of it.
+            .background(SurfaceHigh.copy(alpha = 0.92f), Radius.pill)
+            .border(Dp.Hairline, HairLine, Radius.pill)
+            .padding(horizontal = Space.lg, vertical = Space.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            // The tab's own icon, so the pill shows where tapping it lands.
+            when (shown.kind) {
+                StatusKind.PARCEL -> Icons.Default.LocalShipping
+                StatusKind.PAYMENT -> Icons.Default.ReceiptLong
+                StatusKind.TARGET -> Icons.Default.FavoriteBorder
+            },
+            null,
+            Modifier.size(Space.lg),
+            tint = if (shown.urgent) Negative else Accent
+        )
+        Spacer(Modifier.width(Space.md))
+        Column(Modifier.weight(1f)) {
+            Text(
+                shown.title,
+                color = TextPrimary,
+                fontSize = Type.captionSize,
+                fontWeight = Type.medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                shown.detail,
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Icon(
+            Icons.Default.ChevronRight,
+            null,
+            Modifier.size(Space.lg),
+            tint = TextDisabled
+        )
     }
 }
 
