@@ -982,8 +982,29 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("dt", detailsJson(order.details))
     .put("sg", sightingsJson(order.sightings))
 
+/**
+ * A parcel read back off the phone.
+ *
+ * The name goes through [cleanProductTitle] on the way out, exactly as a wish's
+ * does in [wishOf], and that is a repair rather than a tidy. Tidying happens at
+ * parse time, and a title scraped before the entity scanner was fixed was stored
+ * with its raw "&#039;" still in it — so «Модуль пам&#039;яті» would have sat on
+ * the screen until something happened to fetch that page again, which for a
+ * purchase is never: a parcel's name is written once, when it is added, and the
+ * shop page is not read a second time.
+ *
+ * Safe to apply on every read because the scanner makes one left-to-right pass and
+ * never looks at its own output, so a name with no references left in it comes back
+ * the identical string. The one case where a second pass is not the same as a first
+ * is a page that double-escaped itself — "&amp;#39;" is stored as the literal text
+ * "&#39;" on purpose, and reading it again turns it into an apostrophe. That is
+ * pinned in EntitiesTest as the boundary it is, and it is the same bargain [wishOf]
+ * has been making since it shipped: a title that genuinely wants to show a
+ * character reference is hypothetical, and one carrying a stale one is on this
+ * phone right now.
+ */
 fun orderOf(o: JSONObject): Order = Order(
-    o.optString("id"), o.optString("n"), o.optString("u"),
+    o.optString("id"), cleanProductTitle(o.optString("n")), o.optString("u"),
     o.optString("s", ORDERED), o.optString("t"),
     o.optString("i"), o.optDouble("p", 0.0),
     o.optString("sd"), o.optLong("ca", 0L),

@@ -1,5 +1,6 @@
 package com.flowpay.app
 
+import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Test
@@ -174,6 +175,83 @@ class EntitiesTest {
         val plain = "iPhone 15 Pro 256 ГБ"
         assertSame(plain, decodeEntities(plain))
         assertEquals("", decodeEntities(""))
+    }
+
+    // -- reading a stored title back --------------------------------------------
+
+    @Test
+    fun `decoding what has already been decoded changes nothing`() {
+        // The claim that lets [orderOf] and [wishOf] repair a name every time it is
+        // read, rather than needing a one-off migration nothing could run twice.
+        val sources = listOf(
+            "Модуль пам&#039;яті для ноутбука SoDIMM",
+            "Куртка &#34;Зима&#34; &#151; 50% знижки",
+            "Dolce &amp; Gabbana",
+            "Nike&#146;s",
+            "iPhone 15 Pro 256 ГБ",
+            "R&D",
+            "Ціна 5 & 6 грн",
+            "&#;",
+            "&unknown;",
+            "😀 &#128512;"
+        )
+        for (raw in sources) {
+            val once = decodeEntities(raw)
+            assertEquals(raw, once, decodeEntities(once))
+        }
+    }
+
+    @Test
+    fun `a double-escaped page is the one text a second pass would change`() {
+        // Checked rather than assumed. "&amp;#39;" means the six characters
+        // "&#39;", which is what one pass gives; a second pass would read those six
+        // as an apostrophe. Nothing on the phone can tell the two apart, so this is
+        // the boundary the read-time repair is bought at, written down where it
+        // will be found rather than discovered.
+        val once = decodeEntities("&amp;#39;")
+        assertEquals("&#39;", once)
+        assertEquals("'", decodeEntities(once))
+    }
+
+    @Test
+    fun `a stored title carrying a raw reference is put right on the way out`() {
+        // The parcel on the owner's phone: added before the scanner was fixed, so
+        // the reference went into storage rather than being decoded at parse time.
+        val stored = JSONObject()
+            .put("id", "1")
+            .put("n", "Модуль пам&#039;яті для ноутбука SoDIMM")
+            .put("u", "https://shop.example/ram")
+            .put("s", AT_BRANCH)
+
+        assertEquals("Модуль пам'яті для ноутбука SoDIMM", orderOf(stored).name)
+    }
+
+    @Test
+    fun `a purchase survives the trip through storage unchanged`() {
+        // Written, read, written, read: a repair that rewrote the name on every lap
+        // would show up here as two different parcels.
+        val order = Order(
+            id = "1",
+            name = "Модуль пам&#039;яті для ноутбука SoDIMM",
+            url = "https://shop.example/ram",
+            status = AT_BRANCH
+        )
+        val once = orderOf(orderJson(order))
+        assertEquals("Модуль пам'яті для ноутбука SoDIMM", once.name)
+        assertEquals(once, orderOf(orderJson(once)))
+    }
+
+    @Test
+    fun `a wish was never affected because it is already repaired on the way out`() {
+        // The same shop titles feed both lists, so the same stale references are in
+        // both — but [wishOf] has run [cleanProductTitle] over the stored name since
+        // long before this, which is why only the parcel showed it.
+        val stored = JSONObject()
+            .put("id", "1")
+            .put("n", "Модуль пам&#039;яті для ноутбука SoDIMM")
+            .put("u", "https://shop.example/ram")
+
+        assertEquals("Модуль пам'яті для ноутбука SoDIMM", wishOf(stored).name)
     }
 
     @Test
