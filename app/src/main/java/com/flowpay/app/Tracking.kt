@@ -359,12 +359,38 @@ fun parseScanMoment(raw: String): LocalDateTime? = carrierMoment(raw, SCAN_FORMA
 fun parseUpdateMoment(raw: String): LocalDateTime? = carrierMoment(raw, UPDATE_FORMAT)
 
 /**
+ * The pickup point named for what it is, in the words a card line has room for.
+ *
+ * The card used to write «відділення №36706» from `WarehouseRecipientNumber`
+ * whatever the place turned out to be, while the detail page read
+ * `CategoryOfWarehouse` and correctly called the same point a поштомат. One
+ * parcel, one phone, two different answers. So this goes through
+ * [warehouseCategoryLabel] — the detail page's own source of truth — rather than
+ * keeping a second opinion about what a pickup point is.
+ *
+ * Empty when there is no number to hang it on, and «відділення» when the carrier
+ * has not said what sort of place it is: a branch is what the overwhelming
+ * majority are, and it is the word that was there before.
+ */
+fun pickupPointLabel(category: String, number: String): String {
+    if (number.isBlank()) return ""
+    val kind = when (warehouseCategoryLabel(category)) {
+        "Поштомат" -> "поштомат"
+        "Пункт видачі" -> "пункт видачі"
+        "Поштовий сервіс" -> "поштовий сервіс"
+        else -> "відділення"
+    }
+    return "$kind №$number"
+}
+
+/**
  * One line for the card: what the carrier says, plus where, when it knows where.
  */
 fun statusLine(status: ParcelStatus): String {
     val place = listOfNotNull(
         status.city.takeIf { it.isNotBlank() },
-        status.warehouseNumber.takeIf { it.isNotBlank() }?.let { "відділення №$it" }
+        pickupPointLabel(status.details.warehouseCategory, status.warehouseNumber)
+            .takeIf { it.isNotBlank() }
             ?: status.warehouse.takeIf { it.isNotBlank() }
     ).joinToString(", ")
     return if (place.isBlank()) status.text else "${status.text} · $place"

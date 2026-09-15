@@ -93,6 +93,48 @@ class TrackingTest {
     }
 
     @Test
+    fun `the card calls the pickup point what the detail page calls it`() {
+        // One parcel was a відділення on the card and a Поштомат on its own page,
+        // because the card read WarehouseRecipientNumber and the page read
+        // CategoryOfWarehouse. Both now go through warehouseCategoryLabel.
+        assertEquals("поштомат №36706", pickupPointLabel("Postomat", "36706"))
+        assertEquals("відділення №12", pickupPointLabel("Branch", "12"))
+        assertEquals("відділення №12", pickupPointLabel("Warehouse", "12"))
+        assertEquals("пункт видачі №7", pickupPointLabel("Parcel Shop", "7"))
+        assertEquals("поштовий сервіс №4", pickupPointLabel("Postal Service", "4"))
+        // A branch is what the overwhelming majority are, and it is the word that
+        // was there before a category was read at all.
+        assertEquals("відділення №12", pickupPointLabel("", "12"))
+        assertEquals("відділення №12", pickupPointLabel("SomethingNew", "12"))
+        // Nothing to hang it on.
+        assertEquals("", pickupPointLabel("Postomat", ""))
+    }
+
+    @Test
+    fun `a locker is a locker on the card too`() {
+        val json = """
+            {"success":true,"data":[{
+              "StatusCode":"6",
+              "Status":"Відправлення у м. Чернівці. Очікуйте повідомлення про прибуття",
+              "CityRecipient":"Чернівці",
+              "WarehouseRecipient":"Поштомат \"Нова Пошта\" №36706: вул. Руська, 255а",
+              "WarehouseRecipientNumber":"36706",
+              "CategoryOfWarehouse":"Postomat"
+            }]}
+        """.trimIndent()
+
+        val status = parseNovaPoshtaStatus(json)!!
+
+        assertEquals(
+            "Відправлення у м. Чернівці. Очікуйте повідомлення про прибуття · " +
+                "Чернівці, поштомат №36706",
+            statusLine(status)
+        )
+        assertEquals(IN_TRANSIT, status.stage)
+        assertFalse(status.problem)
+    }
+
+    @Test
     fun `the carrier's own code is kept on the parcel`() {
         // Without it every trouble reads as the same trouble.
         val order = Order("1", "Кросівки", "https://shop/x", IN_TRANSIT, tracking = "20450000000001")
