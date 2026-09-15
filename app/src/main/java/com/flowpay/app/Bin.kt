@@ -97,8 +97,31 @@ fun binLeftLabel(entry: BinEntry, today: Long): String {
  */
 fun binUndoMessage(entry: BinEntry): String = "Видалено «${entry.title}»"
 
-/** How the bin describes itself on the overview, including when it is empty. */
-fun binSummary(entries: List<BinEntry>): String = when {
-    entries.isEmpty() -> "Порожній. Видалене зберігається ${daysLabel(BIN_DAYS)}"
-    else -> "${entriesLabel(entries.size)} · зберігаються ${daysLabel(BIN_DAYS)}"
+/**
+ * How the bin describes itself on its own shut heading.
+ *
+ * The bin is folded away on «Огляд», and a fold is only allowed to be shut if the
+ * heading answers the question you would have opened it to ask. Here that question
+ * has two halves — is there anything in there, and am I about to lose it — so the
+ * line carries a count and a deadline and nothing else.
+ *
+ * The deadline is the **smallest** number of days left, not the largest. The
+ * entries do not expire together; the one in danger is the oldest, and a heading
+ * quoting the newest entry's twenty-nine days would be reassuring about precisely
+ * the item that is not safe.
+ *
+ * Entries with no date are left out of that minimum rather than counted as gone
+ * today. Nothing in the app writes one, but [pruneBin] deliberately never deletes
+ * one, and a heading announcing that a thing which will in fact be kept forever
+ * disappears this afternoon is the one kind of wrong a safety net cannot afford.
+ */
+fun binSummary(entries: List<BinEntry>, today: Long): String {
+    if (entries.isEmpty()) return "Порожній. Видалене зберігається ${daysLabel(BIN_DAYS)}"
+    val soonest = entries.filter { it.day > 0L }.minOfOrNull { binDaysLeft(it, today) }
+    val fate = when {
+        soonest == null -> "зберігаються ${daysLabel(BIN_DAYS)}"
+        soonest <= 0 -> "найстаріше видаляється сьогодні"
+        else -> "найстаріше зникне через ${daysLabel(soonest)}"
+    }
+    return "${entriesLabel(entries.size)} · $fate"
 }

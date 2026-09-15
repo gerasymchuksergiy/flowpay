@@ -3172,6 +3172,22 @@ const val SECTION_SHOPS = "shops"
 const val SECTION_PLAN = "plan"
 
 /**
+ * The bin's fold on «Огляд», stored like the wish page's folds and for a stronger
+ * reason than any of them.
+ *
+ * «Огляд» exists to answer "how am I doing", and the bin answers nothing of the
+ * kind: it is a safety net, and a safety net earns its place on the one day you
+ * deleted something by mistake and on no other. Rendered open it put four cards of
+ * things the person had already decided they did not want between the month's
+ * figures and the settings underneath them.
+ *
+ * So it is shut by default — which [Store.sectionOpen] already is for a key it has
+ * never been asked about — and the day it is needed it stays open until it is shut
+ * again.
+ */
+const val SECTION_BIN = "bin"
+
+/**
  * The two folds inside «Про товар», stored the same way for the same reason.
  *
  * They are not [CollapsibleSection]s — see [CardFold] — but the choice they
@@ -6678,6 +6694,9 @@ fun SettingsScreen(
     // Which month is open for correction. One at a time, because the point is to
     // fix the month you noticed, not to audit the year.
     var openMonth by remember { mutableStateOf<String?>(null) }
+    // Whether the bin is open, remembered across openings of the app like every
+    // other fold. See [SECTION_BIN] for why the answer starts at no.
+    var binOpen by remember { mutableStateOf(store.sectionOpen(SECTION_BIN)) }
 
     // The folder and the timestamp are read into state so that picking a folder or
     // running a copy updates the row, rather than leaving it describing the state
@@ -7104,67 +7123,85 @@ fun SettingsScreen(
                     }
                 }
 
-                SectionTitle("Кошик")
-                Column(Modifier.padding(horizontal = Space.screen)) {
-                    Text(
-                        binSummary(bin),
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine,
-                        modifier = Modifier.padding(bottom = Space.sm)
-                    )
-                    sortedBin(bin).forEach { entry ->
-                        Card(
-                            Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                            shape = Radius.md
-                        ) {
-                            Row(
-                                Modifier.padding(Space.lg),
-                                verticalAlignment = Alignment.CenterVertically
+                // Folded, and shut unless he says otherwise. The count and the
+                // oldest entry's deadline ride the shut heading, so the one
+                // question a bin ever has to answer — is something of mine in
+                // there and am I about to lose it — is answered without opening
+                // it. See [SECTION_BIN].
+                CollapsibleSection(
+                    title = "Кошик",
+                    summary = binSummary(bin, today),
+                    open = binOpen,
+                    onToggle = {
+                        binOpen = it
+                        store.saveSectionOpen(SECTION_BIN, it)
+                    },
+                    icon = Icons.Default.DeleteOutline
+                ) {
+                    Column(Modifier.padding(horizontal = Space.screen)) {
+                        // Opened on an empty bin the fold would otherwise be a heading
+                        // with nothing under it, which reads as a bug rather than as an
+                        // answer.
+                        if (bin.isEmpty()) {
+                            EmptyInvite(
+                                "Тут порожньо",
+                                "Видалене бажання, витрата чи покупка лежить тут " +
+                                    "${daysLabel(BIN_DAYS)} і повертається одним дотиком."
+                            )
+                        }
+                        sortedBin(bin).forEach { entry ->
+                            Card(
+                                Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
+                                colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                                shape = Radius.md
                             ) {
-                                Column(Modifier.weight(1f).padding(end = Space.md)) {
-                                    Text(
-                                        binKindLabel(entry.kind).uppercase(),
-                                        color = Accent,
-                                        fontSize = Type.overlineSize,
-                                        fontWeight = Type.strong,
-                                        letterSpacing = Type.overlineTracking
-                                    )
-                                    Spacer(Modifier.height(Space.xs))
-                                    Text(
-                                        entry.title,
-                                        fontSize = Type.cardTitleSize,
-                                        fontWeight = Type.medium,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    listOfNotNull(
-                                        entry.detail.takeIf { it.isNotBlank() },
-                                        binLeftLabel(entry, today)
-                                    ).joinToString(" · ").let {
+                                Row(
+                                    Modifier.padding(Space.lg),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f).padding(end = Space.md)) {
                                         Text(
-                                            it,
-                                            color = TextSecondary,
-                                            fontSize = Type.captionSize,
-                                            lineHeight = Type.captionLine
+                                            binKindLabel(entry.kind).uppercase(),
+                                            color = Accent,
+                                            fontSize = Type.overlineSize,
+                                            fontWeight = Type.strong,
+                                            letterSpacing = Type.overlineTracking
+                                        )
+                                        Spacer(Modifier.height(Space.xs))
+                                        Text(
+                                            entry.title,
+                                            fontSize = Type.cardTitleSize,
+                                            fontWeight = Type.medium,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        listOfNotNull(
+                                            entry.detail.takeIf { it.isNotBlank() },
+                                            binLeftLabel(entry, today)
+                                        ).joinToString(" · ").let {
+                                            Text(
+                                                it,
+                                                color = TextSecondary,
+                                                fontSize = Type.captionSize,
+                                                lineHeight = Type.captionLine
+                                            )
+                                        }
+                                    }
+                                    TextButton({ onRestore(entry.id) }) { Text("Повернути") }
+                                    IconButton({ onDropFromBin(entry.id) }) {
+                                        Icon(
+                                            Icons.Default.DeleteForever,
+                                            "Видалити назавжди",
+                                            tint = TextSecondary
                                         )
                                     }
                                 }
-                                TextButton({ onRestore(entry.id) }) { Text("Повернути") }
-                                IconButton({ onDropFromBin(entry.id) }) {
-                                    Icon(
-                                        Icons.Default.DeleteForever,
-                                        "Видалити назавжди",
-                                        tint = TextSecondary
-                                    )
-                                }
                             }
                         }
-                    }
-                    if (bin.isNotEmpty()) {
-                        TextButton({ onEmptyBin() }) {
-                            Text("Очистити кошик", color = Negative)
+                        if (bin.isNotEmpty()) {
+                            TextButton({ onEmptyBin() }) {
+                                Text("Очистити кошик", color = Negative)
+                            }
                         }
                     }
                 }

@@ -227,11 +227,71 @@ class BinTest {
 
     @Test
     fun `an empty bin says what it is for instead of showing nothing`() {
-        assertEquals("Порожній. Видалене зберігається 30 днів", binSummary(emptyList()))
-        assertEquals("1 запис · зберігаються 30 днів", binSummary(listOf(entry())))
         assertEquals(
-            "2 записи · зберігаються 30 днів",
-            binSummary(listOf(entry(), entry().copy(id = "w2")))
+            "Порожній. Видалене зберігається 30 днів",
+            binSummary(emptyList(), deletedOn)
         )
+    }
+
+    @Test
+    fun `the shut heading carries the count and the deadline`() {
+        // The whole reason the bin is allowed to be folded away: he can read both
+        // halves of the only question a bin answers without opening it.
+        assertEquals(
+            "1 запис · найстаріше зникне через 30 днів",
+            binSummary(listOf(entry()), deletedOn)
+        )
+        assertEquals(
+            "2 записи · найстаріше зникне через 12 днів",
+            binSummary(listOf(entry(), entry().copy(id = "w2")), deletedOn + 18)
+        )
+    }
+
+    @Test
+    fun `the deadline is the oldest entry's and not the newest`() {
+        // Deleted three weeks apart: the heading has to be about the one in danger,
+        // not the one with a month still to run.
+        val old = entry(day = deletedOn)
+        val fresh = entry(day = deletedOn + 21).copy(id = "w2")
+        assertEquals(
+            "2 записи · найстаріше зникне через 9 днів",
+            binSummary(listOf(fresh, old), deletedOn + 21)
+        )
+    }
+
+    @Test
+    fun `an entry on its last day says so on the heading`() {
+        assertEquals(
+            "1 запис · найстаріше видаляється сьогодні",
+            binSummary(listOf(entry()), deletedOn + 30)
+        )
+    }
+
+    @Test
+    fun `a dateless entry is never announced as about to vanish`() {
+        // pruneBin refuses to delete one of these, so the heading must not promise
+        // that it is going. It falls back to the standing rule instead.
+        val dateless = entry(day = 0L)
+        assertEquals(listOf(dateless), pruneBin(listOf(dateless), deletedOn + 400))
+        assertEquals("1 запис · зберігаються 30 днів", binSummary(listOf(dateless), deletedOn))
+        // Mixed with a dated one, the dated one still supplies the deadline.
+        assertEquals(
+            "2 записи · найстаріше зникне через 30 днів",
+            binSummary(listOf(dateless, entry().copy(id = "w2")), deletedOn)
+        )
+    }
+
+    @Test
+    fun `the heading counts in Ukrainian whatever language the phone is set to`() {
+        val original = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.US)
+            assertEquals(
+                "1 запис · найстаріше зникне через 30 днів",
+                binSummary(listOf(entry()), deletedOn)
+            )
+        } finally {
+            java.util.Locale.setDefault(original)
+        }
     }
 }
