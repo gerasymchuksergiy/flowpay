@@ -830,34 +830,81 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     .let { if (wish.appraisal != null) it.put("ap", appraisalJson(wish.appraisal)) else it }
 
 /**
- * A model's verdict, stored beside the wish.
+ * Which shape a stored review is written in.
  *
- * A nested object for the same reason [aboutJson] is one: the bin's restore and
- * the backup file carry it whole or not at all, and a half-restored verdict — the
- * paragraph without the price it was written for — would be a judgement about a
- * number nobody could name, which is the exact failure this feature is built
- * around avoiding.
+ * One, the first version, held `k`/`w`/`q` — a line, a list of things to weigh, and
+ * a scrap of the shop's own blurb — written by a model that had not searched for
+ * anything and was forbidden to state a figure. Two is a review with sources.
+ *
+ * The marker exists so that [appraisalOf] can read a version-one object and return
+ * nothing rather than salvage it. Salvage would be worse than loss: its sentences
+ * were written under rules that no longer apply, the section would have to present
+ * them as ungrounded, and the honest state for a wish whose only review predates
+ * the whole feature is "nobody has asked yet" — which offers to ask.
+ */
+const val APPRAISAL_FORMAT = 2
+
+/**
+ * A model's review, stored beside the wish.
+ *
+ * A nested object for the same reason [aboutJson] is one: the bin's restore and the
+ * backup file carry it whole or not at all, and a half-restored review — the prose
+ * without the sources it was grounded on, or without the price it was written for —
+ * would be a judgement nobody could check against anything, which is the exact
+ * failure this feature is built around avoiding.
  */
 fun appraisalJson(appraisal: Appraisal): JSONObject = JSONObject()
+    .put("v", APPRAISAL_FORMAT)
     .put("k", appraisal.kind)
-    .put("w", JSONArray().apply { appraisal.weigh.forEach { put(it) } })
-    .put("q", appraisal.shopSays)
+    .put("g", JSONArray().apply { appraisal.good.forEach { put(it) } })
+    .put("b", JSONArray().apply { appraisal.weak.forEach { put(it) } })
+    .put("s", appraisal.suits)
+    .put("x", appraisal.skip)
+    .put("c", JSONArray().apply { appraisal.check.forEach { put(it) } })
+    .put(
+        "src",
+        JSONArray().apply {
+            appraisal.sources.forEach { put(JSONObject().put("t", it.title).put("u", it.url)) }
+        }
+    )
+    .put("q", JSONArray().apply { appraisal.queries.forEach { put(it) } })
+    .put("f", appraisal.found)
     .put("p", appraisal.price)
     .put("d", appraisal.day)
     .put("m", appraisal.model)
 
+/** Every non-blank string in a stored array, in order. */
+private fun textsOf(array: JSONArray?): List<String> {
+    if (array == null) return emptyList()
+    return (0 until array.length()).map { array.optString(it) }.filter { it.isNotBlank() }
+}
+
 fun appraisalOf(o: JSONObject?): Appraisal? {
     if (o == null) return null
-    val listed = o.optJSONArray("w") ?: JSONArray()
+    // A review written under the old rules is not converted, it is dropped. See
+    // [APPRAISAL_FORMAT].
+    if (o.optInt("v") != APPRAISAL_FORMAT) return null
+    val stored = o.optJSONArray("src") ?: JSONArray()
     val appraisal = Appraisal(
         kind = o.optString("k"),
-        weigh = (0 until listed.length()).map { listed.optString(it) }.filter { it.isNotBlank() },
-        shopSays = o.optString("q"),
+        good = textsOf(o.optJSONArray("g")),
+        weak = textsOf(o.optJSONArray("b")),
+        suits = o.optString("s"),
+        skip = o.optString("x"),
+        check = textsOf(o.optJSONArray("c")),
+        sources = (0 until stored.length())
+            .mapNotNull { stored.optJSONObject(it) }
+            .map { AppraisalSource(it.optString("t"), it.optString("u")) }
+            .filter { it.url.isNotBlank() },
+        queries = textsOf(o.optJSONArray("q")),
+        // Absent reads as true, which is the shape of every review that actually
+        // found the thing — the flag is only ever written false deliberately.
+        found = o.optBoolean("f", true),
         price = o.optDouble("p", 0.0),
         day = o.optLong("d", 0L),
         model = o.optString("m")
     )
-    // A stored object with nothing in it is not a verdict, and reading it back as
+    // A stored object with nothing in it is not a review, and reading it back as
     // one would put an empty paragraph under a heading that promises words.
     return appraisal.takeIf { !it.isEmpty }
 }

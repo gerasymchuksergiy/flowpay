@@ -276,6 +276,7 @@ class AppraisalTest {
         }
     }
 
+
     // ---------------------------------------------------- what the model is told
 
     @Test
@@ -289,8 +290,9 @@ class AppraisalTest {
         assertTrue(prompt.contains("Бренд: Sony"))
         assertTrue(prompt.contains("Шумозаглушення: Активне"))
         assertTrue(prompt.contains("амбушюрою"))
-        // The price and the rating stay out, so the model cannot write a paragraph
-        // that contradicts either of them where they are shown beside it.
+        // The price and the rating stay out, and grounding did not change that: a
+        // model that never saw the figure printed above the block cannot write a
+        // sentence that disagrees with it.
         assertFalse(prompt.contains("9999"))
         assertFalse(prompt.contains("9 999"))
         assertFalse(prompt.contains("4,6"))
@@ -299,17 +301,64 @@ class AppraisalTest {
     }
 
     @Test
-    fun `the request asks for structured output at a fixed temperature`() {
+    fun `the user turn asks for every part of the review the owner asked for`() {
+        val prompt = appraisalPrompt(wish())
+        listOf(
+            "ЩО ЦЕ",
+            "СИЛЬНІ СТОРОНИ",
+            "СЛАБКІ МІСЦЯ",
+            "КОМУ ПІДІЙДЕ",
+            "КОМУ НЕ ВАРТО",
+            "ПЕРЕД ПОКУПКОЮ",
+            "НІЧОГО НЕ ЗНАЙШОВ"
+        ).forEach { assertTrue(it, prompt.contains(it)) }
+        // And it says to work out what the thing is before searching, because a
+        // shop title searched verbatim finds the shop.
+        assertTrue(prompt.contains("огляди"))
+    }
+
+    @Test
+    fun `the system instruction carries every rule the answer is judged by`() {
+        // Search before judging.
+        assertTrue(APPRAISAL_SYSTEM.contains("Спочатку шукай"))
+        assertTrue(APPRAISAL_SYSTEM.contains("пошуком Google"))
+        // Permission to say it found nothing, which is the failure mode the whole
+        // feature is built around.
+        assertTrue(APPRAISAL_SYSTEM.contains("не вдалося"))
+        // Weaknesses concrete rather than hedged, named as a failure.
+        assertTrue(APPRAISAL_SYSTEM.contains("компроміси"))
+        // One person's decision, not a product page.
+        assertTrue(APPRAISAL_SYSTEM.contains("Не для магазину"))
+        // The two figures it was never shown.
+        assertTrue(APPRAISAL_SYSTEM.contains("ціну"))
+        assertTrue(APPRAISAL_SYSTEM.contains("рейтинг"))
+    }
+
+    @Test
+    fun `the request turns on Google Search and sends nothing that would break it`() {
         val body = JSONObject(appraisalBody(wish()))
+
+        // The current spelling of the tool. googleSearchRetrieval is the 1.5-era
+        // one and would be quietly wrong here.
+        val tools = body.getJSONArray("tools")
+        assertEquals(1, tools.length())
+        assertTrue(tools.getJSONObject(0).has("googleSearch"))
+        assertFalse(tools.getJSONObject(0).has("googleSearchRetrieval"))
+
+        // Structured output and the search tool cannot travel together on this
+        // model — sending both is a rejected request, not a warning. Their absence
+        // is the load-bearing part of this body.
         val config = body.getJSONObject("generationConfig")
-        assertEquals(0.0, config.getDouble("temperature"), 0.0)
-        assertEquals("application/json", config.getString("responseMimeType"))
-        val required = config.getJSONObject("responseSchema").getJSONArray("required")
-        assertEquals(3, required.length())
+        assertFalse(config.has("responseMimeType"))
+        assertFalse(config.has("responseSchema"))
+        assertFalse(config.has("responseFormat"))
+
+        assertTrue(config.getDouble("temperature") < 0.5)
+        assertTrue(config.getInt("maxOutputTokens") >= 1_000)
         assertTrue(
             body.getJSONObject("systemInstruction")
                 .getJSONArray("parts").getJSONObject(0).getString("text")
-                .contains("Заборонено")
+                .contains("Спочатку шукай")
         )
     }
 
@@ -323,73 +372,208 @@ class AppraisalTest {
     // -------------------------------------------------- checking what came back
 
     @Test
-    fun `speaking for buyers is caught however it is inflected`() {
+    fun `a digit is no longer an offence, because a real review is made of them`() {
+        // The sentence the owner never got to read.
+        val real = "27-дюймова IPS-матриця на 144 Гц з відгуком 1 мс."
+        assertFalse(statesPrice(real))
+        assertFalse(statesRating(real))
+        assertFalse(contradictsOurFigures(real))
+    }
+
+    @Test
+    fun `naming money is still refused however it is written`() {
+        listOf(
+            "Коштує помітно більше за сусідів по класу",
+            "За ці гривні є цікавіші варіанти",
+            "Ціна не відповідає матриці",
+            "У цій ціновій категорії є кращі",
+            "Дешевший за прямих конкурентів",
+            "Дорожчий, ніж має бути",
+            "Близько 200 $ за таку панель",
+            "Вартість збірки видно одразу",
+            "За неї легко переплатити"
+        ).forEach { assertTrue(it, statesPrice(it)) }
+
+        // And ordinary words that merely look like them are not money.
+        assertFalse(statesPrice("Найцінніша його риса — рівномірність підсвітки"))
+        assertFalse(statesPrice("Матриця дає рівний колір по всьому полю"))
+    }
+
+    @Test
+    fun `naming the shop's star rating is still refused`() {
+        listOf(
+            "Рейтинг у цього класу високий",
+            "Оцінка за кольоропередачу відмінна",
+            "Заслуговує п'яти зірок",
+            "4,6 з 5 за збірку",
+            "Оглядачі ставлять 9/10 — а от 4/5 за підставку"
+        ).forEach { assertTrue(it, statesRating(it)) }
+
+        // The trap the shaped check exists for: "з 5" in an honest sentence.
+        assertFalse(statesRating("Корпус із 5 портами USB на задній стінці"))
+        assertFalse(statesRating("Підсвітка на 144 Гц тримає рівно"))
+    }
+
+    @Test
+    fun `speaking for other people is caught however it is inflected`() {
         listOf(
             "За відгуками покупців вони чудові",
             "Користувачі скаржаться на кріплення",
             "Більшість обирає саме цю модель",
-            "Рекомендую до покупки",
-            "Це найкращі навушники в класі",
-            "Високий рейтинг у магазині"
+            "Оглядачі хвалять рівномірність",
+            "У тестуванні показав себе рівно"
         ).forEach { assertTrue(it, speaksForBuyers(it)) }
 
         assertFalse(speaksForBuyers("Накладні навушники із шумозаглушенням для роботи в дорозі."))
     }
 
+    // ------------------------------------------------------- pulling it apart
+
     @Test
-    fun `any digit at all counts as stating a figure`() {
-        assertTrue(statesFigures("Тримають заряд до 30 годин"))
-        assertTrue(statesFigures("Bluetooth 5.2"))
-        assertFalse(statesFigures("Тримають заряд близько доби"))
+    fun `the answer is split on the headings it was asked for`() {
+        val draft = draftAppraisal(
+            """
+            ЩО ЦЕ: 27-дюймовий ігровий монітор середнього класу.
+            СИЛЬНІ СТОРОНИ:
+            - Рівна підсвітка без помітних засвітів по кутах
+            - Швидка матриця, шлейфів майже не видно
+            СЛАБКІ МІСЦЯ:
+            - Підставка хитається від дотику до столу
+            - Заводське калібрування кольору відчутно холодне
+            КОМУ ПІДІЙДЕ: тим, хто грає в динамічні ігри й сидить за столом сам.
+            КОМУ НЕ ВАРТО: тим, хто працює з кольором — краще взяти щось із заводським профілем.
+            ПЕРЕД ПОКУПКОЮ:
+            - Перевірити ревізію матриці, їх було дві
+            """.trimIndent()
+        )
+        assertEquals("27-дюймовий ігровий монітор середнього класу.", draft.kind)
+        assertEquals(2, draft.good.size)
+        assertEquals(2, draft.weak.size)
+        assertTrue(draft.weak[0].startsWith("Підставка"))
+        assertTrue(draft.suits.startsWith("тим, хто грає"))
+        assertTrue(draft.skip.contains("працює з кольором"))
+        assertEquals(1, draft.check.size)
+        assertEquals("", draft.unknown)
     }
 
     @Test
-    fun `a quotation has to be found in the shop's own description`() {
-        assertTrue(quotedFromShop("знімною амбушюрою та чохлом для перенесення", blurb))
-        // Collapsed whitespace, because the description arrives tidied and the
-        // model does not always give it back the same way.
-        assertTrue(quotedFromShop("знімною   амбушюрою\nта чохлом для перенесення", blurb))
-        // A paraphrase is not a quotation, however plausible it sounds.
-        assertFalse(quotedFromShop("зі зручною амбушюрою та футляром для перенесення", blurb))
-        // Too short to be a quotation of anything.
-        assertFalse(quotedFromShop("чохол", blurb))
-        assertFalse(quotedFromShop("знімною амбушюрою та чохлом", ""))
+    fun `markdown and stray bullet characters do not cost a paid answer`() {
+        val draft = draftAppraisal(
+            """
+            **ЩО ЦЕ:** 27-дюймовий ігровий монітор.
+            ## СИЛЬНІ СТОРОНИ
+            * Рівна підсвітка
+            • Швидка матриця
+            **СЛАБКІ МІСЦЯ:**
+            — Підставка хитається
+            """.trimIndent()
+        )
+        assertEquals("27-дюймовий ігровий монітор.", draft.kind)
+        assertEquals(listOf("Рівна підсвітка", "Швидка матриця"), draft.good)
+        assertEquals(listOf("Підставка хитається"), draft.weak)
+    }
+
+    @Test
+    fun `a one-line section written under its heading is still one line`() {
+        val draft = draftAppraisal(
+            """
+            КОМУ ПІДІЙДЕ:
+            тим, хто грає
+            і не працює з кольором
+            """.trimIndent()
+        )
+        assertEquals("тим, хто грає і не працює з кольором", draft.suits)
+    }
+
+    @Test
+    fun `text before the first heading is dropped rather than misfiled`() {
+        val draft = draftAppraisal(
+            """
+            Ось що вдалося знайти про цю модель.
+
+            ЩО ЦЕ: монітор.
+            """.trimIndent()
+        )
+        assertEquals("монітор.", draft.kind)
+    }
+
+    @Test
+    fun `tidying strips the marks a model reaches for uninvited`() {
+        assertEquals("Рівна підсвітка", tidyAppraisalLine("  - **Рівна підсвітка**  "))
+        assertEquals("СИЛЬНІ СТОРОНИ", tidyAppraisalLine("## СИЛЬНІ СТОРОНИ"))
+        assertEquals("", tidyAppraisalLine("   "))
     }
 
     // ------------------------------------------------------ reading a response
 
-    private fun response(text: String) = JSONObject()
-        .put(
-            "candidates",
-            org.json.JSONArray().put(
-                JSONObject().put(
-                    "content",
-                    JSONObject().put(
-                        "parts",
-                        org.json.JSONArray().put(JSONObject().put("text", text))
-                    )
-                )
+    private fun response(
+        text: String,
+        sources: List<Pair<String, String>> = emptyList(),
+        queries: List<String> = emptyList()
+    ): String {
+        val candidate = JSONObject().put(
+            "content",
+            JSONObject().put(
+                "parts",
+                org.json.JSONArray().put(JSONObject().put("text", text))
             )
         )
-        .toString()
+        if (sources.isNotEmpty() || queries.isNotEmpty()) {
+            val chunks = org.json.JSONArray()
+            sources.forEach { (title, uri) ->
+                chunks.put(
+                    JSONObject().put("web", JSONObject().put("title", title).put("uri", uri))
+                )
+            }
+            val asked = org.json.JSONArray()
+            queries.forEach { asked.put(it) }
+            candidate.put(
+                "groundingMetadata",
+                JSONObject()
+                    .put("groundingChunks", chunks)
+                    .put("webSearchQueries", asked)
+            )
+        }
+        return JSONObject().put("candidates", org.json.JSONArray().put(candidate)).toString()
+    }
 
-    private val goodAnswer = JSONObject()
-        .put("kind", "Накладні бездротові навушники для роботи в дорозі та дзвінків.")
-        .put(
-            "weigh",
-            org.json.JSONArray()
-                .put("Наскільки щільно прилягають амбушюри")
-                .put("Чи можна замінити амбушюри окремо")
-        )
-        .put("shopSays", "знімною амбушюрою та чохлом для перенесення")
-        .toString()
+    private val goodAnswer = """
+        ЩО ЦЕ: 27-дюймовий ігровий монітор середнього класу.
+        СИЛЬНІ СТОРОНИ:
+        - Рівна підсвітка без засвітів по кутах
+        - Швидка матриця, шлейфів майже не видно
+        СЛАБКІ МІСЦЯ:
+        - Підставка хитається від дотику до столу
+        - Заводське калібрування відчутно холодне
+        КОМУ ПІДІЙДЕ: тим, хто грає в динамічні ігри.
+        КОМУ НЕ ВАРТО: тим, хто працює з кольором.
+        ПЕРЕД ПОКУПКОЮ:
+        - Перевірити ревізію матриці, їх було дві
+    """.trimIndent()
+
+    private val twoSources = listOf(
+        "rtings.com" to "https://vertexaisearch.cloud.google.com/grounding-api-redirect/a",
+        "tomshardware.com" to "https://vertexaisearch.cloud.google.com/grounding-api-redirect/b"
+    )
 
     @Test
-    fun `a clean answer is kept with the price and the model it was written for`() {
-        val reading = readAppraisal(response(goodAnswer), about(blurb), price = 9_999.0, day = day)
+    fun `a grounded answer is kept whole with what it read`() {
+        val reading = readAppraisal(
+            response(goodAnswer, twoSources, listOf("Dell S2721DGF review")),
+            price = 9_999.0,
+            day = day
+        )
         val written = (reading as AppraisalReading.Written).appraisal
-        assertEquals(2, written.weigh.size)
-        assertEquals("знімною амбушюрою та чохлом для перенесення", written.shopSays)
+        assertEquals("27-дюймовий ігровий монітор середнього класу.", written.kind)
+        assertEquals(2, written.good.size)
+        assertEquals(2, written.weak.size)
+        assertEquals(1, written.check.size)
+        assertTrue(written.suits.isNotBlank())
+        assertTrue(written.skip.isNotBlank())
+        assertTrue(written.found)
+        assertTrue(written.grounded)
+        assertEquals(listOf("rtings.com", "tomshardware.com"), written.sources.map { it.title })
+        assertEquals(listOf("Dell S2721DGF review"), written.queries)
         assertEquals(9_999.0, written.price, 0.0)
         assertEquals(day, written.day)
         assertEquals(APPRAISAL_MODEL, written.model)
@@ -397,105 +581,165 @@ class AppraisalTest {
     }
 
     @Test
-    fun `a paragraph in the voice of buyers is refused whole`() {
-        val answer = JSONObject()
-            .put("kind", "За відгуками покупців тримають заряд довго.")
-            .put("weigh", org.json.JSONArray().put("Зручність"))
-            .put("shopSays", "")
-            .toString()
-        assertEquals(
-            AppraisalReading.Refused,
-            readAppraisal(response(answer), about(blurb), 9_999.0, day)
+    fun `a review full of specifications survives, which is the whole point`() {
+        val specced = goodAnswer.replace(
+            "Швидка матриця, шлейфів майже не видно",
+            "165 Гц і 1 мс GtG, шлейфів майже не видно"
         )
-    }
-
-    @Test
-    fun `one invented figure in one point refuses the whole answer`() {
-        val answer = JSONObject()
-            .put("kind", "Накладні бездротові навушники.")
-            .put(
-                "weigh",
-                org.json.JSONArray()
-                    .put("Зручність амбушюр")
-                    .put("Автономність до 30 годин")
-            )
-            .put("shopSays", "")
-            .toString()
-        assertEquals(
-            AppraisalReading.Refused,
-            readAppraisal(response(answer), about(blurb), 9_999.0, day)
-        )
-    }
-
-    @Test
-    fun `an answer with nothing to weigh is refused`() {
-        val answer = JSONObject()
-            .put("kind", "Накладні бездротові навушники.")
-            .put("weigh", org.json.JSONArray())
-            .put("shopSays", "")
-            .toString()
-        assertEquals(
-            AppraisalReading.Refused,
-            readAppraisal(response(answer), about(blurb), 9_999.0, day)
-        )
-    }
-
-    @Test
-    fun `a quotation the shop never wrote is dropped without losing the answer`() {
-        val answer = JSONObject()
-            .put("kind", "Накладні бездротові навушники.")
-            .put("weigh", org.json.JSONArray().put("Зручність амбушюр"))
-            .put("shopSays", "Найтихіші навушники, які ми продавали за всю історію магазину")
-            .toString()
-        val written = (readAppraisal(response(answer), about(blurb), 9_999.0, day)
+        val written = (readAppraisal(response(specced, twoSources), 9_999.0, day)
             as AppraisalReading.Written).appraisal
-        assertEquals("", written.shopSays)
-        assertEquals("Накладні бездротові навушники.", written.kind)
+        assertTrue(written.good.any { it.contains("165 Гц") })
+    }
+
+    @Test
+    fun `an answer with no sources is kept but is not grounded`() {
+        val written = (readAppraisal(response(goodAnswer), 9_999.0, day)
+            as AppraisalReading.Written).appraisal
+        assertFalse(written.grounded)
+        assertTrue(written.sources.isEmpty())
+    }
+
+    @Test
+    fun `searches that retrieved nothing count as no sources at all`() {
+        // Queries recorded, nothing attributable: billed, and ungrounded.
+        val written = (readAppraisal(
+            response(goodAnswer, emptyList(), listOf("Dell S2721DGF")),
+            9_999.0,
+            day
+        ) as AppraisalReading.Written).appraisal
+        assertFalse(written.grounded)
+        assertEquals(listOf("Dell S2721DGF"), written.queries)
+    }
+
+    @Test
+    fun `speaking for other people is fair when grounded and invention when not`() {
+        val hearsay = goodAnswer.replace(
+            "Підставка хитається від дотику до столу",
+            "Оглядачі скаржаться, що підставка хитається"
+        )
+        // With pages behind it, that is a report of something read.
+        assertTrue(
+            readAppraisal(response(hearsay, twoSources), 9_999.0, day)
+                is AppraisalReading.Written
+        )
+        // With nothing behind it, it is the old offence again.
+        assertEquals(
+            AppraisalReading.Refused,
+            readAppraisal(response(hearsay), 9_999.0, day)
+        )
+    }
+
+    @Test
+    fun `naming our own price refuses the answer whether or not it is grounded`() {
+        val priced = goodAnswer.replace(
+            "Рівна підсвітка без засвітів по кутах",
+            "Рівна підсвітка, і за ці гроші це дешевший варіант у класі"
+        )
+        assertEquals(AppraisalReading.Refused, readAppraisal(response(priced, twoSources), 9_999.0, day))
+        assertEquals(AppraisalReading.Refused, readAppraisal(response(priced), 9_999.0, day))
+    }
+
+    @Test
+    fun `naming our own star rating refuses the answer even when grounded`() {
+        val rated = goodAnswer.replace(
+            "КОМУ ПІДІЙДЕ: тим, хто грає в динамічні ігри.",
+            "КОМУ ПІДІЙДЕ: тим, хто грає — рейтинг у класі високий."
+        )
+        assertEquals(AppraisalReading.Refused, readAppraisal(response(rated, twoSources), 9_999.0, day))
+    }
+
+    @Test
+    fun `an answer with no weaknesses is marketing copy and is refused`() {
+        val sunny = goodAnswer.substringBefore("СЛАБКІ МІСЦЯ:") +
+            "КОМУ ПІДІЙДЕ: усім.\n"
+        assertEquals(AppraisalReading.Refused, readAppraisal(response(sunny, twoSources), 9_999.0, day))
+    }
+
+    @Test
+    fun `an answer with nothing good in it is refused too`() {
+        val sour = goodAnswer.replace(
+            "СИЛЬНІ СТОРОНИ:\n- Рівна підсвітка без засвітів по кутах\n" +
+                "- Швидка матриця, шлейфів майже не видно\n",
+            ""
+        )
+        assertEquals(AppraisalReading.Refused, readAppraisal(response(sour, twoSources), 9_999.0, day))
+    }
+
+    @Test
+    fun `the model saying it found nothing is an answer and is kept`() {
+        val nothing = "НІЧОГО НЕ ЗНАЙШОВ: оглядів саме цієї ревізії немає, " +
+            "а назва збігається одразу з двома різними моделями."
+        val written = (readAppraisal(response(nothing, emptyList(), listOf("щось")), 9_999.0, day)
+            as AppraisalReading.Written).appraisal
+        assertFalse(written.found)
+        assertTrue(written.kind.contains("оглядів саме цієї ревізії"))
+        assertTrue(written.good.isEmpty())
+        assertTrue(written.weak.isEmpty())
+        assertFalse(written.isEmpty)
+    }
+
+    @Test
+    fun `a not-found line that goes on to review the thing anyway is only the line`() {
+        val both = "НІЧОГО НЕ ЗНАЙШОВ: нічого певного.\n" + goodAnswer
+        val written = (readAppraisal(response(both, twoSources), 9_999.0, day)
+            as AppraisalReading.Written).appraisal
+        assertFalse(written.found)
+        assertTrue(written.good.isEmpty())
     }
 
     @Test
     fun `a malformed or empty response is a refusal rather than a crash`() {
-        val about = about(blurb)
-        assertEquals(AppraisalReading.Refused, readAppraisal("", about, 9_999.0, day))
-        assertEquals(AppraisalReading.Refused, readAppraisal("not json at all", about, 9_999.0, day))
-        assertEquals(AppraisalReading.Refused, readAppraisal("{}", about, 9_999.0, day))
+        assertEquals(AppraisalReading.Refused, readAppraisal("", 9_999.0, day))
+        assertEquals(AppraisalReading.Refused, readAppraisal("not json at all", 9_999.0, day))
+        assertEquals(AppraisalReading.Refused, readAppraisal("{}", 9_999.0, day))
         assertEquals(
             AppraisalReading.Refused,
-            readAppraisal(response("still not json"), about, 9_999.0, day)
+            readAppraisal(response("проза без жодного заголовка"), 9_999.0, day)
         )
         // A model that was cut off mid-sentence leaves a part with no object in it.
         assertEquals(
             AppraisalReading.Refused,
-            readAppraisal("""{"candidates":[{"finishReason":"SAFETY"}]}""", about, 9_999.0, day)
+            readAppraisal("""{"candidates":[{"finishReason":"MAX_TOKENS"}]}""", 9_999.0, day)
         )
+        // And grounding metadata that is not there is not a crash either.
+        assertTrue(appraisalSources("{}").isEmpty())
+        assertTrue(appraisalQueries("nonsense").isEmpty())
     }
 
     @Test
-    fun `text split across several parts is read as one answer`() {
-        val halves = JSONObject()
-            .put(
-                "candidates",
-                org.json.JSONArray().put(
+    fun `one page cited for three sentences is one source, not three`() {
+        val repeated = listOf(
+            "rtings.com" to "https://vertexaisearch.cloud.google.com/grounding-api-redirect/a",
+            "rtings.com" to "https://vertexaisearch.cloud.google.com/grounding-api-redirect/a",
+            "tomshardware.com" to "https://vertexaisearch.cloud.google.com/grounding-api-redirect/b"
+        )
+        assertEquals(2, appraisalSources(response(goodAnswer, repeated)).size)
+    }
+
+    @Test
+    fun `a chunk with no address is not a source`() {
+        val json = JSONObject().put(
+            "candidates",
+            org.json.JSONArray().put(
+                JSONObject().put(
+                    "groundingMetadata",
                     JSONObject().put(
-                        "content",
-                        JSONObject().put(
-                            "parts",
-                            org.json.JSONArray()
-                                .put(JSONObject().put("text", goodAnswer.take(30)))
-                                .put(JSONObject().put("text", goodAnswer.drop(30)))
-                        )
+                        "groundingChunks",
+                        org.json.JSONArray()
+                            .put(JSONObject().put("web", JSONObject().put("title", "x")))
+                            .put(JSONObject().put("retrievedContext", JSONObject()))
                     )
                 )
             )
-            .toString()
-        assertTrue(readAppraisal(halves, about(blurb), 9_999.0, day) is AppraisalReading.Written)
+        ).toString()
+        assertTrue(appraisalSources(json).isEmpty())
     }
 
     // ------------------------------------------------------------- going stale
 
     @Test
-    fun `a verdict written for a price that has since moved is marked stale`() {
-        val written = Appraisal(kind = "x", weigh = listOf("y"), price = 10_000.0, day = day)
+    fun `a review written for a price that has since moved is marked stale`() {
+        val written = Appraisal(kind = "x", good = listOf("y"), weak = listOf("z"), price = 10_000.0, day = day)
         assertFalse(appraisalStale(written, 10_000.0))
         assertFalse(appraisalStale(written, 10_400.0))
         assertTrue(appraisalStale(written, 10_500.0))
@@ -507,18 +751,57 @@ class AppraisalTest {
 
     // ------------------------------------------------------------ what is kept
 
+    private val stored = Appraisal(
+        kind = "27-дюймовий ігровий монітор.",
+        good = listOf("Рівна підсвітка", "Швидка матриця"),
+        weak = listOf("Підставка хитається"),
+        suits = "тим, хто грає",
+        skip = "тим, хто працює з кольором",
+        check = listOf("Перевірити ревізію матриці"),
+        sources = listOf(AppraisalSource("rtings.com", "https://example.test/a")),
+        queries = listOf("Dell S2721DGF review"),
+        price = 9_999.0,
+        day = day,
+        model = APPRAISAL_MODEL
+    )
+
     @Test
-    fun `a verdict survives the round trip through storage`() {
-        val written = Appraisal(
-            kind = "Накладні бездротові навушники.",
-            weigh = listOf("Зручність амбушюр", "Чи є змінні амбушюри"),
-            shopSays = "знімною амбушюрою та чохлом для перенесення",
-            price = 9_999.0,
-            day = day,
-            model = APPRAISAL_MODEL
+    fun `a review survives the round trip through storage, sources and all`() {
+        val back = wishOf(wishJson(wish(appraisal = stored)))
+        assertEquals(stored, back.appraisal)
+        // Which is also the bin and the backup file: both carry the payload whole.
+        assertTrue(wishJson(wish(appraisal = stored)).getJSONObject("ap").has("src"))
+    }
+
+    @Test
+    fun `an answer that found nothing keeps that fact through storage`() {
+        val unfound = stored.copy(
+            kind = "нічого певного не знайшлося",
+            good = emptyList(),
+            weak = emptyList(),
+            check = emptyList(),
+            sources = emptyList(),
+            found = false
         )
-        val back = wishOf(wishJson(wish(appraisal = written)))
-        assertEquals(written, back.appraisal)
+        val back = wishOf(wishJson(wish(appraisal = unfound)))
+        assertEquals(unfound, back.appraisal)
+        assertEquals(false, back.appraisal?.found)
+    }
+
+    @Test
+    fun `a review written under the old rules is dropped rather than salvaged`() {
+        // The shape version one wrote: a line, a list to weigh, a shop quotation,
+        // and no marker. Its sentences were produced under rules that no longer
+        // apply, so the honest state is "nobody has asked yet".
+        val old = JSONObject()
+            .put("k", "Накладні бездротові навушники.")
+            .put("w", org.json.JSONArray().put("Зручність амбушюр"))
+            .put("q", "знімною амбушюрою")
+            .put("p", 9_999.0)
+            .put("d", day)
+            .put("m", "gemini-3.1-flash-lite")
+        assertNull(appraisalOf(old))
+        assertEquals(2, APPRAISAL_FORMAT)
     }
 
     @Test
@@ -539,10 +822,50 @@ class AppraisalTest {
     }
 
     @Test
-    fun `the model's half says how it was produced and what it lacks`() {
-        assertTrue(APPRAISAL_SOURCE_NOTE.contains("Gemini"))
-        assertTrue(APPRAISAL_SOURCE_NOTE.contains("Не за відгуками"))
-        assertEquals("З опису магазину: «щось»", shopQuoteLine("щось"))
+    fun `a grounded block and an ungrounded one say different things about themselves`() {
+        assertTrue(APPRAISAL_SOURCE_NOTE.contains("шукала"))
+        assertTrue(APPRAISAL_SOURCE_NOTE.contains("джерела"))
+        assertTrue(APPRAISAL_UNGROUNDED_NOTE.contains("жодного джерела"))
+        assertTrue(APPRAISAL_UNGROUNDED_NOTE.contains("пам'яті"))
+        assertTrue(APPRAISAL_SOURCE_NOTE != APPRAISAL_UNGROUNDED_NOTE)
+    }
+
+    @Test
+    fun `the sources fold counts in Ukrainian`() {
+        assertEquals("1 джерело", sourcesLabel(1))
+        assertEquals("3 джерела", sourcesLabel(3))
+        assertEquals("5 джерел", sourcesLabel(5))
+        assertEquals("11 джерел", sourcesLabel(11))
+        assertEquals("1 запит", searchesLabel(1))
+        assertEquals("2 запити", searchesLabel(2))
+        assertEquals("7 запитів", searchesLabel(7))
+
+        assertEquals(
+            "1 джерело · 1 запит",
+            appraisalSourcesSummary(stored)
+        )
+        assertEquals(
+            "1 джерело",
+            appraisalSourcesSummary(stored.copy(queries = emptyList()))
+        )
+    }
+
+    @Test
+    fun `a source with no title is still openable`() {
+        assertEquals("rtings.com", appraisalSourceLabel(AppraisalSource("rtings.com", "https://x")))
+        assertEquals("Джерело", appraisalSourceLabel(AppraisalSource("", "https://x")))
+    }
+
+    @Test
+    fun `the wording counts in Ukrainian whatever language the phone is set to`() {
+        val original = Locale.getDefault()
+        try {
+            Locale.setDefault(Locale.US)
+            assertEquals("1 джерело", sourcesLabel(1))
+            assertEquals("2 запити", searchesLabel(2))
+        } finally {
+            Locale.setDefault(original)
+        }
     }
 
     @Test
@@ -551,7 +874,13 @@ class AppraisalTest {
             APPRAISAL_IDLE_NOTE,
             APPRAISAL_BUSY_NOTE,
             APPRAISAL_REFUSED_NOTE,
-            APPRAISAL_FAILED_NOTE
+            APPRAISAL_FAILED_NOTE,
+            APPRAISAL_UNFOUND_NOTE,
+            APPRAISAL_UNGROUNDED_NOTE,
+            APPRAISAL_SOURCE_NOTE
         ).forEach { assertTrue(it.isNotBlank()) }
+        // The refusal now names what actually gets an answer thrown away, which is
+        // no longer "цифри".
+        assertTrue(APPRAISAL_REFUSED_NOTE.contains("ціну"))
     }
 }
