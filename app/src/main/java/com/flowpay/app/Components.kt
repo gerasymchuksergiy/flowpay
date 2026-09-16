@@ -1055,6 +1055,8 @@ fun StageRail(
     stages: List<String>,
     current: String,
     modifier: Modifier = Modifier,
+    /** How to word a stop for this particular parcel. Identity by default. */
+    label: (String) -> String = { it },
     onPick: (String) -> Unit
 ) {
     val reached = stages.indexOf(current).coerceAtLeast(0)
@@ -1117,7 +1119,10 @@ fun StageRail(
                 }
                 Spacer(Modifier.height(Space.sm))
                 Text(
-                    stage,
+                    // Rendered through [label] rather than printed: one stop can
+                    // stand for several carrier states, and the caller is the only
+                    // one that knows which. What is tapped is still `stage`.
+                    label(stage),
                     color = labelColor,
                     fontSize = Type.overlineSize,
                     lineHeight = Type.captionLine,

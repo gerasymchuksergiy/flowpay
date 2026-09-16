@@ -1,0 +1,8 @@
+<resources>
+    <string name="shortcut_add_wish_short">Додати</string>
+    <string name="shortcut_add_wish_long">Додати бажання</string>
+    <string name="shortcut_refresh_short">Ціни</string>
+    <string name="shortcut_refresh_long">Перевірити ціни</string>
+    <string name="widget_description">Найближчий платіж, вільні гроші та посилки на відділенні</string>
+    <string name="tile_label">Курс і вільні гроші</string>
+</resources>

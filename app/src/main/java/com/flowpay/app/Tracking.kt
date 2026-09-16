@@ -27,6 +27,29 @@ const val RECEIVED = "Отримано"
 /** Statuses in the order a parcel moves through them. */
 val PARCEL_STAGES = listOf(ORDERED, IN_TRANSIT, AT_BRANCH, RECEIVED)
 
+/** «Відправлення у м. X. Очікуйте повідомлення про прибуття» — already your city. */
+const val IN_DESTINATION_CITY = 6
+
+/**
+ * What to call a stop on the rail for this particular parcel.
+ *
+ * The rail has four stops and Nova Poshta has twenty-one codes, so one stop has
+ * to stand for several situations. Code 6 is the one where the coarse word
+ * misleads: the parcel has reached the recipient's own city and is waiting to be
+ * sorted onward to the pickup point, while «В дорозі» reads as somewhere between
+ * cities. The owner asked twice why the app said one thing and the carrier's own
+ * tracker another — it did not, but the single word invited the question.
+ *
+ * Only code 6, deliberately. Code 4 also says «у місті», but the city it names
+ * can be the sender's, and a parcel that has not left home must never be
+ * reported as nearly arrived.
+ *
+ * This changes the label and nothing else: [Order.status] keeps its stored value,
+ * so tapping a stop to correct it still writes a real member of [PARCEL_STAGES].
+ */
+fun stageLabel(stage: String, statusCode: Int): String =
+    if (stage == IN_TRANSIT && statusCode == IN_DESTINATION_CITY) "У місті" else stage
+
 const val CARRIER_NOVA_POSHTA = "novaposhta"
 const val CARRIER_UNKNOWN = ""
 

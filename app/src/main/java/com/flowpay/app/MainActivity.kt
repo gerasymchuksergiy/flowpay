@@ -5987,7 +5987,8 @@ fun OrdersScreen(
                     StageRail(
                         stages = PARCEL_STAGES,
                         current = order.status,
-                        modifier = Modifier.padding(horizontal = Space.lg)
+                        modifier = Modifier.padding(horizontal = Space.lg),
+                        label = { stageLabel(it, order.statusCode) }
                     ) { status ->
                         save(items.map { if (it.id == order.id) it.copy(status = status) else it })
                     }
@@ -6329,7 +6330,8 @@ fun OrderDetailScreen(
             StageRail(
                 stages = PARCEL_STAGES,
                 current = order.status,
-                modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md)
+                modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md),
+                label = { stageLabel(it, order.statusCode) }
             ) { picked -> onChange(order.copy(status = picked)) }
         }
 
