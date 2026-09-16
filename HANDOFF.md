@@ -35,7 +35,224 @@ No database — everything is JSON in `SharedPreferences`.
 
 ---
 
-## 2. Building
+## 2. The code, file by file
+
+33 Kotlin files, ~20,000 lines. The shape is deliberate and worth understanding
+before adding to it:
+
+> **Pure logic lives in the small files. Compose lives in `MainActivity.kt` and
+> `Components.kt`.** Everything that can be decided without a screen is a plain
+> function over plain data, and it has a unit test. This is why 1002 tests can
+> cover an app with no instrumented tests at all.
+
+When you add a feature, the arithmetic goes in a small file with tests, and only
+the drawing goes in the Compose files. An agent that put its logic inside a
+composable would have shipped it untested.
+
+### The two big Compose files
+
+| File | Lines | What is in it |
+|---|---|---|
+| `MainActivity.kt` | 7982 | Data models, the `Store`, all seven screens, all eight sheets |
+| `Components.kt` | 1827 | Every shared composable |
+
+`MainActivity.kt` is large because it holds four things that would each be small:
+
+1. **The data models** — `Wish` (~149), `WishSource` (~110), `Pay` (~257),
+   `Order` (~309). Read these first; almost every question starts here.
+2. **The JSON mappings** — `wishJson`/`wishOf`, `payJson`/`payOf`,
+   `orderJson`/`orderOf`. See §7.2; these are the single most dangerous place to
+   be careless.
+3. **The `Store`** — one `SharedPreferences` file called `flowpay`. Keys in use:
+   `w` (wishes), `pay`, `orders`, `bin`, `paid` (paid marks), `income`,
+   `wish_sort`, `fx_*` (rate, its day, source, buy/sell), `fxh` (rate history),
+   `fxt*` (rate threshold), `hol` (holidays), `digest_h` (digest hour),
+   `reminded`, `recap`, `pill`/`pill_day` (dismissed status note), `bk_dir`/`bk_at`
+   (backup folder and time), `tile`.
+4. **The screens** — `WishlistScreen`, `WishDetailScreen`, `CalculatorScreen`,
+   `PaymentsScreen`, `OrdersScreen`, `OrderDetailScreen`, `SettingsScreen`; and the
+   sheets `AddWishSheet`, `EditWishSheet`, `AddSourceSheet`, `AddPaymentSheet`,
+   `EditPaymentSheet`, `AddOrderSheet`, `BoughtSheet`, `CloseOrderSheet`.
+
+`Components.kt` holds what more than one screen needs: `PriceChart`,
+`PriceRangeBar`, `RebasedPriceAndRate`, `StageRail`, `HeroPanel`, `LeaderRow`,
+`DottedLeader`, `DaysStrip`, `CollapsingTitle`, `SegmentedControl`, `FormSheet`,
+`StatusPill`, `VerdictChip`, `PhotoHeader`, `BusyMark`, `CollapsibleSection`,
+`CardFold`, `ClampedText`.
+
+### The wishlist and prices
+
+| File | Lines | Holds |
+|---|---|---|
+| `Parsing.kt` | 1334 | Everything that reads a shop page |
+| `Wishes.kt` | 1194 | What a wish *is* and what its state means |
+| `History.kt` | 611 | Price history and what it implies |
+| `Browse.kt` | 288 | Filtering, searching, sorting, category totals |
+| `About.kt` | 62 | Folding the product description |
+| `Compare.kt` | 249 | The Hotline search query |
+| `Appraisal.kt` | 1383 | The AI review (see §11) |
+
+- **`Parsing.kt`** — `extractOffers` and its four strategies, `Offer`,
+  `Availability`, `matchOffer`/`OfferMatch` (the remembered edition on a
+  multi-price page), `extractAbout`/`ProductAbout`, `decodeEntities`,
+  `cleanProductTitle`, `priceNumber`, and the NBU/Monobank rate readers.
+- **`Wishes.kt`** — `Freshness` (OK / UNREADABLE / OUT_OF_STOCK / GONE / MANUAL)
+  and `isStale`; `Reading` and `SourceReading`, the three-outcome results that keep
+  a dropped connection from being mistaken for a dead page; `wishSources`,
+  `bestSource`, `sourceFreshness`, `mergeSources`; `targetHit`, `purchaseReview`,
+  `lowestTracked`, `onHold`, `wishGoal`, `firstPrice`.
+- **`History.kt`** — `PricePoint` (price, day, **and the exchange rate that day**),
+  `appendPrice` (writes **only on a change**, which is why charts must be stepped —
+  see §11), `priceInsight`/`PriceInsight` (the 30-day reference window, the
+  all-time low, `position` behind the range bar), `priorLow`, `inDollars`,
+  `currencyMoveNote`, `appendRate`, `RateTarget`.
+
+### Money and time
+
+| File | Lines | Holds |
+|---|---|---|
+| `Payments.kt` | 1412 | Subscriptions, the month, all number formatting |
+| `Savings.kt` | 137 | Savings plans |
+| `Overview.kt` | 129 | The one place that answers "how am I doing" |
+| `Holidays.kt` | 141 | Ukrainian holidays, so a charge shifts **backwards** |
+| `Recap.kt` + `RecapDeck.kt` | 814 | The monthly recap |
+| `Csv.kt` | 202 | The spreadsheet export |
+
+`Payments.kt` is the most-used file in the project — 79 functions. It owns
+`money`, `figure`, `approxMoney`, `monthKey`, and therefore every number the app
+prints. It also owns `nextPayment`, `nextCharge`, `monthlyTotal`, `yearlyCost`,
+`yearlyCommitment`, `stillOwing`, `PaidMark`/`isPaid`, `onTrial`, `billingMonth`,
+`budget`, and the warn-days machinery.
+
+### Parcels
+
+`Tracking.kt` (885) is the Nova Poshta reader: `parseNovaPoshtaStatus`,
+`stageForStatusCode`, `isProblemCode`, `problemNote`, `stageLabel`, `applyStatus`,
+`Sighting` (the app's own observed history), `addressBeyond`/`alreadySaid` (the
+functions that stop the detail page printing an address twice), and the three
+date parsers.
+
+### Background, notifications, the system
+
+| File | Holds |
+|---|---|
+| `PriceWorker.kt` | Every 12 h: re-read prices and parcels |
+| `ReminderWorker.kt` | The 09:00 digest |
+| `BackupWorker.kt` | Weekly backup to the chosen folder |
+| `Background.kt` | Whether background work is actually alive |
+| `Digest.kt` | What the one morning message says |
+| `Chrome.kt` | The status pill's single most pressing thing |
+| `Backup.kt` | Export/import format |
+| `Bin.kt` | The 30-day bin |
+| `Intents.kt` | Share-into-app, open-in-shop |
+| `Widget.kt`, `Tile.kt` | Home screen widget, quick settings tile |
+| `HealthPanel.kt` | "Is anything broken?" on the Огляд tab |
+
+### Look and feel
+
+`Theme.kt` (588) is the design system — read §9. `Shapes.kt` (190) is the
+`graphics-shapes` morph for a wish that reached its target price. `Haptics.kt`
+(108) is the five-strong semantic vibration vocabulary.
+
+---
+
+## 3. How the data flows
+
+### Adding a wish
+
+```
+link → pageHtml() → extractOffers()      four strategies, in order
+                  → matchOffer()          if the page lists several editions
+                  → wishFromOffer()       → Wish
+                  → extractAbout()        → ProductAbout
+     → store.saveWishes()  →  wishJson()  →  SharedPreferences "w"
+```
+
+If no price is found: one retry, then the add still succeeds on the title and
+photo with `Freshness.MANUAL` and a price you type. **The flow never fails on a
+missing price** — that was the Temu bug.
+
+### A price refresh (every 12 h, or on demand)
+
+```
+PriceWorker → for each wish → for each source → pageHtml()
+                                              → readSource() → SourceReading
+            → mergeSources()   cheapest source that answers wins
+            → appendPrice()    only if the price actually changed
+            → priceAlertFor()  target hit / back in stock / new low
+```
+
+Three things that look like details and are not:
+
+- A source that **times out** keeps its previous price. Otherwise a bad connection
+  looks like a discount.
+- A **sold-out** page's price never enters history, never fires an alert, never
+  counts as a low, and never wins `bestSource`.
+- `appendPrice` writes **only on a change**, so history is a list of events, not a
+  time series. Everything downstream must treat it that way.
+
+### A parcel refresh
+
+```
+PriceWorker → getStatusDocuments → parseNovaPoshtaStatus → ParcelStatus
+            → stageForStatusCode → one of PARCEL_STAGES (or "" for a problem)
+            → applyStatus        → appends a Sighting only on a real change
+```
+
+### The morning message
+
+```
+ReminderWorker → digest(wishes, pays, orders, paid, holidays, rateTarget, …)
+               → paymentLines  (stillOwing → remindersDue → nextCharge)
+               → parcelLines   (skips archived)
+               → priceLines    (skips held and stale)
+               → amountLines   (a subscription that changed price)
+               → rateTargetLine
+```
+
+Everything non-urgent is batched here. Only three things interrupt immediately: a
+target price hit, something back in stock, and storage expiring tomorrow.
+
+### The appraisal
+
+```
+appraisalGate()  ← pure, before any network call, on data only
+      ↓ READY
+Gemini generateContent, tools: [googleSearch]      price and rating NOT sent
+      ↓
+readAppraisal()  ← rejects price/rating claims; rejects hearsay when ungrounded
+      ↓
+Appraisal (text, sources, query count, price when written) → wishJson "ap"
+```
+
+---
+
+## 4. Where to look for a given thing
+
+| If you need to change… | Start at |
+|---|---|
+| What a price means, or a verdict | `History.kt` → `priceInsight` |
+| How a page is read | `Parsing.kt` → `extractOffers` |
+| Whether a wish is trustworthy | `Wishes.kt` → `Freshness`, `isStale` |
+| Anything a number looks like | `Payments.kt` → `money`, `figure` |
+| The month, a bill, a trial | `Payments.kt` → `nextCharge`, `stillOwing` |
+| A parcel's stage or wording | `Tracking.kt` → `stageForStatusCode`, `stageLabel` |
+| What interrupts the owner | `Chrome.kt` (pill), `Digest.kt` (morning) |
+| A colour, a size, a spring | `Theme.kt` — and nowhere else |
+| A shared piece of UI | `Components.kt` |
+| A screen's layout | `MainActivity.kt`, the `*Screen` functions |
+| What survives a restore | `wishJson`/`wishOf` and friends — §7.2 |
+| Whether background work runs | `Background.kt`, `HealthPanel.kt` |
+
+**Tests are named after the behaviour, not the file.** Looking for how something
+is meant to work, grep the test names first — `StatusLadderTest`,
+`WishSourcesTest`, `SubscriptionTest`, `RecapTest`, `AppraisalTest`,
+`AvailabilityTest`, `CurrencyTest`, `BillingPeriodTest` are the ones that encode
+the most decisions.
+
+---
+
+## 5. Building
 
 Nothing is on PATH. Every build sets its own paths.
 
@@ -73,7 +290,7 @@ when it matters.
 
 ---
 
-## 3. Shipping
+## 6. Shipping
 
 ```bash
 git push origin fix/production-readiness
@@ -134,13 +351,13 @@ Two failures have happened and both were infrastructure, not code:
 - **`setup-android` asking for the removed `tools` package.** Fixed by
   `packages: ""` — the platform and build-tools this project needs are installed
   explicitly on the next line anyway.
-- **A malformed secret pasted into a generated Java string literal.** See §7.
+- **A malformed secret pasted into a generated Java string literal.** See §10.
 
 ---
 
-## 4. The hard rules
+## 7. The hard rules
 
-### 4.1 Never format a number without a locale
+### 7.1 Never format a number without a locale
 
 `"%.1f".format(x)` reads the **phone's** default locale. CI is en-US, the phone is
 uk-UA, so it passes locally and fails in CI — or worse, ships a screen mixing
@@ -152,7 +369,7 @@ once.
 - Money: `money()`, `approxMoney()` — `Payments.kt`
 - Storage keys, API dates, clock faces: `Locale.ROOT`, explicitly
 
-### 4.2 A new persisted field goes into **both** sides of its JSON mapping
+### 7.2 A new persisted field goes into **both** sides of its JSON mapping
 
 `wishJson`/`wishOf`, `payJson`/`payOf`, `orderJson`/`orderOf` in `MainActivity.kt`.
 These are also how the 30-day bin restores a deleted item and how backup/restore
@@ -163,13 +380,13 @@ populated object and asserts equality, not a spot check.
 A **view** preference is not app data: follow `sectionOpen` / `rateTarget` /
 `recapSeen` and keep it out of `exportJson`.
 
-### 4.3 Numbers on screen come from the data layer
+### 7.3 Numbers on screen come from the data layer
 
-Never from anything generated. See §8.
+Never from anything generated. See §11.
 
 ---
 
-## 5. Working with agents
+## 8. Working with agents
 
 Parallel worktree agents built most of this. What was learned:
 
@@ -193,7 +410,7 @@ Parallel worktree agents built most of this. What was learned:
 
 ---
 
-## 6. Design system — `Theme.kt`
+## 9. Design system — `Theme.kt`
 
 Read its comments before drawing anything; they explain why each value exists.
 
@@ -229,7 +446,7 @@ Read its comments before drawing anything; they explain why each value exists.
 
 ---
 
-## 7. Secrets
+## 10. Secrets
 
 The repository is public. Two separate exposures, do not confuse them:
 
@@ -252,7 +469,7 @@ why. Guessing a provider's format is not the build's job.
 
 ---
 
-## 8. Domain knowledge worth not rediscovering
+## 11. Domain knowledge worth not rediscovering
 
 ### Scraping prices
 
@@ -357,7 +574,7 @@ So the mitigations are structural, not instructional:
 
 ---
 
-## 9. Judgement calls already made — and why
+## 12. Judgement calls already made — and why
 
 Do not silently reverse these. Reopen them with the owner if you think they are
 wrong.
@@ -389,7 +606,7 @@ wrong.
 
 ---
 
-## 10. How to talk to the owner
+## 13. How to talk to the owner
 
 - **Ukrainian**, always.
 - **He cannot check the code.** Do not say a thing is done unless it is verified,
@@ -406,7 +623,7 @@ wrong.
 
 ---
 
-## 11. Open items
+## 14. Open items
 
 - **Nothing in this app has been verified visually.** Grain strength, the lit
   edge, the shape morph on a target-hit card, the appraisal card's states — all
