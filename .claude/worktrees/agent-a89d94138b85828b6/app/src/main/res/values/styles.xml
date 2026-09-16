@@ -1,8 +1,0 @@
-<resources>
- <style name="Theme.FlowPay" parent="android:style/Theme.Material.NoActionBar">
-  <item name="android:fontFamily">sans-serif</item>
-  <item name="android:windowBackground">@color/app_background</item>
-  <item name="android:windowLightStatusBar">false</item>
-  <item name="android:windowActionModeOverlay">true</item>
- </style>
-</resources>

@@ -9,3 +9,6 @@ local.properties
 *.keystore
 *.p12
 *.apk
+
+# Agent worktrees and session scratch. Never part of the app.
+.claude/
