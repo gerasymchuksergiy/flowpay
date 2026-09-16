@@ -1,0 +1,14 @@
+.gradle/
+.idea/
+# Kotlin compiler session files, written into the project root by every build.
+.kotlin/
+local.properties
+**/build/
+*.iml
+*.jks
+*.keystore
+*.p12
+*.apk
+
+# Agent worktrees and session scratch. Never part of the app.
+.claude/

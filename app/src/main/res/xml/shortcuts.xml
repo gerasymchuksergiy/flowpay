@@ -1,0 +1,26 @@
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Explicit component intents with actions of the app's own, so neither
+         shortcut needs an <intent-filter> that other apps could also fire. -->
+    <shortcut
+        android:shortcutId="add_wish"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_add"
+        android:shortcutShortLabel="@string/shortcut_add_wish_short"
+        android:shortcutLongLabel="@string/shortcut_add_wish_long">
+        <intent
+            android:action="com.flowpay.app.action.ADD_WISH"
+            android:targetPackage="com.flowpay.app"
+            android:targetClass="com.flowpay.app.MainActivity"/>
+    </shortcut>
+    <shortcut
+        android:shortcutId="refresh_prices"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_refresh"
+        android:shortcutShortLabel="@string/shortcut_refresh_short"
+        android:shortcutLongLabel="@string/shortcut_refresh_long">
+        <intent
+            android:action="com.flowpay.app.action.REFRESH_PRICES"
+            android:targetPackage="com.flowpay.app"
+            android:targetClass="com.flowpay.app.MainActivity"/>
+    </shortcut>
+</shortcuts>
