@@ -213,6 +213,18 @@ fun healthLine(health: WorkHealth): HealthLine {
     )
 }
 
+/**
+ * Whether the strip above the overview has anything to interrupt with.
+ *
+ * Only when something is wrong. It used to stand there permanently, saying «працює»
+ * on every visit with no way to put it away, and the owner asked for it to go: a
+ * bar that is always present and almost always fine is the bar people stop seeing,
+ * which is exactly the habit it was meant to build the other way round. The calm
+ * answer is still one tap away, on the «Фонове оновлення» row under Налаштування,
+ * and that row opens the same sheet — so nothing it said is lost, only the noise.
+ */
+fun stripLine(line: HealthLine?): HealthLine? = line?.takeIf { it.alarm }
+
 // ------------------------------------------------------------ where to send them
 
 /**

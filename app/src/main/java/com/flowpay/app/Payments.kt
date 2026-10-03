@@ -1375,15 +1375,63 @@ fun monthRecords(
     marks: List<PaidMark>,
     today: LocalDate,
     usdSellRate: Double,
-    maxMonths: Int = PAID_HISTORY_MONTHS
+    maxMonths: Int = PAID_HISTORY_MONTHS,
+    /**
+     * Months shown whatever the marks say, this one included.
+     *
+     * The month history on Платежі asks for two, so that the month just ended is
+     * always there to be filled in: "скільки я витратив за вересень" is the question
+     * it is opened with, and a list that starts at October because nothing was
+     * marked in September cannot be answered from — or corrected.
+     */
+    atLeast: Int = 1
 ): List<MonthRecord> {
     val current = monthKey(today)
     val first = today.withDayOfMonth(1)
     val earliest = marks.map { it.month }.filter { it <= current }.minOrNull() ?: current
     return (0 until maxMonths.coerceAtLeast(1))
         .map { monthKey(first.minusMonths(it.toLong())) }
-        .takeWhile { it >= earliest }
+        .filterIndexed { index, month -> index < atLeast || month >= earliest }
         .map { monthRecord(pays, marks, it, today, usdSellRate) }
+}
+
+/** One row of a month read back: an expense, and whether that month it was paid. */
+data class MonthLine(
+    /** What a tap toggles. A mark whose expense is gone gets one rebuilt from it. */
+    val pay: Pay,
+    /** The marked amount once paid — what that month really cost — else the plan. */
+    val amount: Double,
+    val currency: String,
+    val paid: Boolean
+)
+
+/**
+ * What one month was made of, row by row.
+ *
+ * A paid row carries the amount written on its mark, not the expense's current
+ * one: the rent went up in October, and September must still read what September
+ * was. An expense deleted since still has its mark counted in the month's total, so
+ * it is listed too — a total that does not add up to the rows under it is the one
+ * thing a record like this cannot afford. Unpaid rows are only the expenses that
+ * charge that month, so an annual fee does not stand unpaid in eleven months it was
+ * never due in.
+ */
+fun monthLines(pays: List<Pay>, marks: List<PaidMark>, month: String): List<MonthLine> {
+    val forMonth = marks.filter { it.month == month }
+    val monthStart = monthKeyDate(month)
+    val standing = pays
+        .filter { pay ->
+            forMonth.any { it.name == pay.name } || monthStart == null || chargesIn(pay, monthStart)
+        }
+        .distinctBy { it.name }
+        .map { pay ->
+            val mark = forMonth.firstOrNull { it.name == pay.name }
+            MonthLine(pay, mark?.amount ?: pay.amount, mark?.currency ?: pay.currency, mark != null)
+        }
+    val gone = forMonth
+        .filter { mark -> pays.none { it.name == mark.name } }
+        .map { MonthLine(Pay(it.name, it.amount, currency = it.currency), it.amount, it.currency, true) }
+    return standing + gone
 }
 
 /** A month in one line, which is all a row on the overview has room for. */

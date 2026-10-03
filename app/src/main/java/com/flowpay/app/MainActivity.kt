@@ -370,7 +370,14 @@ data class Order(
      * response it came from is not kept and a parcel opened on a train with no
      * signal still has to be able to explain itself.
      */
-    val statusCode: Int = 0
+    val statusCode: Int = 0,
+    /**
+     * Nothing travels: a game, a key, a subscription. See Purchases.kt.
+     *
+     * Such a purchase has no carrier and no stages, so it is drawn without the rail
+     * and can be closed from the moment it is added.
+     */
+    val digital: Boolean = false
 )
 
 class MainActivity : ComponentActivity() {
@@ -1095,6 +1102,7 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     // the whole movement history of everything in flight.
     .put("dt", detailsJson(order.details))
     .put("sg", sightingsJson(order.sightings))
+    .put("dg", order.digital)
 
 /**
  * A parcel read back off the phone.
@@ -1140,7 +1148,12 @@ fun orderOf(o: JSONObject): Order = Order(
     // Zero on every parcel saved before the code was kept. Those still carry the
     // `pr` flag, so a restored parcel in trouble says the old general sentence
     // rather than nothing, and says the specific one again after the next check.
-    statusCode = o.optInt("sc", 0)
+    statusCode = o.optInt("sc", 0),
+    // Absent on every purchase saved before the app knew a download from a parcel.
+    // Those are judged by their shop, which is what puts the Steam game already on
+    // the phone back where it belongs without anyone having to touch it. Once the
+    // flag has been written, it is the answer — including a «no» set by hand.
+    digital = if (o.has("dg")) o.optBoolean("dg", false) else isDigitalStore(o.optString("u"))
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -1830,8 +1843,12 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(HairLine))
                     NavigationBar(
                         // Translucent rather than a slab: the list keeps running
-                        // underneath, which is what says there is more of it.
-                        containerColor = SurfaceLow.copy(alpha = 0.82f),
+                        // underneath, which is what says there is more of it. But
+                        // only just — at 0.82 the rows behind were legible enough to
+                        // read through the tab labels («24 жовтня» across «Бажання»
+                        // on the owner's screenshots), and two layers of text on top
+                        // of each other is noise, not a hint.
+                        containerColor = SurfaceLow.copy(alpha = 0.96f),
                         tonalElevation = 0.dp
                     ) {
                         val tabs = listOf(
@@ -1953,10 +1970,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         )
                         // The overview is where "how am I doing" is asked, and every
                         // figure on it is only as true as the last background pass.
-                        // So the pass says for itself whether it is still running,
-                        // above the screen rather than buried in it.
+                        // So a pass that has stopped says so above the screen; one
+                        // that is fine says so on its row under Налаштування.
                         else -> Column(Modifier.fillMaxSize()) {
-                            WorkHealthStrip(health?.let { healthLine(it) }) { healthOpen = true }
+                            val line = health?.let { healthLine(it) }
+                            WorkHealthStrip(stripLine(line)) { healthOpen = true }
                             Box(Modifier.weight(1f)) {
                                 SettingsScreen(
                                     recap = recap,
@@ -1970,14 +1988,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                         today
                                     ),
                                     store = store,
-                                    months = monthRecords(pays, paid, today, usdSell),
-                                    pays = pays,
-                                    paid = paid,
-                                    onTogglePaid = { pay, month ->
-                                        val marks = togglePaid(paid, pay, month)
-                                        paid = marks
-                                        store.savePaidMarks(marks)
-                                    },
+                                    health = line,
+                                    onOpenHealth = { healthOpen = true },
                                     bin = bin,
                                     onRestore = { id -> store.restoreFromBin(id); reload() },
                                     onDropFromBin = { id ->
@@ -2138,7 +2150,8 @@ fun WishlistScreen(
                                 // The wish leaves the list on the next line, so the
                                 // one number the verdict needs has to be carried
                                 // across now or it is gone for good.
-                                lowestSeen = lowestTracked(shown)
+                                lowestSeen = lowestTracked(shown),
+                                digital = isDigitalStore(shown.url)
                             ),
                             shown
                         )
@@ -5171,6 +5184,10 @@ fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
     }
 }
 
+/** The two halves of the payments screen. */
+const val PAYMENTS_SCHEDULE = 0
+const val PAYMENTS_BY_MONTH = 1
+
 @Composable
 fun PaymentsScreen(
     items: List<Pay>,
@@ -5207,6 +5224,9 @@ fun PaymentsScreen(
     // state: the weekend rule stands on its own without it.
     val holidays = remember { store.holidays(today.year) }
     val listState = rememberLazyListState()
+    // Which half of the screen is showing. Not remembered: the schedule is what
+    // the tab is opened for, and the history is a question asked on purpose.
+    var view by remember { mutableIntStateOf(PAYMENTS_SCHEDULE) }
     Box {
         LazyColumn(
             state = listState,
@@ -5214,159 +5234,346 @@ fun PaymentsScreen(
         ) {
             // Item zero is the header alone: that is the block the compact bar watches.
             item { ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки") }
+            // Two halves of one screen: what is coming, and what already went. The
+            // second used to live at the bottom of Огляд, which is not where anyone
+            // looks for "скільки я заплатив за вересень".
             item {
-                Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
-                    // The loudest figure should be one you can act on. A monthly total is
-                    // read and forgotten; the next payment is prepared for, so it takes
-                    // the panel and the total moves down into the summary rows.
-                    val next = nextPayment(items, today, rate.sell)
-                    HeroPanel(
-                        label = if (next != null) {
-                            "Найближчий платіж · ${dueLabel(next.daysAway)}"
-                        } else {
-                            "Разом на місяць"
-                        },
-                        value = money(next?.total?.total ?: monthly.total),
-                        caption = when {
-                            next == null -> null
-                            next.total.rateMissing ->
-                                "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
-                            else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
-                        },
-                        muted = next == null
+                SegmentedControl(
+                    options = listOf("Розклад", "По місяцях"),
+                    selected = view,
+                    modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg)
+                ) { view = it }
+            }
+            if (view == PAYMENTS_BY_MONTH) {
+                item(key = "paid-months") {
+                    PaidMonths(
+                        // Two months at least, so the one just ended is always there
+                        // to be read or filled in. See [monthRecords].
+                        months = monthRecords(items, paid, today, rate.sell, atLeast = 2),
+                        pays = items,
+                        marks = paid,
+                        onToggle = { pay, month -> setPaid(togglePaid(paid, pay, month)) },
+                        modifier = Modifier.padding(horizontal = Space.screen)
                     )
-                    if (items.isNotEmpty()) {
-                        Spacer(Modifier.height(Space.md))
-                        DaysStrip(days = 30, marked = paymentOffsets(items, today))
-                        Spacer(Modifier.height(Space.xs))
-                        Text(
-                            "Списання у найближчі 30 днів",
-                            color = TextSecondary,
-                            fontSize = Type.captionSize
+                }
+            } else {
+                item {
+                    Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
+                        // The loudest figure should be one you can act on. A monthly total is
+                        // read and forgotten; the next payment is prepared for, so it takes
+                        // the panel and the total moves down into the summary rows.
+                        val next = nextPayment(items, today, rate.sell)
+                        HeroPanel(
+                            label = if (next != null) {
+                                "Найближчий платіж · ${dueLabel(next.daysAway)}"
+                            } else {
+                                "Разом на місяць"
+                            },
+                            value = money(next?.total?.total ?: monthly.total),
+                            caption = when {
+                                next == null -> null
+                                next.total.rateMissing ->
+                                    "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
+                                else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
+                            },
+                            muted = next == null
                         )
-                    }
-                    Spacer(Modifier.height(Space.md))
-                    Card(
-                        modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
-                        colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                        shape = Radius.md
-                    ) {
-                        Column(Modifier.padding(Space.lg)) {
-                            // Not "here are your subscriptions" but "here is what
-                            // survives them". The same figures as a bite out of
-                            // the month, which is what makes a small number feel
-                            // consequential without exaggerating it by a hryvnia.
-                            Row(
-                                Modifier.fillMaxWidth().clickable { editingIncome = true },
-                                verticalAlignment = Alignment.Top
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(
-                                        if (month.unknown) "Вкажіть дохід" else "Місяць",
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize
-                                    )
-                                    Spacer(Modifier.height(Space.sm))
-                                    CommittedBar(committedOf(month))
+                        if (items.isNotEmpty()) {
+                            Spacer(Modifier.height(Space.md))
+                            DaysStrip(days = 30, marked = paymentOffsets(items, today))
+                            Spacer(Modifier.height(Space.xs))
+                            Text(
+                                "Списання у найближчі 30 днів",
+                                color = TextSecondary,
+                                fontSize = Type.captionSize
+                            )
+                        }
+                        Spacer(Modifier.height(Space.md))
+                        Card(
+                            modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                            shape = Radius.md
+                        ) {
+                            Column(Modifier.padding(Space.lg)) {
+                                // Not "here are your subscriptions" but "here is what
+                                // survives them". The same figures as a bite out of
+                                // the month, which is what makes a small number feel
+                                // consequential without exaggerating it by a hryvnia.
+                                Row(
+                                    Modifier.fillMaxWidth().clickable { editingIncome = true },
+                                    verticalAlignment = Alignment.Top
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            if (month.unknown) "Вкажіть дохід" else "Місяць",
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize
+                                        )
+                                        Spacer(Modifier.height(Space.sm))
+                                        CommittedBar(committedOf(month))
+                                    }
+                                    Spacer(Modifier.width(Space.md))
+                                    Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
                                 }
-                                Spacer(Modifier.width(Space.md))
-                                Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
-                            }
-                            if (items.isNotEmpty()) {
-                                Spacer(Modifier.height(Space.md))
-                                // What the month actually cost, beside what it was
-                                // meant to. Until this row existed the screen could
-                                // only ever state the plan.
-                                LeaderRow("Сплачено цього місяця", totalLabel(record.paid))
-                                // A year of the same costs, because that is the scale at
-                                // which a subscription is worth arguing with.
-                                LeaderRow("Разом на рік", money(yearly.total))
-                                // And what that same year cost before the quiet
-                                // raises. Each one is a few tens of hryvnia and
-                                // reads as nothing; twelve months of all of them
-                                // is the figure that gets something cancelled.
-                                yearlyShiftNote(shift)?.let { note ->
-                                    Text(
-                                        note,
-                                        Modifier.padding(top = Space.xs),
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize,
-                                        lineHeight = Type.captionLine
-                                    )
-                                }
-                                // The row above counts a trial as the nought it
-                                // currently is. That is true of this month and
-                                // false of the year, so the commitment behind the
-                                // free period is stated rather than left to be
-                                // discovered on the first statement.
-                                if (trials.isNotEmpty()) {
-                                    LeaderRow(
-                                        "Після пробних періодів",
-                                        money(committed.total)
-                                    )
-                                }
-                                if (monthly.rateMissing) {
-                                    // Both totals are short by this much, so it is said as
-                                    // a gap rather than folded in as a smaller number.
-                                    LeaderRow(
-                                        "Плюс ${dollars(yearly.usd)} на рік",
-                                        "курс ще не завантажено"
-                                    )
-                                } else if (monthly.hasUsd) {
-                                    LeaderRow(
-                                        "З них ${dollars(yearly.usd)} на рік",
-                                        "≈ ${approxMoney(yearly.usdInUah)}"
-                                    )
+                                if (items.isNotEmpty()) {
+                                    Spacer(Modifier.height(Space.md))
+                                    // What the month actually cost, beside what it was
+                                    // meant to. Until this row existed the screen could
+                                    // only ever state the plan.
+                                    LeaderRow("Сплачено цього місяця", totalLabel(record.paid))
+                                    // A year of the same costs, because that is the scale at
+                                    // which a subscription is worth arguing with.
+                                    LeaderRow("Разом на рік", money(yearly.total))
+                                    // And what that same year cost before the quiet
+                                    // raises. Each one is a few tens of hryvnia and
+                                    // reads as nothing; twelve months of all of them
+                                    // is the figure that gets something cancelled.
+                                    yearlyShiftNote(shift)?.let { note ->
+                                        Text(
+                                            note,
+                                            Modifier.padding(top = Space.xs),
+                                            color = TextSecondary,
+                                            fontSize = Type.captionSize,
+                                            lineHeight = Type.captionLine
+                                        )
+                                    }
+                                    // The row above counts a trial as the nought it
+                                    // currently is. That is true of this month and
+                                    // false of the year, so the commitment behind the
+                                    // free period is stated rather than left to be
+                                    // discovered on the first statement.
+                                    if (trials.isNotEmpty()) {
+                                        LeaderRow(
+                                            "Після пробних періодів",
+                                            money(committed.total)
+                                        )
+                                    }
+                                    if (monthly.rateMissing) {
+                                        // Both totals are short by this much, so it is said as
+                                        // a gap rather than folded in as a smaller number.
+                                        LeaderRow(
+                                            "Плюс ${dollars(yearly.usd)} на рік",
+                                            "курс ще не завантажено"
+                                        )
+                                    } else if (monthly.hasUsd) {
+                                        LeaderRow(
+                                            "З них ${dollars(yearly.usd)} на рік",
+                                            "≈ ${approxMoney(yearly.usdInUah)}"
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
                 }
-            }
-            if (items.isEmpty()) {
-                item {
-                    PlaceholderRows(
-                        listOf(
-                            "оренда, комуналка" to "сума і день оплати",
-                            "інтернет, підписки" to "сума і день оплати"
-                        ),
-                        Modifier.padding(horizontal = Space.screen)
-                    )
+                if (items.isEmpty()) {
+                    item {
+                        PlaceholderRows(
+                            listOf(
+                                "оренда, комуналка" to "сума і день оплати",
+                                "інтернет, підписки" to "сума і день оплати"
+                            ),
+                            Modifier.padding(horizontal = Space.screen)
+                        )
+                    }
                 }
-            }
-            // A timeline rather than a list: the date is said once for everything
-            // falling on it, instead of "1 числа щомісяця" repeated under every row.
-            paymentGroups(items, today).forEach { group ->
-                item(key = group.date.toString()) {
-                    val isToday = group.date == today
-                    Card(
-                        Modifier
-                            .padding(horizontal = Space.screen, vertical = Space.xs)
-                            .fillMaxWidth()
-                            // The edge on every one of them, including today's
-                            // tinted card. The timeline was the one run of cards
-                            // the original pass missed, so it sat flat directly
-                            // above sections that stand proud — and an edge that
-                            // came and went with the date would trade one
-                            // inconsistency for a stranger one.
-                            .litEdge(Radius.md),
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (isToday) AccentSoft else SurfaceBase
-                        ),
-                        shape = Radius.md
-                    ) {
-                        Column(Modifier.padding(Space.lg)) {
-                            Text(
-                                if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
-                                color = Accent,
-                                fontSize = Type.captionSize,
-                                fontWeight = Type.medium
-                            )
-                            // A day of the month is a lie four or five times a year.
-                            // When the charge lands on a weekend or a holiday the row
-                            // says so and names the day the money actually has to be
-                            // there by — which is the day the reminder already counts to.
-                            paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
+                // A timeline rather than a list: the date is said once for everything
+                // falling on it, instead of "1 числа щомісяця" repeated under every row.
+                paymentGroups(items, today).forEach { group ->
+                    item(key = group.date.toString()) {
+                        val isToday = group.date == today
+                        Card(
+                            Modifier
+                                .padding(horizontal = Space.screen, vertical = Space.xs)
+                                .fillMaxWidth()
+                                // The edge on every one of them, including today's
+                                // tinted card. The timeline was the one run of cards
+                                // the original pass missed, so it sat flat directly
+                                // above sections that stand proud — and an edge that
+                                // came and went with the date would trade one
+                                // inconsistency for a stranger one.
+                                .litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (isToday) AccentSoft else SurfaceBase
+                            ),
+                            shape = Radius.md
+                        ) {
+                            Column(Modifier.padding(Space.lg)) {
+                                Text(
+                                    if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
+                                    color = Accent,
+                                    fontSize = Type.captionSize,
+                                    fontWeight = Type.medium
+                                )
+                                // A day of the month is a lie four or five times a year.
+                                // When the charge lands on a weekend or a holiday the row
+                                // says so and names the day the money actually has to be
+                                // there by — which is the day the reminder already counts to.
+                                paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
+                                    Text(
+                                        note,
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine
+                                    )
+                                }
+                                group.positions.forEach { position ->
+                                    val pay = items[position]
+                                    Row(
+                                        Modifier
+                                            .fillMaxWidth()
+                                            .clickable { editing = position }
+                                            .padding(vertical = Space.sm),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        IconChip(payIcon(pay.name))
+                                        Spacer(Modifier.width(Space.md))
+                                        // No dotted leader here. Two weighted children split
+                                        // the row in half, which cut "Оренда квартири" down to
+                                        // "Оренда к…" — and a name earns that space before a
+                                        // decoration does.
+                                        Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                            Text(
+                                                pay.name,
+                                                fontSize = Type.cardTitleSize,
+                                                fontWeight = Type.medium,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            // The annual figure is the one that changes minds
+                                            // about a subscription, so it rides with the name
+                                            // rather than waiting on another screen. It never
+                                            // looks at the trial: what a year of this costs is
+                                            // what signing up commits you to, and a free month
+                                            // does not change it.
+                                            //
+                                            // An annual charge says both denominators instead,
+                                            // because either alone misleads — and it says the
+                                            // rhythm between them, so the smoothed one can
+                                            // never be mistaken for cash.
+                                            Text(
+                                                billingLine(pay),
+                                                color = TextSecondary,
+                                                fontSize = Type.captionSize,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                // One of these under every name in the
+                                                // timeline, so they stack into a column
+                                                // whether or not anything drew one.
+                                                style = Tabular
+                                            )
+                                            // The date the free ride ends, on the row, in
+                                            // the accent — because it is the one fact about
+                                            // this expense that expires.
+                                            trialLabel(pay, today)?.let { free ->
+                                                Text(
+                                                    free,
+                                                    color = Accent,
+                                                    fontSize = Type.captionSize,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            // What it used to cost, on the row rather
+                                            // than a screen away. A subscription earns
+                                            // by raising its price quietly, and the
+                                            // whole defence is the old figure sitting
+                                            // beside the new one where it is read. An
+                                            // expense the app has only ever seen at
+                                            // one price says nothing at all here.
+                                            val steps = amountStepPoints(pay)
+                                            amountMoveLine(pay)?.let { move ->
+                                                Spacer(Modifier.height(Space.xs))
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    AmountStep(
+                                                        steps,
+                                                        Modifier.width(28.dp).height(14.dp)
+                                                    )
+                                                    Spacer(Modifier.width(Space.sm))
+                                                    Text(
+                                                        move,
+                                                        color = TextSecondary,
+                                                        fontSize = Type.captionSize,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        // "було 199 → стало 249 ₴" is two
+                                                        // figures asking to be compared
+                                                        // across an arrow. Unequal digit
+                                                        // widths are exactly what stops
+                                                        // that reading as a comparison.
+                                                        style = Tabular
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        Column(horizontalAlignment = Alignment.End) {
+                                            Text(
+                                                amountLabel(pay.amount, pay.currency),
+                                                fontWeight = Type.strong,
+                                                style = Tabular
+                                            )
+                                            if (pay.currency == USD && rate.sell > 0) {
+                                                Text(
+                                                    "≈ ${approxMoney(pay.amount * rate.sell)}",
+                                                    color = TextSecondary,
+                                                    fontSize = Type.captionSize,
+                                                    style = Tabular
+                                                )
+                                            }
+                                        }
+                                        // One tap, on the row you are already looking at.
+                                        // Anywhere else and the record would be a screen
+                                        // you have to remember to visit, which is the same
+                                        // as not having one.
+                                        val done = isPaid(paid, pay.name, thisMonth)
+                                        // A real two-state mark, and the two states feel
+                                        // different: this is the one control in the app
+                                        // you use without looking, halfway through paying
+                                        // something on another screen, so the phone
+                                        // saying which way it went is the whole point.
+                                        IconButton({
+                                            touch.switched(!done)
+                                            setPaid(togglePaid(paid, pay, thisMonth))
+                                        }) {
+                                            Icon(
+                                                if (done) {
+                                                    Icons.Default.CheckCircle
+                                                } else {
+                                                    Icons.Default.RadioButtonUnchecked
+                                                },
+                                                if (done) {
+                                                    "Скасувати позначку про оплату"
+                                                } else {
+                                                    "Позначити оплаченим"
+                                                },
+                                                tint = if (done) Accent else TextDisabled
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // The annual blind spot, given a place to be visible from.
+                //
+                // A charge that happens once in twelve months is off the timeline for
+                // eleven of them, and until this section existed that meant off the
+                // screen entirely — the quietest way a subscription tracker can lie.
+                // They are listed at their real amounts on their real dates rather
+                // than averaged into the monthly total, because an averaged figure in
+                // the month the charge actually lands shows a month that fits when it
+                // does not.
+                val dormant = annualElsewhere(items, today)
+                if (dormant.isNotEmpty()) {
+                    item(key = "annual-elsewhere") {
+                        Column(
+                            Modifier
+                                .padding(horizontal = Space.screen)
+                                .padding(top = Space.xl, bottom = Space.sm)
+                        ) {
+                            SectionTitle("Раз на рік")
+                            annualElsewhereNote(items, today, rate.sell)?.let { note ->
                                 Text(
                                     note,
                                     color = TextSecondary,
@@ -5374,221 +5581,58 @@ fun PaymentsScreen(
                                     lineHeight = Type.captionLine
                                 )
                             }
-                            group.positions.forEach { position ->
-                                val pay = items[position]
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clickable { editing = position }
-                                        .padding(vertical = Space.sm),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    IconChip(payIcon(pay.name))
-                                    Spacer(Modifier.width(Space.md))
-                                    // No dotted leader here. Two weighted children split
-                                    // the row in half, which cut "Оренда квартири" down to
-                                    // "Оренда к…" — and a name earns that space before a
-                                    // decoration does.
-                                    Column(Modifier.weight(1f).padding(end = Space.md)) {
-                                        Text(
-                                            pay.name,
-                                            fontSize = Type.cardTitleSize,
-                                            fontWeight = Type.medium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        // The annual figure is the one that changes minds
-                                        // about a subscription, so it rides with the name
-                                        // rather than waiting on another screen. It never
-                                        // looks at the trial: what a year of this costs is
-                                        // what signing up commits you to, and a free month
-                                        // does not change it.
-                                        //
-                                        // An annual charge says both denominators instead,
-                                        // because either alone misleads — and it says the
-                                        // rhythm between them, so the smoothed one can
-                                        // never be mistaken for cash.
-                                        Text(
-                                            billingLine(pay),
-                                            color = TextSecondary,
-                                            fontSize = Type.captionSize,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis,
-                                            // One of these under every name in the
-                                            // timeline, so they stack into a column
-                                            // whether or not anything drew one.
-                                            style = Tabular
-                                        )
-                                        // The date the free ride ends, on the row, in
-                                        // the accent — because it is the one fact about
-                                        // this expense that expires.
-                                        trialLabel(pay, today)?.let { free ->
-                                            Text(
-                                                free,
-                                                color = Accent,
-                                                fontSize = Type.captionSize,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                        }
-                                        // What it used to cost, on the row rather
-                                        // than a screen away. A subscription earns
-                                        // by raising its price quietly, and the
-                                        // whole defence is the old figure sitting
-                                        // beside the new one where it is read. An
-                                        // expense the app has only ever seen at
-                                        // one price says nothing at all here.
-                                        val steps = amountStepPoints(pay)
-                                        amountMoveLine(pay)?.let { move ->
-                                            Spacer(Modifier.height(Space.xs))
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                AmountStep(
-                                                    steps,
-                                                    Modifier.width(28.dp).height(14.dp)
-                                                )
-                                                Spacer(Modifier.width(Space.sm))
-                                                Text(
-                                                    move,
-                                                    color = TextSecondary,
-                                                    fontSize = Type.captionSize,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis,
-                                                    // "було 199 → стало 249 ₴" is two
-                                                    // figures asking to be compared
-                                                    // across an arrow. Unequal digit
-                                                    // widths are exactly what stops
-                                                    // that reading as a comparison.
-                                                    style = Tabular
-                                                )
-                                            }
-                                        }
-                                    }
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(
-                                            amountLabel(pay.amount, pay.currency),
-                                            fontWeight = Type.strong,
-                                            style = Tabular
-                                        )
-                                        if (pay.currency == USD && rate.sell > 0) {
-                                            Text(
-                                                "≈ ${approxMoney(pay.amount * rate.sell)}",
-                                                color = TextSecondary,
-                                                fontSize = Type.captionSize,
-                                                style = Tabular
-                                            )
-                                        }
-                                    }
-                                    // One tap, on the row you are already looking at.
-                                    // Anywhere else and the record would be a screen
-                                    // you have to remember to visit, which is the same
-                                    // as not having one.
-                                    val done = isPaid(paid, pay.name, thisMonth)
-                                    // A real two-state mark, and the two states feel
-                                    // different: this is the one control in the app
-                                    // you use without looking, halfway through paying
-                                    // something on another screen, so the phone
-                                    // saying which way it went is the whole point.
-                                    IconButton({
-                                        touch.switched(!done)
-                                        setPaid(togglePaid(paid, pay, thisMonth))
-                                    }) {
-                                        Icon(
-                                            if (done) {
-                                                Icons.Default.CheckCircle
-                                            } else {
-                                                Icons.Default.RadioButtonUnchecked
-                                            },
-                                            if (done) {
-                                                "Скасувати позначку про оплату"
-                                            } else {
-                                                "Позначити оплаченим"
-                                            },
-                                            tint = if (done) Accent else TextDisabled
-                                        )
-                                    }
-                                }
-                            }
                         }
                     }
-                }
-            }
-            // The annual blind spot, given a place to be visible from.
-            //
-            // A charge that happens once in twelve months is off the timeline for
-            // eleven of them, and until this section existed that meant off the
-            // screen entirely — the quietest way a subscription tracker can lie.
-            // They are listed at their real amounts on their real dates rather
-            // than averaged into the monthly total, because an averaged figure in
-            // the month the charge actually lands shows a month that fits when it
-            // does not.
-            val dormant = annualElsewhere(items, today)
-            if (dormant.isNotEmpty()) {
-                item(key = "annual-elsewhere") {
-                    Column(
-                        Modifier
-                            .padding(horizontal = Space.screen)
-                            .padding(top = Space.xl, bottom = Space.sm)
-                    ) {
-                        SectionTitle("Раз на рік")
-                        annualElsewhereNote(items, today, rate.sell)?.let { note ->
-                            Text(
-                                note,
-                                color = TextSecondary,
-                                fontSize = Type.captionSize,
-                                lineHeight = Type.captionLine
-                            )
-                        }
-                    }
-                }
-                items(dormant, key = { "annual-${it.name}-${it.billingMonth}-${it.day}" }) { pay ->
-                    Card(
-                        Modifier
-                            .padding(horizontal = Space.screen, vertical = Space.xs)
-                            .fillMaxWidth()
-                            .litEdge(Radius.md),
-                        colors = CardDefaults.cardColors(containerColor = SurfaceLow),
-                        shape = Radius.md
-                    ) {
-                        Row(
+                    items(dormant, key = { "annual-${it.name}-${it.billingMonth}-${it.day}" }) { pay ->
+                        Card(
                             Modifier
+                                .padding(horizontal = Space.screen, vertical = Space.xs)
                                 .fillMaxWidth()
-                                .clickable { editing = items.indexOf(pay) }
-                                .padding(Space.lg),
-                            verticalAlignment = Alignment.CenterVertically
+                                .litEdge(Radius.md),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceLow),
+                            shape = Radius.md
                         ) {
-                            IconChip(payIcon(pay.name))
-                            Spacer(Modifier.width(Space.md))
-                            Column(Modifier.weight(1f).padding(end = Space.md)) {
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable { editing = items.indexOf(pay) }
+                                    .padding(Space.lg),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                IconChip(payIcon(pay.name))
+                                Spacer(Modifier.width(Space.md))
+                                Column(Modifier.weight(1f).padding(end = Space.md)) {
+                                    Text(
+                                        pay.name,
+                                        fontSize = Type.cardTitleSize,
+                                        fontWeight = Type.medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        annualDueLine(pay, today),
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        // A stack of dates and amounts, one per row.
+                                        style = Tabular
+                                    )
+                                }
+                                // The smoothed figure, and only ever here beside the
+                                // real one above it.
                                 Text(
-                                    pay.name,
-                                    fontSize = Type.cardTitleSize,
-                                    fontWeight = Type.medium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                Text(
-                                    annualDueLine(pay, today),
-                                    color = TextSecondary,
+                                    "≈${amountLabel(
+                                        kotlin.math.round(monthlyEquivalent(pay)),
+                                        pay.currency
+                                    )}/міс",
+                                    color = TextDisabled,
                                     fontSize = Type.captionSize,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    // A stack of dates and amounts, one per row.
+                                    // Right-aligned against the row's edge, so unequal
+                                    // digits would leave the column of them ragged.
                                     style = Tabular
                                 )
                             }
-                            // The smoothed figure, and only ever here beside the
-                            // real one above it.
-                            Text(
-                                "≈${amountLabel(
-                                    kotlin.math.round(monthlyEquivalent(pay)),
-                                    pay.currency
-                                )}/міс",
-                                color = TextDisabled,
-                                fontSize = Type.captionSize,
-                                // Right-aligned against the row's edge, so unequal
-                                // digits would leave the column of them ragged.
-                                style = Tabular
-                            )
                         }
                     }
                 }
@@ -5732,7 +5776,10 @@ fun OrdersScreen(
     // it does not sit in the list of things still on their way.
     val open = items.filter { it.archivedDay == 0L }
     val archived = items.filter { it.archivedDay > 0L }.sortedByDescending { it.archivedDay }
-    val trackable = open.count { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
+    val trackable = open.count { isAutoTracked(it) }
+    // Shut unless opened, and remembered like every other fold. Finished purchases
+    // are the record, not the errand, and they sat open under the parcels in flight.
+    var archiveOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ORDER_ARCHIVE)) }
 
     fun checkAll() {
         scope.launch {
@@ -5742,7 +5789,7 @@ fun OrdersScreen(
             val now = System.currentTimeMillis()
             val fresh = items.map { order ->
                 if (order.archivedDay > 0L) return@map order
-                if (detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA) return@map order
+                if (!isAutoTracked(order)) return@map order
                 val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
                     ?: return@map order
                 if (status.stage.isNotBlank() && status.stage != order.status) moved++
@@ -5843,7 +5890,7 @@ fun OrdersScreen(
                         Spacer(Modifier.width(Space.md))
                         Column(Modifier.weight(1f)) {
                             Text(
-                                order.status.uppercase(),
+                                orderOverline(order).uppercase(),
                                 color = Accent,
                                 fontSize = Type.overlineSize,
                                 fontWeight = Type.strong,
@@ -5962,15 +6009,16 @@ fun OrdersScreen(
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine
                                 )
-                            } else if (order.tracking.isNotBlank() &&
-                                detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA
-                            ) {
-                                Text(
-                                    "Автоперевірка працює для номерів Нової Пошти",
-                                    color = TextDisabled,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine
-                                )
+                            } else {
+                                untrackedNote(order)?.let { note ->
+                                    Text(
+                                        note,
+                                        color = TextDisabled,
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine,
+                                        modifier = Modifier.padding(top = Space.xs)
+                                    )
+                                }
                             }
                         }
                         // The one thing on the card that says the block is a door.
@@ -5984,43 +6032,45 @@ fun OrdersScreen(
                             tint = TextDisabled
                         )
                     }
-                    StageRail(
-                        stages = PARCEL_STAGES,
-                        current = order.status,
-                        modifier = Modifier.padding(horizontal = Space.lg),
-                        label = { stageLabel(it, order.statusCode) }
-                    ) { status ->
-                        save(items.map { if (it.id == order.id) it.copy(status = status) else it })
-                    }
-                    // The parcel is in your hands, so the only thing left to do with
-                    // it is close it. Offered here rather than on a menu, because a
-                    // purchase nobody closes is a purchase nobody can learn from.
-                    if (order.status == RECEIVED) {
-                        // Outlined, not filled: the lime on this screen is already
-                        // spent on the action button, and two lime surfaces on one
-                        // screen means neither is the subject.
-                        OutlinedButton(
-                            { closing = order },
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = Space.lg)
-                                .padding(top = Space.sm),
-                            shape = Radius.sm,
-                            border = BorderStroke(1.dp, Accent),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
-                        ) {
-                            Icon(Icons.Default.TaskAlt, null)
-                            Text("  Завершити покупку")
+                    // A download has nowhere to travel, so it has no rail to draw.
+                    if (!order.digital) {
+                        StageRail(
+                            stages = PARCEL_STAGES,
+                            current = order.status,
+                            modifier = Modifier.padding(horizontal = Space.lg),
+                            label = { stageLabel(it, order.statusCode) }
+                        ) { status ->
+                            save(items.map { if (it.id == order.id) it.copy(status = status) else it })
                         }
                     }
+                    // Offered at every stage, not only once the rail reaches its last
+                    // stop: a parcel another post carries, or a game that never
+                    // travels, would otherwise have no way out of «Замовлено» at all.
+                    // Lime only when closing is the thing left to do — on a parcel
+                    // still on its way it is a quiet offer, because the lime on this
+                    // screen is already spent on the action button.
+                    CloseOrderButton(
+                        order,
+                        Modifier.padding(horizontal = Space.lg).padding(top = Space.sm)
+                    ) { closing = order }
                     // Left aligned for the same reason as the wish card: the floating
                     // action button sits over the bottom right corner.
                     Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
                         TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) {
                             Text("До магазину ↗")
                         }
-                        IconButton({ tracking = order }) { Icon(Icons.Default.Edit, "Трек-номер") }
-                        IconButton(
+                        IconButton({ tracking = order }) {
+                            Icon(Icons.Default.Edit, if (order.digital) "Змінити покупку" else "Трек-номер")
+                        }
+                        // The carrier's own page for a number the app cannot read, in
+                        // the place the check button would be — that button only ever
+                        // sat there greyed out on these.
+                        trackingPageUrl(order)?.let { page ->
+                            IconButton({ context.startActivity(Intent(Intent.ACTION_VIEW, page.toUri())) }) {
+                                Icon(Icons.Default.TravelExplore, "Відстежити на 17TRACK")
+                            }
+                        }
+                        if (isAutoTracked(order)) IconButton(
                             onClick = {
                                 scope.launch {
                                     val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
@@ -6039,8 +6089,7 @@ fun OrdersScreen(
                                         status.text
                                     }
                                 }
-                            },
-                            enabled = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
+                            }
                         ) { Icon(Icons.Default.Sync, "Перевірити статус") }
                         IconButton({ onDelete(order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
                         Spacer(Modifier.weight(1f))
@@ -6049,21 +6098,27 @@ fun OrdersScreen(
             }
             if (archived.isNotEmpty()) {
                 item {
-                    SectionTitle("Архів покупок")
-                    Text(
-                        // The only line in the app that answers whether watching
-                        // prices was worth doing, so it goes above the evidence.
-                        purchaseTallyLine(
+                    // Folded, with the tally on the shut heading: the one line in the
+                    // app that answers whether watching prices was worth doing still
+                    // shows without opening anything, and the cards behind it stop
+                    // standing in the way of the parcels still on their way.
+                    CollapsibleSection(
+                        title = "Архів покупок",
+                        summary = purchasesLabel(archived.size) + " · " + purchaseTallyLine(
                             purchaseTally(
                                 archived.map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
                             )
                         ),
-                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine
-                    )
+                        open = archiveOpen,
+                        onToggle = {
+                            archiveOpen = it
+                            store.saveSectionOpen(SECTION_ORDER_ARCHIVE, it)
+                        },
+                        icon = Icons.Default.Inventory2
+                    ) {}
                 }
+            }
+            if (archived.isNotEmpty() && archiveOpen) {
                 items(archived, key = { "archived-${it.id}" }) { order ->
                     ArchivedPurchase(
                         order = order,
@@ -6097,8 +6152,8 @@ fun OrdersScreen(
         setAdding(false)
     }
     tracking?.let { selected ->
-        TrackingDialog(selected, { tracking = null }) { number ->
-            save(items.map { if (it.id == selected.id) it.copy(tracking = number) else it })
+        TrackingDialog(selected, { tracking = null }) { number, digital ->
+            save(items.map { if (it.id == selected.id) it.copy(tracking = number, digital = digital) else it })
             tracking = null
         }
     }
@@ -6191,7 +6246,11 @@ fun OrderDetailScreen(
     var boxOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_BOX)) }
     var payOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_PAY)) }
     var optionsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_OPTIONS)) }
-    val trackable = detectCarrier(order.tracking) == CARRIER_NOVA_POSHTA
+    val trackable = isAutoTracked(order)
+    // Everything below the rail is one carrier's answer. On anything that carrier
+    // never answered for it would be a page of blanks — see [carrierSectionsApply].
+    val carrier = carrierSectionsApply(order)
+    val trackingPage = trackingPageUrl(order)
     // Read once, so a page left open across midnight cannot start disagreeing with
     // itself about which of its dates is "сьогодні".
     val now = remember { LocalDateTime.now() }
@@ -6230,18 +6289,24 @@ fun OrderDetailScreen(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = TextPrimary)
                 }
                 Text(
-                    "ПОСИЛКА",
+                    if (order.digital) "ПОКУПКА" else "ПОСИЛКА",
                     color = Accent,
                     fontSize = Type.overlineSize,
                     fontWeight = Type.strong,
                     letterSpacing = Type.overlineTracking
                 )
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { refresh() }, enabled = trackable && !busy) {
-                    if (busy) BusyMark() else Icon(Icons.Default.Sync, "Оновити", tint = TextSecondary)
+                if (trackable) {
+                    IconButton(onClick = { refresh() }, enabled = !busy) {
+                        if (busy) BusyMark() else Icon(Icons.Default.Sync, "Оновити", tint = TextSecondary)
+                    }
                 }
                 IconButton(onEditTracking) {
-                    Icon(Icons.Default.Edit, "Трек-номер", tint = TextSecondary)
+                    Icon(
+                        Icons.Default.Edit,
+                        if (order.digital) "Змінити покупку" else "Трек-номер",
+                        tint = TextSecondary
+                    )
                 }
                 IconButton(onDelete) {
                     Icon(Icons.Default.DeleteOutline, "Видалити", tint = TextSecondary)
@@ -6307,9 +6372,9 @@ fun OrderDetailScreen(
                         modifier = Modifier.padding(top = Space.xs)
                     )
                 }
-                if (!trackable && order.tracking.isNotBlank()) {
+                untrackedNote(order)?.let { note ->
                     Text(
-                        "Автоперевірка працює для номерів Нової Пошти",
+                        note,
                         color = TextDisabled,
                         fontSize = Type.captionSize,
                         lineHeight = Type.captionLine,
@@ -6327,17 +6392,31 @@ fun OrderDetailScreen(
             if (order.problem) {
                 FactNote(STAGE_HELD_NOTE, TextSecondary)
             }
-            StageRail(
-                stages = PARCEL_STAGES,
-                current = order.status,
-                modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md),
-                label = { stageLabel(it, order.statusCode) }
-            ) { picked -> onChange(order.copy(status = picked)) }
+            if (!order.digital) {
+                StageRail(
+                    stages = PARCEL_STAGES,
+                    current = order.status,
+                    modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md),
+                    label = { stageLabel(it, order.statusCode) }
+                ) { picked -> onChange(order.copy(status = picked)) }
+            }
+            // Up here rather than at the foot of the page: on a parcel the app does
+            // not follow, and on a download, it is most of what the page is for.
+            CloseOrderButton(
+                order,
+                Modifier.padding(horizontal = Space.screen).padding(top = Space.sm)
+            ) { onClose() }
+            trackingPage?.let { page ->
+                TextButton(
+                    { context.startActivity(Intent(Intent.ACTION_VIEW, page.toUri())) },
+                    Modifier.padding(horizontal = Space.sm).padding(top = Space.xs)
+                ) { Text("Відстежити на 17TRACK ↗") }
+            }
         }
 
         // The block this whole screen was asked for. Two times that look alike and
         // are not: one is the parcel moving, one is the app asking.
-        item {
+        if (carrier) item {
             Card(
                 Modifier.padding(horizontal = Space.screen).fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = SurfaceLow),
@@ -6374,7 +6453,7 @@ fun OrderDetailScreen(
         // [alreadySaid] check each one against its neighbour, so a courier delivery,
         // where the address really is the only line with a street on it, still
         // prints it.
-        item {
+        if (carrier) item {
             SectionTitle("Куди їде", Icons.Default.Place)
             Fact("Звідки", details.citySender)
             FactBlock("Відділення відправника", details.warehouseSender)
@@ -6422,7 +6501,7 @@ fun OrderDetailScreen(
             FactNote(NO_STOPS_NOTE)
         }
 
-        item {
+        if (carrier) item {
             SectionTitle("Коли", Icons.Default.Schedule)
             Fact(
                 "Передано перевізнику",
@@ -6457,7 +6536,7 @@ fun OrderDetailScreen(
             seatsLabel(details.seats).takeIf { details.seats > 0 },
             cargoTypeLabel(details.cargoType).takeIf { it.isNotBlank() }
         ).joinToString(" · ").ifBlank { "Перевізник ще не зважив" }
-        item {
+        if (carrier) item {
             CollapsibleSection("Сама посилка", boxSummary, boxOpen, {
                 boxOpen = it
                 store.saveSectionOpen(SECTION_PARCEL_BOX, it)
@@ -6476,7 +6555,7 @@ fun OrderDetailScreen(
             money(order.amountToPay).takeIf { order.amountToPay > 0 },
             payerLabel(details.payerType).takeIf { it.isNotBlank() }?.let { "платить $it" }
         ).joinToString(" · ").ifBlank { "Нічого доплачувати" }
-        item {
+        if (carrier) item {
             CollapsibleSection("Оплата", paySummary, payOpen, {
                 payOpen = it
                 store.saveSectionOpen(SECTION_PARCEL_PAY, it)
@@ -6497,7 +6576,7 @@ fun OrderDetailScreen(
         // where the parcel is, and this is the part of it nobody came for. The
         // summary names them, so a shut fold still says what is inside it.
         val options = parcelOptions(details)
-        if (options.isNotEmpty()) {
+        if (carrier && options.isNotEmpty()) {
             item {
                 CollapsibleSection(
                     "Що з нею ще можна зробити",
@@ -6517,14 +6596,14 @@ fun OrderDetailScreen(
             }
         }
 
-        item {
+        if (carrier) item {
             SectionTitle(SIGHTINGS_TITLE, Icons.Default.Visibility)
             FactNote(sightingsNote(order.sightings, order.checkedAt))
         }
         // Newest first: the question this list is opened with is what happened
         // last, and a journey read from the bottom of the screen upwards is a
         // journey nobody reads.
-        itemsIndexed(
+        if (carrier) itemsIndexed(
             order.sightings.reversed(),
             // Position, not content: two checks in the same millisecond would
             // otherwise collide on a key and take the list down with them.
@@ -6550,24 +6629,6 @@ fun OrderDetailScreen(
             }
         }
 
-        if (order.status == RECEIVED) {
-            item {
-                OutlinedButton(
-                    onClose,
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Space.screen)
-                        .padding(top = Space.xl),
-                    shape = Radius.sm,
-                    border = BorderStroke(1.dp, Accent),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Accent)
-                ) {
-                    Icon(Icons.Default.TaskAlt, null)
-                    Text("  Завершити покупку")
-                }
-            }
-        }
-
         if (order.url.isNotBlank()) {
             item {
                 TextButton(
@@ -6576,6 +6637,189 @@ fun OrderDetailScreen(
                 ) { Text("До магазину ↗") }
             }
         }
+    }
+}
+
+/**
+ * What was paid, month by month, each one opening into what it was made of.
+ *
+ * What was planned is everywhere in this app; what was paid used to be one fold at
+ * the bottom of Огляд, where the owner did not find it when he went looking for
+ * "скільки я витратив за вересень" — he went looking on Платежі, which is where the
+ * marks are made. So it lives there now, as the second half of that screen.
+ *
+ * Newest first, because the question is almost always about the month that just
+ * ended — which is why that one opens by itself.
+ */
+@Composable
+fun PaidMonths(
+    months: List<MonthRecord>,
+    pays: List<Pay>,
+    marks: List<PaidMark>,
+    onToggle: (Pay, String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // One at a time, because the point is to read or fix the month you came for,
+    // not to audit the year.
+    var openMonth by remember { mutableStateOf(months.getOrNull(1)?.month) }
+    Column(modifier) {
+        // Said once, while there is nothing to read yet. The months below still
+        // draw, because a month showing nought paid is the thing being explained.
+        if (months.all { it.paidCount == 0 }) {
+            Text(
+                "Позначайте платежі галочкою в розкладі — тут буде видно, скільки насправді " +
+                    "пішло за кожен місяць. Пропущений місяць можна позначити і тут.",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(bottom = Space.md)
+            )
+        }
+        months.forEach { record ->
+            val open = openMonth == record.month
+            Card(
+                Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
+                colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                shape = Radius.md
+            ) {
+                Column(
+                    Modifier
+                        .clickable { openMonth = if (open) null else record.month }
+                        .padding(Space.lg)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            record.title,
+                            fontSize = Type.cardTitleSize,
+                            fontWeight = Type.medium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Icon(
+                            if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            if (open) "Згорнути місяць" else "Що сплачено цього місяця",
+                            tint = TextSecondary
+                        )
+                    }
+                    // The figure the screen is opened for, as the loudest thing on
+                    // the card. What it was meant to be follows in the line below.
+                    Text(
+                        totalLabel(record.paid),
+                        fontSize = Type.sectionSize,
+                        lineHeight = Type.sectionLine,
+                        fontWeight = Type.strong,
+                        color = if (record.paidCount > 0) TextPrimary else TextDisabled,
+                        style = Tabular,
+                        modifier = Modifier.padding(top = Space.xs)
+                    )
+                    Text(
+                        monthRecordLine(record),
+                        // A month that ended with nothing marked is not a month with
+                        // nothing to pay, and the difference is worth a colour.
+                        color = when (record.state) {
+                            MonthState.UNRECORDED -> Negative
+                            MonthState.NOTHING_DUE -> TextDisabled
+                            else -> TextSecondary
+                        },
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                    monthRecordDetail(record).takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            it,
+                            color = TextDisabled,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine
+                        )
+                    }
+                    if (open) {
+                        HorizontalDivider(
+                            color = HairLine,
+                            modifier = Modifier.padding(vertical = Space.md)
+                        )
+                        val lines = monthLines(pays, marks, record.month)
+                        if (lines.isEmpty()) {
+                            Text(
+                                "Цього місяця нічого не було до сплати",
+                                color = TextDisabled,
+                                fontSize = Type.captionSize
+                            )
+                        }
+                        lines.forEach { line ->
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    // A month reported as unpaid with no way to
+                                    // correct it is an accusation you cannot
+                                    // answer. A tap here is how a forgotten
+                                    // payment gets marked after the fact.
+                                    .clickable { onToggle(line.pay, record.month) }
+                                    .padding(vertical = Space.xs),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    if (line.paid) {
+                                        Icons.Default.CheckCircle
+                                    } else {
+                                        Icons.Default.RadioButtonUnchecked
+                                    },
+                                    if (line.paid) {
+                                        "Скасувати позначку про оплату"
+                                    } else {
+                                        "Позначити оплаченим"
+                                    },
+                                    tint = if (line.paid) Accent else TextDisabled
+                                )
+                                Spacer(Modifier.width(Space.md))
+                                Text(
+                                    line.pay.name,
+                                    Modifier.weight(1f).padding(end = Space.sm),
+                                    color = if (line.paid) TextPrimary else TextSecondary,
+                                    fontSize = Type.bodySize,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    amountLabel(line.amount, line.currency),
+                                    color = if (line.paid) TextPrimary else TextDisabled,
+                                    fontSize = Type.bodySize,
+                                    fontWeight = Type.medium,
+                                    style = Tabular
+                                )
+                            }
+                        }
+                        if (record.gap > 0.0 && record.state != MonthState.NOTHING_DUE) {
+                            Spacer(Modifier.height(Space.sm))
+                            LeaderRow(
+                                "Різниця з планом",
+                                money(record.gap),
+                                alarm = record.state != MonthState.RUNNING
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The button that files a purchase away, at whatever stage it is.
+ *
+ * See [closeActionLabel] and [closeActionDue] for the wording and the colour; this
+ * only draws them, so the card and the parcel page cannot drift apart.
+ */
+@Composable
+fun CloseOrderButton(order: Order, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val due = closeActionDue(order)
+    OutlinedButton(
+        onClick,
+        modifier.fillMaxWidth(),
+        shape = Radius.sm,
+        border = BorderStroke(1.dp, if (due) Accent else HairLine),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = if (due) Accent else TextPrimary)
+    ) {
+        Icon(Icons.Default.TaskAlt, null)
+        Text("  ${closeActionLabel(order)}")
     }
 }
 
@@ -6656,6 +6900,10 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
     var trackingNumber by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Guessed from the shop until the switch is touched, then whatever was chosen.
+    // A Steam link pasted in should not have to be explained to the form.
+    var chosenKind by remember { mutableStateOf<Boolean?>(null) }
+    val digital = chosenKind ?: isDigitalStore(link)
     val scope = rememberCoroutineScope()
     FormSheet(
         title = "Додати покупку",
@@ -6688,10 +6936,11 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
                         } else {
                             add(
                                 Order(
-                                    item.id, item.name, item.url, "Замовлено",
-                                    tracking = trackingNumber.trim(),
+                                    item.id, item.name, item.url, ORDERED,
+                                    tracking = if (digital) "" else trackingNumber.trim(),
                                     image = item.image,
-                                    price = item.price
+                                    price = item.price,
+                                    digital = digital
                                 )
                             )
                         }
@@ -6704,13 +6953,16 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
     ) {
         Text("Вставте посилання на сторінку придбаного товару.")
         OutlinedTextField(link, { link = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Посилання") })
-        OutlinedTextField(
-            trackingNumber,
-            { trackingNumber = it },
-            Modifier.fillMaxWidth().padding(top = Space.md),
-            label = { Text("Трек-номер, якщо вже є") },
-            singleLine = true
-        )
+        OrderKindControl(digital, Modifier.padding(top = Space.md)) { chosenKind = it }
+        if (!digital) {
+            OutlinedTextField(
+                trackingNumber,
+                { trackingNumber = it },
+                Modifier.fillMaxWidth().padding(top = Space.md),
+                label = { Text("Трек-номер, якщо вже є") },
+                singleLine = true
+            )
+        }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
     }
 }
@@ -6722,12 +6974,9 @@ fun SettingsScreen(
     onOpenRecap: () -> Unit,
     summary: Overview,
     store: Store,
-    /** Newest first, as far back as the record goes. */
-    months: List<MonthRecord>,
-    /** The standing expenses, so a month that was missed can still be filled in. */
-    pays: List<Pay>,
-    paid: List<PaidMark>,
-    onTogglePaid: (Pay, String) -> Unit,
+    /** What the background passes last did. Null until it has been read. */
+    health: HealthLine?,
+    onOpenHealth: () -> Unit,
     bin: List<BinEntry>,
     onRestore: (String) -> Unit,
     onDropFromBin: (String) -> Unit,
@@ -6740,9 +6989,6 @@ fun SettingsScreen(
     var available by remember { mutableStateOf<UpdateInfo?>(null) }
     val scope = rememberCoroutineScope()
     val today = remember { LocalDate.now().toEpochDay() }
-    // Which month is open for correction. One at a time, because the point is to
-    // fix the month you noticed, not to audit the year.
-    var openMonth by remember { mutableStateOf<String?>(null) }
     // Whether the bin is open, remembered across openings of the app like every
     // other fold. See [SECTION_BIN] for why the answer starts at no.
     var binOpen by remember { mutableStateOf(store.sectionOpen(SECTION_BIN)) }
@@ -6824,7 +7070,7 @@ fun SettingsScreen(
                         value = money(summary.savedTotal),
                         caption = buildList {
                             if (summary.wishTotal > 0) {
-                                add("з ${money(summary.wishTotal)} на ${summary.wishCount} позицій")
+                                add("з ${money(summary.wishTotal)} на ${positionsAfterNa(summary.wishCount)}")
                             }
                             if (summary.readyCount > 0) add("готових ${summary.readyCount}")
                             summary.monthsToFundAll?.takeIf { it > 0 }?.let {
@@ -7039,139 +7285,6 @@ fun SettingsScreen(
                     }
                 }
 
-                // What was planned is everywhere in this app; what was paid was
-                // nowhere. The months read back newest first, because the question
-                // is almost always about the one that just ended.
-                SectionTitle("Що вже сплачено")
-                Column(Modifier.padding(horizontal = Space.screen)) {
-                    // Said once, while there is nothing to read yet. The months
-                    // below still draw, because the current one showing nought
-                    // paid out of what is due is the thing being explained.
-                    if (months.all { it.paidCount == 0 }) {
-                        EmptyInvite(
-                            "Ще нічого не позначено",
-                            "Позначайте платежі оплаченими на вкладці «Платежі» — тут буде " +
-                                "видно, скільки насправді пішло щомісяця."
-                        )
-                        Spacer(Modifier.height(Space.md))
-                    }
-                    months.forEach { record ->
-                        val open = openMonth == record.month
-                        Card(
-                            Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                            shape = Radius.md
-                        ) {
-                            Column(
-                                Modifier
-                                    // A month reported as unpaid with no way to correct
-                                    // it is an accusation you cannot answer. Opening the
-                                    // row is how a month you forgot to mark gets marked.
-                                    .clickable(enabled = pays.isNotEmpty()) {
-                                        openMonth = if (open) null else record.month
-                                    }
-                                    .padding(Space.lg)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        record.title,
-                                        fontSize = Type.cardTitleSize,
-                                        fontWeight = Type.medium,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    if (pays.isNotEmpty()) {
-                                        Icon(
-                                            if (open) {
-                                                Icons.Default.ExpandLess
-                                            } else {
-                                                Icons.Default.ExpandMore
-                                            },
-                                            if (open) "Згорнути місяць" else "Позначити платежі",
-                                            tint = TextSecondary
-                                        )
-                                    }
-                                }
-                                Text(
-                                    monthRecordLine(record),
-                                    // A month that ended with nothing marked is not a
-                                    // month with nothing to pay, and the difference is
-                                    // worth a colour rather than only a wording.
-                                    color = when (record.state) {
-                                        MonthState.UNRECORDED -> Negative
-                                        MonthState.NOTHING_DUE -> TextDisabled
-                                        else -> TextPrimary
-                                    },
-                                    fontSize = Type.bodySize,
-                                    lineHeight = Type.bodyLine,
-                                    modifier = Modifier.padding(top = Space.xs)
-                                )
-                                monthRecordDetail(record).takeIf { it.isNotBlank() }?.let {
-                                    Text(
-                                        it,
-                                        color = TextDisabled,
-                                        fontSize = Type.captionSize,
-                                        lineHeight = Type.captionLine
-                                    )
-                                }
-                                if (record.gap > 0.0 && record.state != MonthState.NOTHING_DUE) {
-                                    Spacer(Modifier.height(Space.sm))
-                                    LeaderRow(
-                                        "Різниця з планом",
-                                        money(record.gap),
-                                        alarm = record.state != MonthState.RUNNING
-                                    )
-                                }
-                                if (open) {
-                                    HorizontalDivider(
-                                        color = HairLine,
-                                        modifier = Modifier.padding(vertical = Space.md)
-                                    )
-                                    pays.forEach { pay ->
-                                        val done = isPaid(paid, pay.name, record.month)
-                                        Row(
-                                            Modifier
-                                                .fillMaxWidth()
-                                                .clickable { onTogglePaid(pay, record.month) }
-                                                .padding(vertical = Space.xs),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                if (done) {
-                                                    Icons.Default.CheckCircle
-                                                } else {
-                                                    Icons.Default.RadioButtonUnchecked
-                                                },
-                                                if (done) {
-                                                    "Скасувати позначку про оплату"
-                                                } else {
-                                                    "Позначити оплаченим"
-                                                },
-                                                tint = if (done) Accent else TextDisabled
-                                            )
-                                            Spacer(Modifier.width(Space.md))
-                                            Text(
-                                                pay.name,
-                                                Modifier.weight(1f).padding(end = Space.sm),
-                                                color = if (done) TextPrimary else TextSecondary,
-                                                fontSize = Type.bodySize,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            Text(
-                                                amountLabel(pay.amount, pay.currency),
-                                                color = if (done) TextPrimary else TextSecondary,
-                                                fontSize = Type.bodySize,
-                                                fontWeight = Type.medium,
-                                                style = Tabular
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
                 // Folded, and shut unless he says otherwise. The count and the
                 // oldest entry's deadline ride the shut heading, so the one
                 // question a bin ever has to answer — is something of mine in
@@ -7258,7 +7371,18 @@ fun SettingsScreen(
                 SectionTitle("Налаштування")
                 // Filled list items painted a large lighter block across the screen and
                 // left a hard seam under the header. They sit on the page instead.
-                SettingsRow(Icons.Default.Sync, "Фонове оновлення", "Кожні 12 годин перевіряються ціни та статуси посилок")
+                // The calm half of what the strip above used to say on every visit.
+                // Opens the same sheet, which is also where the digest hour is set.
+                SettingsRow(
+                    if (health?.alarm == true) Icons.Default.BatteryAlert else Icons.Default.Sync,
+                    health?.title ?: "Фонове оновлення",
+                    listOfNotNull(
+                        health?.detail,
+                        "кожні 12 годин перевіряються ціни та статуси посилок"
+                    ).joinToString(" · ").replaceFirstChar { it.uppercase() },
+                    alarm = health?.alarm == true,
+                    onClick = onOpenHealth
+                )
                 SettingsRow(
                     Icons.Default.NotificationsNone,
                     "Сповіщення",
@@ -7449,14 +7573,24 @@ fun SettingsScreen(
  * surface, so the screen stays one colour instead of showing a lighter slab.
  */
 @Composable
-fun SettingsRow(icon: ImageVector, title: String, detail: String) {
+fun SettingsRow(
+    icon: ImageVector,
+    title: String,
+    detail: String,
+    alarm: Boolean = false,
+    /** Null for a row that only explains; given, the row opens something. */
+    onClick: (() -> Unit)? = null
+) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = Space.screen, vertical = Space.md),
+        Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(horizontal = Space.screen, vertical = Space.md),
         verticalAlignment = Alignment.Top
     ) {
-        Icon(icon, null, tint = TextSecondary)
+        Icon(icon, null, tint = if (alarm) Negative else TextSecondary)
         Spacer(Modifier.width(Space.lg))
-        Column {
+        Column(Modifier.weight(1f)) {
             Text(title, fontSize = Type.cardTitleSize, fontWeight = Type.medium)
             Text(
                 detail,
@@ -7465,6 +7599,9 @@ fun SettingsRow(icon: ImageVector, title: String, detail: String) {
                 lineHeight = Type.captionLine,
                 modifier = Modifier.padding(top = Space.xs)
             )
+        }
+        if (onClick != null) {
+            Icon(Icons.Default.ChevronRight, null, tint = TextDisabled)
         }
     }
 }
@@ -7602,30 +7739,40 @@ fun BoughtSheet(wish: Wish, close: () -> Unit, confirm: (tracking: String, paid:
     // paid, and an empty field here is the one that gets skipped — which would
     // leave the purchase unjudgeable for ever.
     var paidText by remember { mutableStateOf(amountText(wish.price)) }
+    // A game has no parcel number to ask for, and a field asking for one is the
+    // form insisting it is a parcel after all.
+    val digital = remember(wish.url) { isDigitalStore(wish.url) }
     FormSheet(
         title = "Купив це",
         confirmLabel = "Перенести в покупки",
         confirmEnabled = true,
-        onConfirm = { confirm(trackingNumber.trim(), parseAmount(paidText)) },
+        onConfirm = { confirm(if (digital) "" else trackingNumber.trim(), parseAmount(paidText)) },
         onDismiss = close
     ) {
         Text(wish.name, fontSize = Type.captionSize, color = TextSecondary)
         Text(
-            "Товар переїде в Покупки зі статусом «Замовлено». Сума потрібна, щоб " +
-                "потім чесно сказати, чи варто було чекати.",
+            if (digital) {
+                "Товар переїде в Покупки як цифрова покупка, без доставки. Сума потрібна, " +
+                    "щоб потім чесно сказати, чи варто було чекати."
+            } else {
+                "Товар переїде в Покупки зі статусом «Замовлено». Сума потрібна, щоб " +
+                    "потім чесно сказати, чи варто було чекати."
+            },
             fontSize = Type.captionSize,
             lineHeight = Type.captionLine,
             color = TextSecondary,
             modifier = Modifier.padding(top = Space.sm)
         )
         NumberField("Скільки заплатили, ₴", paidText) { paidText = it }
-        OutlinedTextField(
-            trackingNumber,
-            { trackingNumber = it },
-            Modifier.fillMaxWidth().padding(top = Space.md),
-            label = { Text("Трек-номер, якщо вже є") },
-            singleLine = true
-        )
+        if (!digital) {
+            OutlinedTextField(
+                trackingNumber,
+                { trackingNumber = it },
+                Modifier.fillMaxWidth().padding(top = Space.md),
+                label = { Text("Трек-номер, якщо вже є") },
+                singleLine = true
+            )
+        }
     }
 }
 
@@ -7906,26 +8053,49 @@ fun BillingSegments(billingMonth: Int, today: LocalDate, set: (Int) -> Unit) {
  * here rather than only at creation.
  */
 @Composable
-fun TrackingDialog(order: Order, close: () -> Unit, save: (String) -> Unit) {
+fun TrackingDialog(order: Order, close: () -> Unit, save: (tracking: String, digital: Boolean) -> Unit) {
     var number by remember { mutableStateOf(order.tracking) }
+    // The kind is corrected here as well, because the shop list in Purchases.kt
+    // guesses and this is where a wrong guess is noticed.
+    var digital by remember { mutableStateOf(order.digital) }
     AlertDialog(
         onDismissRequest = close,
-        title = { Text("Трек-номер") },
+        title = { Text(if (digital) "Покупка" else "Трек-номер") },
         text = {
             Column {
                 Text(order.name, color = TextSecondary, fontSize = Type.captionSize)
-                OutlinedTextField(
-                    number,
-                    { number = it },
-                    Modifier.fillMaxWidth().padding(top = Space.md),
-                    label = { Text("Номер відправлення") },
-                    singleLine = true
-                )
+                OrderKindControl(digital, Modifier.padding(top = Space.md)) { digital = it }
+                if (!digital) {
+                    OutlinedTextField(
+                        number,
+                        { number = it },
+                        Modifier.fillMaxWidth().padding(top = Space.md),
+                        label = { Text("Номер відправлення") },
+                        singleLine = true
+                    )
+                }
             }
         },
-        confirmButton = { Button({ save(number.trim()) }) { Text("Зберегти") } },
+        confirmButton = {
+            Button({ save(if (digital) "" else number.trim(), digital) }) { Text("Зберегти") }
+        },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )
+}
+
+/**
+ * Parcel or download, as one control with one marker.
+ *
+ * The same two-halves track the rest of the app uses for an either-or, so it cannot
+ * be read as two independent switches.
+ */
+@Composable
+fun OrderKindControl(digital: Boolean, modifier: Modifier = Modifier, onChange: (Boolean) -> Unit) {
+    SegmentedControl(
+        options = listOf("Посилка", "Без доставки"),
+        selected = if (digital) 1 else 0,
+        modifier = modifier
+    ) { onChange(it == 1) }
 }
 
 @Composable

@@ -126,6 +126,15 @@ prints. It also owns `nextPayment`, `nextCharge`, `monthlyTotal`, `yearlyCost`,
 
 ### Parcels
 
+`Purchases.kt` decides what *kind* of purchase an order is — a download
+(`Order.digital`, guessed from the shop by `isDigitalStore`, correctable on the
+add and edit forms), a Nova Poshta parcel (`isAutoTracked`), or a parcel another
+post carries. The card and the parcel page ask it whether to draw the rail
+(not for a download), the Nova Poshta blocks (`carrierSectionsApply`), a 17TRACK
+link (`trackingPageUrl`), and what the close button says. **Every open purchase
+can be closed at every stage** — it used to be possible only once the rail
+reached «Отримано», which a Steam game or a Temu parcel under RL…EE never did.
+
 `Tracking.kt` (885) is the Nova Poshta reader: `parseNovaPoshtaStatus`,
 `stageForStatusCode`, `isProblemCode`, `problemNote`, `stageLabel`, `applyStatus`,
 `Sighting` (the app's own observed history), `addressBeyond`/`alreadySaid` (the
@@ -139,7 +148,7 @@ date parsers.
 | `PriceWorker.kt` | Every 12 h: re-read prices and parcels |
 | `ReminderWorker.kt` | The 09:00 digest |
 | `BackupWorker.kt` | Weekly backup to the chosen folder |
-| `Background.kt` | Whether background work is actually alive |
+| `Background.kt` | Whether background work is actually alive; `stripLine` — the strip shows only on trouble |
 | `Digest.kt` | What the one morning message says |
 | `Chrome.kt` | The status pill's single most pressing thing |
 | `Backup.kt` | Export/import format |
@@ -601,6 +610,13 @@ wrong.
   shows ₴1 200 in its renewal month, not ₴100 every month — a competitor publicly
   reverted to this, because the averaged figure shows a shortfall that is not
   there in the month the real charge lands.
+- **The background-health strip on Огляд appears only when something is wrong.**
+  It used to be permanent («Фонове оновлення працює» on every visit); the owner
+  asked for it gone on 3 October 2026. The calm state is the «Фонове оновлення»
+  row under Налаштування, which opens the same sheet (and the digest hour).
+- **The paid-months history lives on Платежі** («Розклад | По місяцях»), not on
+  Огляд. The owner looked for "how much did September cost" where the marks are
+  made. The month just ended is always listed (`monthRecords(atLeast = 2)`).
 - **The app does not nag about what you have dealt with.** Paid marks silence the
   pill and the morning digest; archived parcels and held wishes are excluded.
 

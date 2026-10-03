@@ -69,7 +69,11 @@ fun overview(
         freeCash = month.free,
         budgetUnknown = month.unknown,
         overspent = month.overspent,
-        parcelsMoving = orders.count { it.status == ORDERED || it.status == IN_TRANSIT },
+        // A download sits at «Замовлено» until it is filed, and it was being counted
+        // as a parcel on the road. Nothing of it is on any road.
+        parcelsMoving = orders.count {
+            !it.digital && (it.status == ORDERED || it.status == IN_TRANSIT)
+        },
         parcelsAtBranch = orders.count { it.status == AT_BRANCH },
         parcelsDone = orders.count { it.status == RECEIVED },
         monthsToFundAll = when {

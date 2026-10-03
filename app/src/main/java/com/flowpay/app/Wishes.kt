@@ -924,6 +924,24 @@ fun positionsLabel(count: Int): String {
 }
 
 /**
+ * The same count after «на», which governs the accusative.
+ *
+ * The overview read «на 2 позицій» — the genitive plural, which is right after
+ * five and wrong after two. After «на» it is «1 позицію», «2 позиції», «5 позицій».
+ */
+fun positionsAfterNa(count: Int): String {
+    val lastTwo = count % 100
+    val last = count % 10
+    val word = when {
+        lastTwo in 11..14 -> "позицій"
+        last == 1 -> "позицію"
+        last in 2..4 -> "позиції"
+        else -> "позицій"
+    }
+    return "$count $word"
+}
+
+/**
  * Whether there is a figure here a price ordering can honestly use.
  *
  * A wish keeps its last known price when its shops go quiet, so this is only
