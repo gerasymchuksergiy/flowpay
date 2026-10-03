@@ -498,7 +498,9 @@ enum class WishSort(val label: String) {
     CHEAPEST("Дешевші"),
     DEAREST("Дорожчі"),
     CLOSEST("Ближче до цілі"),
-    NAME("За назвою")
+    NAME("За назвою"),
+    /** By the duels: what you picked over the others most. See Ideas.kt. */
+    WANTED("За бажанням")
 }
 
 /**
@@ -1020,6 +1022,9 @@ fun sortWishes(items: List<Wish>, sort: WishSort): List<Wish> = when (sort) {
     )
     WishSort.CLOSEST -> items.sortedByDescending { wishProgress(it) }
     WishSort.NAME -> items.sortedWith(wishNameOrder())
+    WishSort.WANTED -> items.sortedWith(
+        compareByDescending<Wish> { duelRating(it) }.thenByDescending { it.duelsPlayed }
+    )
 }
 
 /** Reads a stored sort name back, falling back to the default if it is unknown. */

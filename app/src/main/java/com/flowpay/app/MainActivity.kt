@@ -291,7 +291,10 @@ data class Wish(
      * [appraisalStale] can say the price has moved instead of the screen quietly
      * showing an old judgement about a different number.
      */
-    val appraisal: Appraisal? = null
+    val appraisal: Appraisal? = null,
+    /** Duels this wish won and took part in — see Ideas.kt. Nought before any. */
+    val duelWins: Int = 0,
+    val duelsPlayed: Int = 0
 )
 
 data class Pay(
@@ -927,6 +930,8 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     .put("s", wish.saved).put("m", wish.monthlyPlan).put("dl", wish.deadline)
     .put("np", wish.notifiedPrice).put("v", wish.variant)
     .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil).put("why", wish.why)
+    // The duel record is the owner's own answers, so it travels with the wish.
+    .put("dw", wish.duelWins).put("dp", wish.duelsPlayed)
     .put("ab", aboutJson(wish.about))
     // Written exactly as held, empty included, so that what comes back out of the
     // bin is what went in. A wish that predates the list is not filled in here:
@@ -1131,6 +1136,9 @@ fun wishOf(o: JSONObject): Wish {
         holdUntil = o.optLong("hu", 0L),
         // Absent on every wish saved before the reason could be written.
         why = o.optString("why"),
+        // Absent on every wish saved before the duel existed: never dueled.
+        duelWins = o.optInt("dw", 0).coerceAtLeast(0),
+        duelsPlayed = o.optInt("dp", 0).coerceAtLeast(0),
         about = aboutOf(o.optJSONObject("ab")),
         // A wish saved with only `u` has no array here at all, and stays empty
         // rather than being filled in on the way past: [wishSources] is the one
@@ -2175,17 +2183,24 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             val line = health?.let { healthLine(it) }
                             WorkHealthStrip(stripLine(line)) { healthOpen = true }
                             Box(Modifier.weight(1f)) {
+                                val summary = overview(
+                                    wishes,
+                                    pays,
+                                    orders,
+                                    monthBudget.income,
+                                    usdSell,
+                                    today
+                                )
                                 SettingsScreen(
                                     recap = recap,
                                     onOpenRecap = { recapOpen = true },
-                                    summary = overview(
-                                        wishes,
-                                        pays,
-                                        orders,
-                                        monthBudget.income,
-                                        usdSell,
-                                        today
-                                    ),
+                                    summary = summary,
+                                    weather = moneyWeather(pays, paid, today, usdSell, monthBudget.income, summary.freeCash),
+                                    treat = monthTreat(wishes, summary.freeCash - summary.plannedMonthly, today.toEpochDay()),
+                                    onOpenWish = { id ->
+                                        tab = TAB_WISHES
+                                        openedWish = id
+                                    },
                                     store = store,
                                     health = line,
                                     onOpenHealth = { healthOpen = true },
@@ -2310,6 +2325,7 @@ fun WishlistScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var query by remember { mutableStateOf("") }
     var searching by remember { mutableStateOf(false) }
+    var dueling by remember { mutableStateOf(false) }
     // Which chip is down. Null is "Усі", and it is also where a category goes when
     // its last wish is renamed or deleted out from under the selection.
     var chosenCategory by remember { mutableStateOf<String?>(null) }
@@ -2507,6 +2523,11 @@ fun WishlistScreen(
                             item(span = { GridItemSpan(maxLineSpan) }) {
                                 WishlistTotalPanel(sum, wishlistTotalLabel(category, query))
                             }
+                            if (duelPool(items, today.toEpochDay()).size >= 3) {
+                                item(span = { GridItemSpan(maxLineSpan) }) {
+                                    DuelInvite(Modifier.revealOnEnter(1).padding(bottom = Space.lg)) { dueling = true }
+                                }
+                            }
                         }
                         if (searching) {
                             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -2650,6 +2671,17 @@ fun WishlistScreen(
                 }
             }
         }
+    }
+    if (dueling) {
+        DuelSheet(
+            items = items,
+            today = today.toEpochDay(),
+            onPick = { winner, loser -> update { now -> afterDuel(now, winner, loser) } },
+            onSetAside = { id ->
+                update { now -> now.map { if (it.id == id) it.copy(holdUntil = today.toEpochDay() + DUEL_HOLD_DAYS) else it } }
+            },
+            onClose = { dueling = false }
+        )
     }
     if (adding) {
         AddWishSheet({ setAdding(false) }, store.fxRate().first, knownCategories(items)) { wish ->
@@ -7601,6 +7633,11 @@ fun SettingsScreen(
     usdRate: Double,
     /** A tile was tapped: show the tab it summarises. */
     onOpenTab: (Int) -> Unit,
+    /** The next seven days as weather — see Ideas.kt. */
+    weather: List<MoneyDay>,
+    /** The one wish that could be bought now without hurting the month. */
+    treat: Treat?,
+    onOpenWish: (String) -> Unit,
     bin: List<BinEntry>,
     onRestore: (String) -> Unit,
     onDropFromBin: (String) -> Unit,
@@ -7752,12 +7789,17 @@ fun SettingsScreen(
                         }
                     )
 
+                    // The week ahead as weather: a rainy Wednesday seen on Monday.
+                    if (weather.isNotEmpty()) {
+                        Spacer(Modifier.height(Space.md))
+                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance))
+                    }
                     // Four tiles, each the one figure its own tab is about, each a door
                     // into that tab. Bento rather than a column of rows: the four
                     // answers sit where the eye can take them in one look.
                     Spacer(Modifier.height(Space.md))
                     Row(
-                        Modifier.revealOnEnter(2, entrance).height(IntrinsicSize.Min),
+                        Modifier.revealOnEnter(3, entrance).height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(Space.md)
                     ) {
                         OverviewTile(
@@ -7791,7 +7833,7 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(Space.md))
                     Row(
-                        Modifier.revealOnEnter(3, entrance).height(IntrinsicSize.Min),
+                        Modifier.revealOnEnter(4, entrance).height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(Space.md)
                     ) {
                         OverviewTile(
@@ -7812,6 +7854,11 @@ fun SettingsScreen(
                         ) { onOpenTab(TAB_PAYMENTS) }
                     }
 
+                    // Not a warning but a permission: the one thing that would fit.
+                    treat?.let { gift ->
+                        Spacer(Modifier.height(Space.md))
+                        TreatTile(gift, Modifier.revealOnEnter(5, entrance)) { onOpenWish(gift.wish.id) }
+                    }
                     if (summary.plansConflict) {
                         Spacer(Modifier.height(Space.md))
                         Card(

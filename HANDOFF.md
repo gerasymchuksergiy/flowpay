@@ -845,3 +845,35 @@ Both halves, round-trip tested (`EmojiTest`).
   `7-wish-page`, `8-parcel-page`, `9-recap`, `2b-rate-whole`) tap into the page
   first.
 
+---
+
+## 17. New ideas, 4 October 2026 (v3.15.0)
+
+The owner asked for features that are "absolutely new, not repeating" anything
+usual, plus the recap as a picture. Logic in `Ideas.kt` (tested in `IdeasTest`),
+tiles in `IdeasUi.kt`. Rendered on the JVM; **not seen on the phone.**
+
+- **Фінансова погода** (Огляд, under the hero): the next seven days, each day's
+  still-unpaid charges read as weather against the income — ☀️ nothing, 🌤️ ≤3%,
+  🌧️ ≤20%, ⛈️ more, or any charge in a month that does not fit. Marked charges
+  are gone from the sky (same rule as reminders); trials do not rain. Without an
+  income, fixed amounts (500 / 5 000 ₴) stand in. One sentence names the worst day.
+- **Подарунок собі / «Можна дозволити собі»** (Огляд, under the tiles): the one
+  wish that fits into free money after the savings plans with a fifth to spare,
+  preferring a reached target, then the furthest below its own highest price.
+  Never held or stale wishes. A permission, not a warning; tapping opens the wish.
+- **Дуель бажань** (Бажання, under the total; three priced wishes needed): five
+  side-by-side picks per round; least-played first, closest rating second, never
+  the pair just shown. Rating = (wins+1)/(duels+2). After the round: top three
+  and, if one has lost ≥3/4 of at least four duels, an offer to hold it for a
+  month. New sort «За бажанням». New JSON fields `Wish.dw` / `Wish.dp` (both
+  halves, round-trip tested).
+- **Підсумок місяця картинкою**: a share button on the recap deck records the
+  card area (Compose `GraphicsLayer`) to `cache/shared/` and hands it to the
+  share sheet through a `FileProvider` (`${applicationId}.files`, paths in
+  `res/xml/shared_files.xml`, only `cache/shared/`). The share itself was not
+  exercised anywhere — check it on the phone.
+
+Kept in reserve, proposed to the owner and not built: price in hours of work, a
+savings plant that grows with the savings.
+

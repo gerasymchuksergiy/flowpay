@@ -119,6 +119,7 @@ class ScreenShots {
     @Test fun wishPage() = page(TAB_WISHES, "7-wish-page", "Кросівки ASICS Gel-1130")
     @Test fun parcelPage() = page(TAB_ORDERS, "8-parcel-page", "Чохол для телефона")
     @Test fun recap() = page(TAB_OVERVIEW, "9-recap", "МІСЯЦЬ ГОТОВИЙ")
+    @Test fun duel() = page(TAB_WISHES, "10-duel", "Дуель бажань")
 
     // ------------------------------------------------------------ motion, as frames
 

@@ -24,6 +24,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.layer.drawLayer
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -90,6 +95,9 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
     // for a tap, which it was always going to accept anyway.
     val reduced = LocalReducedMotion.current
     val card = recap.cards.getOrNull(index) ?: recap.cards.lastOrNull() ?: return
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val poster = androidx.compose.ui.graphics.rememberGraphicsLayer()
 
     // Back closes the deck rather than leaving the app, the same way it closes the
     // item page. Without the Dialog there is nothing to do this for us.
@@ -172,11 +180,39 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                     fontWeight = Type.medium
                 )
                 Spacer(Modifier.weight(1f))
+                // The card on screen, as a picture, into whatever the phone shares
+                // to. Holds the deck while the share sheet is up.
+                IconButton({
+                    held = true
+                    scope.launch { shareRecapCard(context, poster, recap, index) }
+                }) {
+                    Icon(Icons.Default.Share, "Поділитися карткою", tint = TextSecondary)
+                }
                 IconButton(onClose) {
                     Icon(Icons.Default.Close, "Закрити", tint = TextSecondary)
                 }
             }
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    // Recorded as well as drawn, on the app's own ground, so the
+                    // shared picture is the card exactly as it looks here.
+                    .drawWithContent {
+                        poster.record {
+                            drawRect(AppBackground)
+                            this@drawWithContent.drawContent()
+                        }
+                        drawLayer(poster)
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "FlowPay · ${recap.title}",
+                    Modifier.align(Alignment.BottomCenter).padding(bottom = Space.sm),
+                    color = TextDisabled,
+                    fontSize = Type.captionSize
+                )
                 // Each card a tile of its own colour with its own emoji, sliding in
                 // from the side it is read towards.
                 val slide = Motion.spatial<IntOffset>()
@@ -238,6 +274,43 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                 fontSize = Type.captionSize
             )
         }
+    }
+}
+
+/**
+ * Writes the recorded card to the app's cache as a PNG and offers it to the share
+ * sheet. Owner's request of 4 October 2026: «підсумок місяця картинкою».
+ *
+ * Through a FileProvider limited to `cache/shared/`, so nothing else of the app's
+ * is reachable from the link handed to the other app.
+ */
+private suspend fun shareRecapCard(
+    context: android.content.Context,
+    poster: androidx.compose.ui.graphics.layer.GraphicsLayer,
+    recap: Recap,
+    index: Int
+) {
+    val bitmap = runCatching { poster.toImageBitmap().asAndroidBitmap() }.getOrNull() ?: return
+    val file = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        runCatching {
+            java.io.File(context.cacheDir, "shared").let { folder ->
+                folder.mkdirs()
+                java.io.File(folder, "flowpay-${recap.month}-${index + 1}.png").also { out ->
+                    out.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                }
+            }
+        }.getOrNull()
+    } ?: return
+    val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+    val send = android.content.Intent(android.content.Intent.ACTION_SEND)
+        .setType("image/png")
+        .putExtra(android.content.Intent.EXTRA_STREAM, uri)
+        .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching {
+        context.startActivity(
+            android.content.Intent.createChooser(send, "Поділитися підсумком")
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
     }
 }
 
