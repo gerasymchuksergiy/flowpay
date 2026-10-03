@@ -898,8 +898,20 @@ data class DueReminder(
      * Null whenever nothing moved, so the note explaining the move only appears
      * where the date the user wrote down differs from the one being talked about.
      */
-    val movedFrom: LocalDate? = null
+    val movedFrom: LocalDate? = null,
+    /**
+     * The last day to cancel, when this charge is the first one after a free trial.
+     *
+     * The day before the charge: Apple asks for cancellation at least a day ahead,
+     * and Google can put a hold on the card two days before. About half of the
+     * people who start an auto-renewing trial end up paying for it, and the
+     * reminder is the one chance the app has to change that.
+     */
+    val cancelBy: LocalDate? = null
 )
+
+/** The notice a new trial or annual fee gets by default: a reminder in time to act. */
+const val LONG_NOTICE_DAYS = 3
 
 /**
  * The expenses that still owe money, with the ones already settled taken out.
@@ -962,8 +974,15 @@ fun remindersDue(
         // "через -1 день" is not a thing to put in front of a person.
         val daysAway = java.time.temporal.ChronoUnit
             .DAYS.between(today, day.payOn).toInt().coerceAtLeast(0)
-        DueReminder(pay, daysAway, charged.takeIf { day.moved })
-            .takeIf { daysAway <= pay.warnDays.coerceAtLeast(0) }
+        DueReminder(
+            pay,
+            daysAway,
+            charged.takeIf { day.moved },
+            // The trial is what ends on this charge, so there is still something
+            // to decide rather than only something to pay.
+            cancelBy = charged.minusDays(1)
+                .takeIf { pay.trialEnd > 0L && pay.trialEnd >= today.toEpochDay() }
+        ).takeIf { daysAway <= pay.warnDays.coerceAtLeast(0) }
     }.sortedBy { it.daysAway }
 
 /** The line a daily reminder leads with. */
@@ -988,7 +1007,10 @@ fun reminderText(reminders: List<DueReminder>): String {
     val mixed = reminders.map { it.daysAway }.distinct().size > 1
     return reminders.joinToString(if (mixed) " · " else ", ") { reminder ->
         val amount = amountLabel(reminder.pay.amount, reminder.pay.currency)
-        if (mixed) {
+        val cancel = reminder.cancelBy
+        if (cancel != null) {
+            "${reminder.pay.name}: безкоштовне скінчується, далі $amount — скасувати до ${dayMonth(cancel)}"
+        } else if (mixed) {
             "${reminder.pay.name} $amount — ${dueLabel(reminder.daysAway)}"
         } else {
             "${reminder.pay.name} $amount"

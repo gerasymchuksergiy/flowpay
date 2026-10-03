@@ -46,7 +46,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -215,6 +217,15 @@ data class Wish(
      * the list alone does not do that — this is the app using time as the tool.
      */
     val holdUntil: Long = 0L,
+    /**
+     * Why it is wanted, in the owner's own words. Optional and short.
+     *
+     * Listing reasons is one of the two things the CHI 2019 study on impulse
+     * buying found to work (the other is a day's delay, which is the hold). It is
+     * read back at the two moments it can change something: when a pause ends,
+     * and when "Я купив це" is pressed.
+     */
+    val why: String = "",
     /**
      * Every shop this thing is watched in, cheapest wins.
      *
@@ -876,7 +887,7 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     .put("cd", wish.checkedDay)
     .put("s", wish.saved).put("m", wish.monthlyPlan).put("dl", wish.deadline)
     .put("np", wish.notifiedPrice).put("v", wish.variant)
-    .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil)
+    .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil).put("why", wish.why)
     .put("ab", aboutJson(wish.about))
     // Written exactly as held, empty included, so that what comes back out of the
     // bin is what went in. A wish that predates the list is not filled in here:
@@ -1079,6 +1090,8 @@ fun wishOf(o: JSONObject): Wish {
         freshness = freshnessFrom(o.optString("fr")),
         addedDay = o.optLong("ad", 0L),
         holdUntil = o.optLong("hu", 0L),
+        // Absent on every wish saved before the reason could be written.
+        why = o.optString("why"),
         about = aboutOf(o.optJSONObject("ab")),
         // A wish saved with only `u` has no array here at all, and stays empty
         // rather than being filled in on the way past: [wishSources] is the one
@@ -3030,6 +3043,7 @@ fun EditWishSheet(
     var target by remember { mutableStateOf(amountText(wish.targetPrice)) }
     var category by remember { mutableStateOf(wish.category) }
     var price by remember { mutableStateOf(amountText(wish.price)) }
+    var why by remember { mutableStateOf(wish.why) }
     val touch = rememberTouch()
     val today = remember { LocalDate.now().toEpochDay() }
     FormSheet(
@@ -3056,7 +3070,8 @@ fun EditWishSheet(
                 priced.copy(
                     name = name.ifBlank { wish.name },
                     targetPrice = parseAmount(target),
-                    category = canonicalCategory(category, known)
+                    category = canonicalCategory(category, known),
+                    why = why.trim().take(WHY_LIMIT)
                 )
             )
         },
@@ -3075,8 +3090,32 @@ fun EditWishSheet(
             )
         }
         NumberField("Цільова ціна, ₴", target) { target = it }
+        // A target picked from what the price has actually done, rather than from
+        // the air: the way CamelCamelCamel and Google's typical-price range offer it.
+        val suggestions = targetSuggestions(wish.history, wish.price, today)
+        if (suggestions.isNotEmpty()) {
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = Space.sm),
+                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+            ) {
+                suggestions.forEach { suggestion ->
+                    FilterChip(
+                        selected = parseAmount(target) == suggestion.price,
+                        onClick = { target = amountText(suggestion.price) },
+                        label = { Text("${suggestion.label} · ${money(suggestion.price)}") }
+                    )
+                }
+            }
+        }
         OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
         CategorySuggestions(known, category) { category = it }
+        OutlinedTextField(
+            why,
+            { why = it.take(WHY_LIMIT) },
+            Modifier.fillMaxWidth().padding(top = Space.md),
+            label = { Text("Навіщо мені це — необов'язково") },
+            maxLines = 3
+        )
     }
 }
 
@@ -3966,6 +4005,10 @@ fun SharedTransitionScope.WishDetailScreen(
                 onRelease = {
                     touch.switched(false)
                     onChange(wish.copy(holdUntil = 0L))
+                },
+                onHoldFor = { days ->
+                    touch.switched(true)
+                    onChange(wish.copy(holdUntil = today.toEpochDay() + days))
                 }
             )
 
@@ -4659,15 +4702,34 @@ fun SharedTransitionScope.WishDetailScreen(
  * comes, then back with the only question that matters.
  */
 @Composable
-fun HoldBlock(wish: Wish, today: LocalDate, onPick: () -> Unit, onRelease: () -> Unit) {
+fun HoldBlock(
+    wish: Wish,
+    today: LocalDate,
+    onPick: () -> Unit,
+    onRelease: () -> Unit,
+    /** A pause of so many days from today, in one tap. */
+    onHoldFor: (Long) -> Unit = {}
+) {
     val day = today.toEpochDay()
     val held = onHold(wish, day)
     val ended = holdEnded(wish, day)
     if (!held && !ended) {
         Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
-            TextButton(onPick, contentPadding = PaddingValues(0.dp)) {
-                Icon(Icons.Default.Snooze, null, tint = TextSecondary)
-                Text("  Відкласти до дати", color = TextSecondary, fontSize = Type.captionSize)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Snooze, null, Modifier.size(Space.lg), tint = TextSecondary)
+                Text("  Відкласти", color = TextSecondary, fontSize = Type.captionSize)
+            }
+            // A day first. In the CHI 2019 study a twenty-five-hour delay lowered
+            // both the urge and the intent to buy, and ten minutes did nothing —
+            // so the shortest pause offered is the one that measurably works.
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = Space.xs),
+                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+            ) {
+                HOLD_PRESETS.forEach { (label, days) ->
+                    FilterChip(selected = false, onClick = { onHoldFor(days) }, label = { Text(label) })
+                }
+                FilterChip(selected = false, onClick = onPick, label = { Text("Дата…") })
             }
         }
         return
@@ -4686,7 +4748,12 @@ fun HoldBlock(wish: Wish, today: LocalDate, onPick: () -> Unit, onRelease: () ->
             )
             Text(
                 if (ended) {
-                    "Пауза скінчилась. Якщо річ і досі потрібна — це вже рішення, а не порив."
+                    // His own reason, read back at the moment of deciding.
+                    if (wish.why.isNotBlank()) {
+                        "Пауза скінчилась. Ти писав: «${wish.why}». Це досі так?"
+                    } else {
+                        "Пауза скінчилась. Якщо річ і досі потрібна — це вже рішення, а не порив."
+                    }
                 } else {
                     "Картка не турбуватиме до ${formatDate(LocalDate.ofEpochDay(wish.holdUntil))}."
                 },
@@ -5902,6 +5969,15 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
     var trialEnd by remember { mutableLongStateOf(0L) }
     var billingMonth by remember { mutableIntStateOf(0) }
+    // A free trial or a yearly fee is a decision as well as a charge, and a day's
+    // notice at nine in the morning is often too late to make it. So the notice
+    // moves to three days the moment either is set — visibly, on the chips, and
+    // only while it is still the default, so a choice already made is kept.
+    LaunchedEffect(trialEnd > 0L || billingMonth > 0) {
+        if ((trialEnd > 0L || billingMonth > 0) && warnDays == DEFAULT_WARN_DAYS) {
+            warnDays = LONG_NOTICE_DAYS
+        }
+    }
     val today = remember { LocalDate.now() }
     FormSheet(
         title = "Нова постійна витрата",
@@ -7998,6 +8074,16 @@ fun BoughtSheet(wish: Wish, close: () -> Unit, confirm: (tracking: String, paid:
         onDismiss = close
     ) {
         Text(wish.name, fontSize = Type.captionSize, color = TextSecondary)
+        // The reason, read back once more at the moment of paying.
+        if (wish.why.isNotBlank()) {
+            Text(
+                "Навіщо: «${wish.why}»",
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                color = TextPrimary,
+                modifier = Modifier.padding(top = Space.sm)
+            )
+        }
         Text(
             if (digital) {
                 "Товар переїде в Покупки як цифрова покупка, без доставки. Сума потрібна, " +

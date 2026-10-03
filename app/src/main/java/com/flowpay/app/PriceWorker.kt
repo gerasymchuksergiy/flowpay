@@ -114,7 +114,8 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         fresh.filter { holdEnded(it, today) && it.holdUntil in (today - HOLD_GRACE_DAYS)..today }
             .forEach { wish ->
                 once("hold-${wish.id}-${wish.holdUntil}") {
-                    notify(wish.name, "Ще хочеш? Пауза скінчилась", CHANNEL_PRICES, "Зміни цін")
+                    val reason = wish.why.takeIf { it.isNotBlank() }?.let { " Ти писав: «$it»." }.orEmpty()
+                    notify(wish.name, "Ще хочеш? Пауза скінчилась.$reason", CHANNEL_PRICES, "Зміни цін")
                 }
             }
 

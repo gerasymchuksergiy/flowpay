@@ -680,6 +680,37 @@ fun onHold(wish: Wish, today: Long): Boolean = wish.holdUntil > today
  */
 fun holdEnded(wish: Wish, today: Long): Boolean = wish.holdUntil in 1..today
 
+/** The one-tap pauses: a day, a week, a month. */
+val HOLD_PRESETS = listOf("Доба" to 1L, "Тиждень" to 7L, "Місяць" to 30L)
+
+/** The longest reason kept, so a pasted paragraph does not become the card. */
+const val WHY_LIMIT = 140
+
+/** A target worth offering, from what the price has actually done. */
+data class TargetSuggestion(val label: String, val price: Double)
+
+/**
+ * Two or three targets the history can vouch for, cheapest last.
+ *
+ * The lowest of the last thirty days and the lowest ever, when they are below the
+ * price now; and ten per cent off, which is the figure hotline uses for a fall
+ * worth telling. Duplicates are dropped, so a history that bottomed out this month
+ * offers its low once.
+ */
+fun targetSuggestions(history: List<PricePoint>, current: Double, today: Long): List<TargetSuggestion> {
+    if (current <= 0.0) return emptyList()
+    val insight = priceInsight(history, current, today)
+    // What the price has done first: when one of those is also ten per cent off, it
+    // is named for the history, which is the more useful thing to know about it.
+    return listOfNotNull(
+        TargetSuggestion("мін. за 30 днів", insight.referenceLow)
+            .takeIf { insight.referenceDays >= 7 && it.price in 1.0..(current - 1.0) },
+        TargetSuggestion("мін. за весь час", insight.lowest)
+            .takeIf { history.size >= 2 && it.price in 1.0..(current - 1.0) },
+        TargetSuggestion("−10%", kotlin.math.floor(current * 0.9))
+    ).distinctBy { it.price }
+}
+
 /** What a held wish says for itself while it waits. */
 fun holdLabel(wish: Wish, today: Long): String? = when {
     onHold(wish, today) -> "Відкладено до ${formatDate(LocalDate.ofEpochDay(wish.holdUntil))}"
