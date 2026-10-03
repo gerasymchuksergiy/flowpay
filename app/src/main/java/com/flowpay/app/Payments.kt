@@ -1418,8 +1418,16 @@ fun monthRecord(
     // other. Without it a March domain fee sat in every month's plan, and eleven
     // of those months read as unpaid for a charge that never happened in them.
     val monthStart = monthKeyDate(month) ?: today
-    val due = pays.filter { chargesIn(it, monthStart) }
-    val planned = monthlyTotal(pays, usdSellRate, today, monthStart)
+    // Free that month means not due that month — decided on the month's own charge
+    // date, not on today. Judged on today, a renewal that was free in September
+    // left September «Позначено 1 з 2» with nothing to pay, and flipped it to
+    // «лишилось 199 ₴» the day the trial ended in October.
+    val due = pays.filter {
+        chargesIn(it, monthStart) &&
+            !onTrial(it, chargeDate(monthStart.year, monthStart.monthValue, it.day).toEpochDay())
+    }
+    // Exactly what is due, so the plan and the count cannot disagree.
+    val planned = monthlyTotal(due.map { it.copy(trialEnd = 0L) }, usdSellRate, today, monthStart)
     val settled = due.all { isPaid(marks, it.name, month) }
     return MonthRecord(
         month = month,
@@ -1498,7 +1506,11 @@ fun monthLines(pays: List<Pay>, marks: List<PaidMark>, month: String): List<Mont
     val monthStart = monthKeyDate(month)
     val standing = pays
         .filter { pay ->
-            forMonth.any { it.name == pay.name } || monthStart == null || chargesIn(pay, monthStart)
+            forMonth.any { it.name == pay.name } || monthStart == null || (
+                chargesIn(pay, monthStart) &&
+                    // Free that month: nothing to tick, as in [monthRecord].
+                    !onTrial(pay, chargeDate(monthStart.year, monthStart.monthValue, pay.day).toEpochDay())
+                )
         }
         .distinctBy { it.name }
         .map { pay ->

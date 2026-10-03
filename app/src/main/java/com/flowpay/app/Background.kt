@@ -179,7 +179,14 @@ data class WorkHealth(
     /** Reason codes for this app's pending jobs. Empty when the platform will not say. */
     val pendingReasons: List<Int>,
     val apiLevel: Int,
-    val nowMillis: Long
+    val nowMillis: Long,
+    /**
+     * Whether the app may post notifications at all.
+     *
+     * With them off, every pass still ran and still recorded itself, so the panel
+     * said «Ранкове зведення — сьогодні о 09:00» about a message nobody ever saw.
+     */
+    val notificationsOn: Boolean = true
 )
 
 /** The single line the overview carries, and whether it should look like an alarm. */
@@ -193,6 +200,14 @@ data class HealthLine(val title: String, val detail: String, val alarm: Boolean)
  * about it would teach the user to ignore the strip before it ever mattered.
  */
 fun healthLine(health: WorkHealth): HealthLine {
+    // First, because nothing else on this list reaches the person without it.
+    if (!health.notificationsOn) {
+        return HealthLine(
+            title = "Сповіщення вимкнено",
+            detail = "ранкове зведення і ціль за ціною не дійдуть",
+            alarm = true
+        )
+    }
     // Kept as a list rather than a map: two passes could share a timestamp, and
     // equal data classes would collapse into one key and lose a whole pass.
     val states = health.runs.map { it to workState(it, health.nowMillis) }
@@ -271,6 +286,22 @@ fun autostartComponent(manufacturer: String): Pair<String, String>? =
  */
 fun openBackgroundSettings(context: Context) {
     val candidates = buildList {
+        // HyperOS's own per-app battery page, where "No restrictions" lives. The
+        // stock battery-optimisation screen is reported to do nothing on Xiaomi.
+        // Not a public screen, so it is tried and allowed to fail like the rest.
+        if (Build.MANUFACTURER.lowercase() in setOf("xiaomi", "redmi", "poco")) {
+            add(
+                Intent()
+                    .setComponent(
+                        ComponentName(
+                            "com.miui.powerkeeper",
+                            "com.miui.powerkeeper.ui.HiddenAppsConfigActivity"
+                        )
+                    )
+                    .putExtra("package_name", context.packageName)
+                    .putExtra("package_label", "FlowPay")
+            )
+        }
         autostartComponent(Build.MANUFACTURER)?.let { (pkg, activity) ->
             add(Intent().setComponent(ComponentName(pkg, activity)))
         }
@@ -286,6 +317,17 @@ fun openBackgroundSettings(context: Context) {
         }.isSuccess
         if (opened) return
     }
+}
+
+/** The phone's page for this app's notifications. */
+fun openNotificationSettings(context: Context) {
+    val intent = if (Build.VERSION.SDK_INT >= 26) {
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    } else {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData("package:${context.packageName}".toUri())
+    }
+    runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 
 /**

@@ -317,12 +317,25 @@ fun chartAxis(values: List<Double>, minimumSpan: Double = MIN_AXIS_SPAN): ChartA
     val middle = (low + high) / 2
     // A little headroom at both ends, so the line never runs along an edge.
     val span = maxOf((high - low) * 1.3, middle * minimumSpan)
-    return ChartAxis(middle - span / 2, middle + span / 2)
+    // Never below nought: a cheapest price under about a seventh of the dearest
+    // put the bottom of the axis at «-139 ₴», a price nothing has ever had.
+    return ChartAxis((middle - span / 2).coerceAtLeast(0.0), middle + span / 2)
 }
 
-/** "вісь 4 850 – 5 350 ₴" — where the vertical axis starts and where it stops. */
-fun axisNote(axis: ChartAxis, format: (Double) -> String): String =
-    "вісь ${bareAmount(axis.low)} – ${format(axis.high)}"
+/**
+ * "вісь 4 850 – 5 350 ₴" — where the vertical axis starts and where it stops.
+ *
+ * Both ends through the same [format], with the unit said once at the end. The
+ * low end used to be a bare whole number, so the rate chart read «вісь 39 –
+ * 43,31 ₴»: one end with kopecks and one without, as if they were different units.
+ */
+fun axisNote(axis: ChartAxis, format: (Double) -> String): String {
+    val high = format(axis.high)
+    val low = format(axis.low)
+    val unit = high.takeLastWhile { !it.isDigit() }
+    val lowShown = if (unit.isNotBlank() && low.endsWith(unit)) low.dropLast(unit.length) else low
+    return "вісь $lowShown – $high"
+}
 
 /**
  * Where each reading sits horizontally: zero at the left edge, one at the right.

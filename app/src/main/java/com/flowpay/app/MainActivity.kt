@@ -1859,7 +1859,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
             runs = store.workRuns(),
             pendingReasons = pendingJobReasons(context),
             apiLevel = android.os.Build.VERSION.SDK_INT,
-            nowMillis = System.currentTimeMillis()
+            nowMillis = System.currentTimeMillis(),
+            notificationsOn = androidx.core.app.NotificationManagerCompat.from(context)
+                .areNotificationsEnabled()
         )
     }
 
@@ -2145,7 +2147,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             ReminderWorker.reschedule(context)
                         },
                         onOpenSettings = { openBackgroundSettings(context) },
-                        onClose = { healthOpen = false }
+                        onClose = { healthOpen = false },
+                        onOpenNotifications = { openNotificationSettings(context) }
                     )
                 }
             }
@@ -6337,9 +6340,11 @@ fun OrdersScreen(
         setAdding(false)
     }
     tracking?.let { selected ->
-        TrackingDialog(selected, { tracking = null }) { number, digital ->
+        TrackingDialog(selected, { tracking = null }) { number, digital, name ->
             update { now ->
-                now.map { if (it.id == selected.id) it.copy(tracking = number, digital = digital) else it }
+                now.map {
+                    if (it.id == selected.id) it.copy(tracking = number, digital = digital, name = name) else it
+                }
             }
             tracking = null
         }
@@ -7120,21 +7125,35 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
                             is PageAdd.Described -> read.wish
                             PageAdd.Blank -> null
                         }
-                        if (item == null) {
-                            error = NOTHING_READ_NOTE
-                        } else {
-                            add(
-                                Order(
-                                    item.id, item.name, item.url, ORDERED,
-                                    tracking = if (digital) "" else trackingNumber.trim(),
-                                    image = item.image,
-                                    price = item.price,
-                                    digital = digital
-                                )
+                        add(
+                            Order(
+                                item?.id ?: System.currentTimeMillis().toString(),
+                                item?.name ?: placeholderName(link.trim()),
+                                item?.url ?: link.trim(),
+                                ORDERED,
+                                tracking = if (digital) "" else trackingNumber.trim(),
+                                image = item?.image.orEmpty(),
+                                price = item?.price ?: 0.0,
+                                digital = digital
                             )
-                        }
+                        )
                     }
-                    .onFailure { error = it.message ?: "Не вдалося прочитати посилання" }
+                    // A purchase is already made, so a shop that will not show its
+                    // page — Temu behind its captcha, a dropped connection — costs
+                    // the name and the photo, never the record. The name can be
+                    // corrected from the card's pencil.
+                    .onFailure {
+                        add(
+                            Order(
+                                System.currentTimeMillis().toString(),
+                                placeholderName(link.trim()),
+                                link.trim(),
+                                ORDERED,
+                                tracking = if (digital) "" else trackingNumber.trim(),
+                                digital = digital
+                            )
+                        )
+                    }
                 loading = false
             }
         },
@@ -8251,8 +8270,15 @@ fun BillingSegments(billingMonth: Int, today: LocalDate, set: (Int) -> Unit) {
  * here rather than only at creation.
  */
 @Composable
-fun TrackingDialog(order: Order, close: () -> Unit, save: (tracking: String, digital: Boolean) -> Unit) {
+fun TrackingDialog(
+    order: Order,
+    close: () -> Unit,
+    save: (tracking: String, digital: Boolean, name: String) -> Unit
+) {
     var number by remember { mutableStateOf(order.tracking) }
+    // Editable, because a purchase added from a page that would not open is named
+    // after its shop, and «Товар з temu.com» is nobody's name for a controller.
+    var name by remember { mutableStateOf(order.name) }
     // The kind is corrected here as well, because the shop list in Purchases.kt
     // guesses and this is where a wrong guess is noticed.
     var digital by remember { mutableStateOf(order.digital) }
@@ -8261,7 +8287,13 @@ fun TrackingDialog(order: Order, close: () -> Unit, save: (tracking: String, dig
         title = { Text(if (digital) "Покупка" else "Трек-номер") },
         text = {
             Column {
-                Text(order.name, color = TextSecondary, fontSize = Type.captionSize)
+                OutlinedTextField(
+                    name,
+                    { name = it },
+                    Modifier.fillMaxWidth(),
+                    label = { Text("Назва") },
+                    singleLine = true
+                )
                 OrderKindControl(digital, Modifier.padding(top = Space.md)) { digital = it }
                 if (!digital) {
                     OutlinedTextField(
@@ -8275,7 +8307,9 @@ fun TrackingDialog(order: Order, close: () -> Unit, save: (tracking: String, dig
             }
         },
         confirmButton = {
-            Button({ save(if (digital) "" else number.trim(), digital) }) { Text("Зберегти") }
+            Button({ save(if (digital) "" else number.trim(), digital, name.trim().ifBlank { order.name }) }) {
+                Text("Зберегти")
+            }
         },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )

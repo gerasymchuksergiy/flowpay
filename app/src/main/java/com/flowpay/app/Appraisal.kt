@@ -657,7 +657,9 @@ val APPRAISAL_RATING_WORDS: List<String> = listOf("рейтинг", "оцінк"
  * what makes it a rating.
  */
 private val APPRAISAL_RATING_SHAPE =
-    Regex("""\d+[.,]\d+\s*(?:з|із)\s*5(?!\d)|\d+\s*/\s*5(?!\d)""")
+    // Not «2,4/5 ГГц»: a Wi-Fi band read as a rating used to refuse a whole paid
+    // answer about a router.
+    Regex("""\d+[.,]\d+\s*(?:з|із)\s*5(?!\d)|\d+\s*/\s*5(?!\d)(?!\s*(?:ГГц|GHz|ghz|ггц))""")
 
 /**
  * Whether a run of text states the star rating.
@@ -684,7 +686,15 @@ fun contradictsOurFigures(text: String): Boolean = statesPrice(text) || statesRa
  * about the phone. Collapsing them would leave a tunnel looking like a refusal.
  */
 sealed interface AppraisalReading {
-    data class Written(val appraisal: Appraisal) : AppraisalReading
+    data class Written(
+        val appraisal: Appraisal,
+        /**
+         * Google's search chips for this answer, as the HTML it sends. Never stored:
+         * the terms let a grounded answer be kept, but its Search Suggestions only
+         * be shown with it — so they live as long as the screen that asked.
+         */
+        val suggestions: String = ""
+    ) : AppraisalReading
 
     /** The model answered, and nothing in the answer survived the checks. */
     data object Refused : AppraisalReading
@@ -705,6 +715,37 @@ fun appraisalText(json: String): String = runCatching {
         parts.optJSONObject(it)?.optString("text").orEmpty()
     }
 }.getOrDefault("")
+
+/**
+ * Google's Search Suggestions for a grounded answer, or blank.
+ *
+ * `searchEntryPoint.renderedContent` is a ready-made piece of HTML — the chips that
+ * open the same searches on google.com. The Gemini terms require it to be shown,
+ * unaltered, with every grounded answer that comes with it. Until now the app
+ * showed the sources and dropped this.
+ */
+fun appraisalSuggestions(json: String): String = runCatching {
+    JSONObject(json)
+        .optJSONArray("candidates")
+        ?.optJSONObject(0)
+        ?.optJSONObject("groundingMetadata")
+        ?.optJSONObject("searchEntryPoint")
+        ?.optString("renderedContent")
+        .orEmpty()
+        .trim()
+}.getOrDefault("")
+
+/**
+ * The longest a written review is kept, in days.
+ *
+ * Google allows a grounded answer to be stored for two years. Past that the stored
+ * review is not shown, and the button asks for a fresh one.
+ */
+const val APPRAISAL_KEEP_DAYS = 730L
+
+/** Whether a stored review is still inside what Google allows to be kept. */
+fun appraisalKept(appraisal: Appraisal?, today: Long): Appraisal? =
+    appraisal?.takeIf { it.day <= 0L || today - it.day <= APPRAISAL_KEEP_DAYS }
 
 /** How many sources the block will show before it stops being a list and starts being a wall. */
 const val APPRAISAL_SOURCE_CAP = 8
@@ -850,7 +891,8 @@ fun readAppraisal(json: String, price: Double, day: Long): AppraisalReading {
     val queries = appraisalQueries(json)
     val draft = draftAppraisal(text)
 
-    val keep = { one: Appraisal -> AppraisalReading.Written(one) }
+    val suggestions = appraisalSuggestions(json)
+    val keep = { one: Appraisal -> AppraisalReading.Written(one, suggestions) }
     val base = Appraisal(
         sources = sources,
         queries = queries,
@@ -1136,6 +1178,9 @@ fun AppraisalSection(
     // Shut by default and not remembered across wishes: the list of pages is the
     // thing you open when you doubt a specific sentence, not a standing preference.
     var sourcesOpen by remember(wish.id) { mutableStateOf(false) }
+    // The chips that came with the answer just written, for as long as this
+    // screen is open. See [AppraisalReading.Written.suggestions].
+    var suggestions by remember(wish.id) { mutableStateOf("") }
 
     CollapsibleSection(
         title = APPRAISAL_TITLE,
@@ -1211,7 +1256,7 @@ fun AppraisalSection(
                     }
                     Spacer(Modifier.height(Space.sm))
 
-                    val written = wish.appraisal
+                    val written = appraisalKept(wish.appraisal, today)
                     if (written != null) {
                         // An answer the model could not ground is drawn a step
                         // quieter than one it could, and says why before it says
@@ -1316,6 +1361,13 @@ fun AppraisalSection(
                                 modifier = Modifier.padding(top = Space.md)
                             )
                         }
+                        // Directly under the answer, at its width, as Google sent it.
+                        if (suggestions.isNotBlank()) {
+                            SearchSuggestions(
+                                suggestions,
+                                Modifier.fillMaxWidth().padding(top = Space.md)
+                            )
+                        }
                     }
 
                     // Each of these is a state he will meet more often than the
@@ -1357,8 +1409,10 @@ fun AppraisalSection(
                                     val reading = fetchAppraisal(wish, key, today)
                                     busy = false
                                     when (reading) {
-                                        is AppraisalReading.Written ->
+                                        is AppraisalReading.Written -> {
+                                            suggestions = reading.suggestions
                                             onChange(latest.copy(appraisal = reading.appraisal))
+                                        }
                                         // Nothing is cached for either of these, so
                                         // the button underneath is a real retry
                                         // rather than a second look at the same

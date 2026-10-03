@@ -47,10 +47,11 @@ import androidx.compose.ui.unit.Dp
  * app wants you to know before you have asked anything, and making them look alike
  * is what stops the second one reading as a stray banner.
  *
- * Unlike the pill, this one is always there. A pill that only appears when
- * something is wrong is right for news; for the question "is the background work
- * alive" the answer "yes, at 10:05 today" is the whole point, and a strip that is
- * only ever seen in a crisis cannot build the habit of glancing at it.
+ * Like the pill, it appears only when something is wrong — see [stripLine]. It
+ * used to be always there, on the argument that "yes, at 10:05 today" builds the
+ * habit of glancing at it; the owner found a bar that never goes away and almost
+ * always says "fine" to be noise, and the calm answer now lives on its row under
+ * Налаштування.
  */
 @Composable
 fun WorkHealthStrip(line: HealthLine?, modifier: Modifier = Modifier, onOpen: () -> Unit) {
@@ -122,7 +123,8 @@ fun WorkHealthSheet(
     digestHour: Int,
     onHour: (Int) -> Unit,
     onOpenSettings: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onOpenNotifications: () -> Unit = {}
 ) {
     ModalBottomSheet(
         onDismissRequest = onClose,
@@ -177,6 +179,18 @@ fun WorkHealthSheet(
                 modifier = Modifier.padding(top = Space.xs)
             )
 
+            if (!health.notificationsOn) {
+                Spacer(Modifier.height(Space.lg))
+                Button(
+                    onOpenNotifications,
+                    Modifier.fillMaxWidth(),
+                    shape = Radius.pill,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Accent,
+                        contentColor = AccentInk
+                    )
+                ) { Text("Увімкнути сповіщення", fontWeight = Type.medium) }
+            }
             Spacer(Modifier.height(Space.lg))
             Button(
                 onOpenSettings,
@@ -209,7 +223,8 @@ fun WorkHealthSheet(
             }
             Text(
                 "Одне повідомлення на день. Негайно приходить лише те, що не чекає: " +
-                    "досягнута цільова ціна і зберігання посилки, яке завтра стає платним.",
+                    "досягнута цільова ціна, товар знову в наявності, кінець паузи і " +
+                    "зберігання посилки, яке стає платним.",
                 color = TextDisabled,
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine,
