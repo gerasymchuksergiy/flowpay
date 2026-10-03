@@ -42,6 +42,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
@@ -395,7 +396,15 @@ data class Order(
      * Such a purchase has no carrier and no stages, so it is drawn without the rail
      * and can be closed from the moment it is added.
      */
-    val digital: Boolean = false
+    val digital: Boolean = false,
+    /**
+     * The last day it can be sent back, as an epoch day. Zero means not tracked.
+     *
+     * Set when the purchase is filed — see Returns in Purchases.kt — and cleared by
+     * «Залишаю». Finder found 6–8% of people missed a return because they forgot
+     * or the window ran out; the morning message is where that is caught.
+     */
+    val returnBy: Long = 0L
 )
 
 class MainActivity : ComponentActivity() {
@@ -1181,6 +1190,7 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("dt", detailsJson(order.details))
     .put("sg", sightingsJson(order.sightings))
     .put("dg", order.digital)
+    .put("rb", order.returnBy)
 
 /**
  * A parcel read back off the phone.
@@ -1231,7 +1241,9 @@ fun orderOf(o: JSONObject): Order = Order(
     // Those are judged by their shop, which is what puts the Steam game already on
     // the phone back where it belongs without anyone having to touch it. Once the
     // flag has been written, it is the answer — including a «no» set by hand.
-    digital = if (o.has("dg")) o.optBoolean("dg", false) else isDigitalStore(o.optString("u"))
+    digital = if (o.has("dg")) o.optBoolean("dg", false) else isDigitalStore(o.optString("u")),
+    // Absent on everything filed before return windows were kept: none tracked.
+    returnBy = o.optLong("rb", 0L)
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -1591,6 +1603,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // wish page is: the action button and the status pill both have to know that
     // an item page is open, and neither of them lives down there.
     var openedOrder by remember { mutableStateOf<String?>(null) }
+    // A tracking number that arrived through the share sheet, waiting for the
+    // purchases tab to open its add form with it.
+    var sharedTracking by remember { mutableStateOf<String?>(null) }
     // Both read pruned: a month that fell out of the year, or an entry past its
     // thirty days, is dropped on the way out of the store rather than lingering
     // in memory until something happens to write the list back.
@@ -1660,7 +1675,13 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                 }
             }
             is AppCommand.AddShared -> noticeScope.launch { when (val link = sharedLink(command.text, wishes)) {
-                SharedLink.Missing -> say("У повідомленні немає посилання")
+                // No link, but a parcel number — an SMS or a Viber message from the
+                // carrier. That is a purchase on its way, so it goes to Покупки
+                // with the number already typed.
+                SharedLink.Missing -> trackingNumberIn(command.text)?.let { number ->
+                    sharedTracking = number
+                    tab = TAB_ORDERS
+                } ?: say("У повідомленні немає ні посилання, ні трек-номера")
                 is SharedLink.Known -> say("«${link.wish.name}» вже у списку")
                 is SharedLink.New -> {
                     // The link is saved before the page is read, so a shop that
@@ -2113,7 +2134,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             store = store,
                             opened = openedOrder,
                             setOpened = { openedOrder = it },
-                            onDelete = { deleteOrder(it) }
+                            onDelete = { deleteOrder(it) },
+                            sharedTracking = sharedTracking,
+                            onSharedTrackingUsed = { sharedTracking = null }
                         )
                         // The overview is where "how am I doing" is asked, and every
                         // figure on it is only as true as the last background pass.
@@ -5518,7 +5541,16 @@ fun PaymentsScreen(
                         pays = items,
                         marks = paid,
                         onToggle = { pay, month -> setPaid(togglePaid(paid, pay, month)) },
-                        modifier = Modifier.padding(horizontal = Space.screen)
+                        modifier = Modifier.padding(horizontal = Space.screen),
+                        onCharged = { pay, month, amount, updateExpense ->
+                            setPaid(withMarkAmount(paid, pay.name, month, amount))
+                            if (updateExpense) {
+                                val day = LocalDate.now().toEpochDay()
+                                // Through the history, so «було → стало» and the
+                                // digest's raise line see it like any other edit.
+                                save(items.map { if (it.name == pay.name) withAmount(it, amount, day) else it })
+                            }
+                        }
                     )
                 }
             } else {
@@ -6052,7 +6084,10 @@ fun OrdersScreen(
     opened: String?,
     setOpened: (String?) -> Unit,
     /** Owned above this screen, which is where the undo and the bin live. */
-    onDelete: (Order) -> Unit
+    onDelete: (Order) -> Unit,
+    /** A number shared into the app, to open the add form with. */
+    sharedTracking: String? = null,
+    onSharedTrackingUsed: () -> Unit = {}
 ) {
     var tracking by remember { mutableStateOf<Order?>(null) }
     var closing by remember { mutableStateOf<Order?>(null) }
@@ -6351,8 +6386,10 @@ fun OrdersScreen(
                     // Left aligned for the same reason as the wish card: the floating
                     // action button sits over the bottom right corner.
                     Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton({ openLink(context, order.url) }) {
-                            Text("До магазину ↗")
+                        if (order.url.isNotBlank()) {
+                            TextButton({ openLink(context, order.url) }) {
+                                Text("До магазину ↗")
+                            }
                         }
                         IconButton({ tracking = order }) {
                             Icon(Icons.Default.Edit, if (order.digital) "Змінити покупку" else "Трек-номер")
@@ -6422,7 +6459,10 @@ fun OrdersScreen(
                         // purchase is the one record in the app that cannot be
                         // rebuilt, because the price it is judged against was only
                         // ever observed while the thing was still a wish.
-                        onDelete = { onDelete(order) }
+                        onDelete = { onDelete(order) },
+                        onKeep = {
+                            update { now -> now.map { if (it.id == order.id) it.copy(returnBy = 0L) else it } }
+                        }
                     )
                 }
             }
@@ -6442,9 +6482,15 @@ fun OrdersScreen(
             setOpened(null)
         }
     }
-    if (adding) AddOrderSheet({ setAdding(false) }) { added ->
-        update { now -> now + added }
-        setAdding(false)
+    if (adding || sharedTracking != null) {
+        AddOrderSheet(
+            close = { setAdding(false); onSharedTrackingUsed() },
+            initialTracking = sharedTracking.orEmpty()
+        ) { added ->
+            update { now -> now + added }
+            setAdding(false)
+            onSharedTrackingUsed()
+        }
     }
     tracking?.let { selected ->
         TrackingDialog(selected, { tracking = null }) { number, digital, name ->
@@ -6958,11 +7004,20 @@ fun PaidMonths(
     pays: List<Pay>,
     marks: List<PaidMark>,
     onToggle: (Pay, String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** What was really charged for one mark, and whether the expense now costs that. */
+    onCharged: (pay: Pay, month: String, amount: Double, updateExpense: Boolean) -> Unit = { _, _, _, _ -> }
 ) {
     // One at a time, because the point is to read or fix the month you came for,
     // not to audit the year.
     var openMonth by remember { mutableStateOf(months.getOrNull(1)?.month) }
+    var correcting by remember { mutableStateOf<Pair<MonthLine, String>?>(null) }
+    correcting?.let { (line, month) ->
+        ChargedDialog(line, close = { correcting = null }) { amount, update ->
+            onCharged(line.pay, month, amount, update)
+            correcting = null
+        }
+    }
     Column(modifier) {
         // Said once, while there is nothing to read yet. The months below still
         // draw, because a month showing nought paid is the thing being explained.
@@ -7079,12 +7134,21 @@ fun PaidMonths(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
+                                // A paid figure can be corrected to what the bank
+                                // actually took. Underlined, because nothing else in
+                                // a row of figures says it is a control.
                                 Text(
                                     amountLabel(line.amount, line.currency),
                                     color = if (line.paid) TextPrimary else TextDisabled,
                                     fontSize = Type.bodySize,
                                     fontWeight = Type.medium,
-                                    style = Tabular
+                                    style = Tabular,
+                                    textDecoration = if (line.paid) TextDecoration.Underline else null,
+                                    modifier = if (line.paid) {
+                                        Modifier.clickable { correcting = line to record.month }
+                                    } else {
+                                        Modifier
+                                    }
                                 )
                             }
                         }
@@ -7101,6 +7165,51 @@ fun PaidMonths(
             }
         }
     }
+}
+
+/**
+ * What was really charged for one paid month, and whether that is the new price.
+ *
+ * The second question is asked only when the figure moved enough to be one — see
+ * [amountDrifted] — and it is ticked by default then, because a bill that came in
+ * at a new amount is the moment a quiet raise gets noticed or does not.
+ */
+@Composable
+fun ChargedDialog(line: MonthLine, close: () -> Unit, save: (Double, Boolean) -> Unit) {
+    var text by remember { mutableStateOf(amountText(line.amount)) }
+    val charged = parseAmount(text)
+    val drifted = amountDrifted(line.pay.amount, charged)
+    var update by remember(drifted) { mutableStateOf(drifted) }
+    AlertDialog(
+        onDismissRequest = close,
+        title = { Text("Скільки списали") },
+        text = {
+            Column {
+                Text(line.pay.name, color = TextSecondary, fontSize = Type.captionSize)
+                NumberField("Сума, ${if (line.currency == USD) "$" else "₴"}", text) { text = it }
+                if (drifted) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { update = !update }
+                            .padding(top = Space.md),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(update, { update = it })
+                        Text(
+                            "Відтепер ${line.pay.name} коштує ${amountLabel(charged, line.currency)}",
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button({ save(charged, update && drifted) }, enabled = charged > 0.0) { Text("Зберегти") }
+        },
+        dismissButton = { TextButton(close) { Text("Скасувати") } }
+    )
 }
 
 /**
@@ -7133,8 +7242,15 @@ fun CloseOrderButton(order: Order, modifier: Modifier = Modifier, onClick: () ->
  * "ти поспішив" looks like the "дорого зараз" it was bought at.
  */
 @Composable
-fun ArchivedPurchase(order: Order, onEdit: () -> Unit, onDelete: () -> Unit) {
+fun ArchivedPurchase(
+    order: Order,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+    /** «Залишаю»: the window is no longer worth a reminder. */
+    onKeep: () -> Unit = {}
+) {
     val review = purchaseReview(order.paid, order.lowestSeen, order.uses)
+    val today = remember { LocalDate.now().toEpochDay() }
     Card(
         Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth().litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceLow),
@@ -7184,6 +7300,18 @@ fun ArchivedPurchase(order: Order, onEdit: () -> Unit, onDelete: () -> Unit) {
                 fontSize = Type.captionSize,
                 modifier = Modifier.padding(top = Space.xs)
             )
+            returnLine(order, today)?.let { line ->
+                Row(Modifier.padding(top = Space.xs), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        line,
+                        Modifier.weight(1f),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                    TextButton(onKeep) { Text("Залишаю") }
+                }
+            }
             Row(Modifier.padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onEdit) {
                     Text(if (order.uses > 0) "Оновити користування" else "Порахувати користування")
@@ -7196,9 +7324,10 @@ fun ArchivedPurchase(order: Order, onEdit: () -> Unit, onDelete: () -> Unit) {
 }
 
 @Composable
-fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
+fun AddOrderSheet(close: () -> Unit, initialTracking: String = "", add: (Order) -> Unit) {
     var link by remember { mutableStateOf("") }
-    var trackingNumber by remember { mutableStateOf("") }
+    var trackingNumber by remember { mutableStateOf(initialTracking) }
+    val context = LocalContext.current
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     // Guessed from the shop until the switch is touched, then whatever was chosen.
@@ -7209,8 +7338,15 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
     FormSheet(
         title = "Додати покупку",
         confirmLabel = if (loading) "Зчитую…" else "Додати",
-        confirmEnabled = isSupportedWebUrl(link) && !loading,
+        // A link, or a parcel number on its own: a parcel announced by SMS has no
+        // shop page to hand, and it is still a purchase on its way.
+        confirmEnabled = !loading && (isSupportedWebUrl(link) || (!digital && trackingNumber.isNotBlank())),
         onConfirm = {
+            if (!isSupportedWebUrl(link)) {
+                val number = trackingNumber.filter { !it.isWhitespace() }
+                add(Order(System.currentTimeMillis().toString(), parcelNameFor(number), "", ORDERED, tracking = number))
+                return@FormSheet
+            }
             scope.launch {
                 loading = true
                 error = null
@@ -7275,7 +7411,19 @@ fun AddOrderSheet(close: () -> Unit, add: (Order) -> Unit) {
                 { trackingNumber = it },
                 Modifier.fillMaxWidth().padding(top = Space.md),
                 label = { Text("Трек-номер, якщо вже є") },
-                singleLine = true
+                singleLine = true,
+                // Read from the clipboard only when this is tapped — Android shows
+                // its own notice whenever an app reads it, and an app that reads it
+                // unasked is one that notice exists to catch.
+                trailingIcon = {
+                    IconButton({
+                        val clip = runCatching {
+                            context.getSystemService(android.content.ClipboardManager::class.java)
+                                ?.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString()
+                        }.getOrNull()
+                        trackingNumberIn(clip)?.let { trackingNumber = it }
+                    }) { Icon(Icons.Default.ContentPaste, "Вставити трек-номер") }
+                }
             )
         }
         error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
@@ -8127,6 +8275,9 @@ fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
     }
     val paid = parseAmount(paidText)
     val uses = usesText.trim().toIntOrNull() ?: 0
+    // Only asked when the purchase is being filed. Later edits are about use.
+    val filing = order.archivedDay <= 0L
+    var returnDays by remember(order.id) { mutableIntStateOf(defaultReturnDays(order)) }
     FormSheet(
         title = if (order.archivedDay > 0L) "Покупка в архіві" else "Завершити покупку",
         confirmLabel = if (order.archivedDay > 0L) "Зберегти" else "В архів",
@@ -8140,7 +8291,12 @@ fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
                     // Filed on the day it was closed, and never re-dated by a later
                     // correction to the use count.
                     archivedDay = order.archivedDay.takeIf { it > 0L }
-                        ?: LocalDate.now().toEpochDay()
+                        ?: LocalDate.now().toEpochDay(),
+                    returnBy = if (filing) {
+                        returnDays.takeIf { it > 0 }?.let { LocalDate.now().toEpochDay() + it } ?: 0L
+                    } else {
+                        order.returnBy
+                    }
                 )
             )
         },
@@ -8148,6 +8304,33 @@ fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
     ) {
         Text(order.name, fontSize = Type.captionSize, color = TextSecondary)
         NumberField("Скільки заплатили, ₴", paidText) { paidText = it }
+        if (filing) {
+            Text(
+                "Повернути можна",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                modifier = Modifier.padding(top = Space.md)
+            )
+            Row(
+                Modifier.horizontalScroll(rememberScrollState()).padding(top = Space.xs),
+                horizontalArrangement = Arrangement.spacedBy(Space.sm)
+            ) {
+                RETURN_CHOICES.forEach { days ->
+                    FilterChip(
+                        selected = returnDays == days,
+                        onClick = { returnDays = days },
+                        label = { Text(returnChoiceLabel(days)) }
+                    )
+                }
+            }
+            Text(
+                RETURN_NOTE,
+                color = TextDisabled,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                modifier = Modifier.padding(top = Space.xs)
+            )
+        }
         OutlinedTextField(
             usesText,
             { usesText = it.filter(Char::isDigit).take(5) },

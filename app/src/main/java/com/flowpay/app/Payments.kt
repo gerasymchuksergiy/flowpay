@@ -1344,6 +1344,34 @@ fun togglePaid(marks: List<PaidMark>, pay: Pay, month: String): List<PaidMark> =
     }
 
 /**
+ * The same mark with what was really charged.
+ *
+ * A tick copies the expense's amount, which is right until the bill is not the
+ * same as last month: a heating-season gas bill, YouTube Premium's 99 → 179 ₴
+ * arriving on each person's own billing date. Then the month's record is only as
+ * true as this correction.
+ */
+fun withMarkAmount(marks: List<PaidMark>, name: String, month: String, amount: Double): List<PaidMark> =
+    if (amount <= 0.0) marks else marks.map {
+        if (it.name == name && it.month == month) it.copy(amount = amount) else it
+    }
+
+/**
+ * Whether a charge differs from the expense enough to be a new price.
+ *
+ * The bar Rocket Money uses for a raise: more than a few hryvnia *and* more than
+ * five per cent. Below it the difference is rounding, a fee, or a rate.
+ */
+fun amountDrifted(planned: Double, charged: Double): Boolean {
+    if (planned <= 0.0 || charged <= 0.0) return false
+    val gap = kotlin.math.abs(charged - planned)
+    return gap >= AMOUNT_DRIFT_MIN && gap / planned >= AMOUNT_DRIFT_SHARE
+}
+
+private const val AMOUNT_DRIFT_MIN = 10.0
+private const val AMOUNT_DRIFT_SHARE = 0.05
+
+/**
  * Moves an expense's marks to its new name.
  *
  * A mark already under the new name for the same month wins, so renaming one

@@ -151,6 +151,8 @@ fun digest(
         addAll(paymentLines(pays, today, holidays, paid))
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
+        // Last: a window closing is worth a line, never the headline.
+        addAll(returnLines(orders, today.toEpochDay()))
     }
     if (news.isEmpty()) return Digest("", emptyList())
 

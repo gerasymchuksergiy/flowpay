@@ -147,6 +147,88 @@ fun trackingSite(order: Order): TrackingSite? {
 /** Just the address of [trackingSite]. */
 fun trackingPageUrl(order: Order): String? = trackingSite(order)?.url
 
+// A Nova Poshta number as people paste it: fourteen digits, sometimes in groups.
+private val SPACED_NP = Regex("""(?<![\d])(?:\d[  ]?){13}\d(?![\d])""")
+private val S10_ANYWHERE = Regex("""\b[A-Z]{2}\d{9}[A-Z]{2}\b""")
+
+/**
+ * A tracking number inside shared or pasted text, or null.
+ *
+ * What arrives from Viber or an SMS is a sentence — «Ваше відправлення 2045 0000
+ * 0000 01 прямує…» — not a number. A Nova Poshta number first, because it is the
+ * one the app can follow; then a postal S10 number. Thirteen-digit Ukrposhta
+ * numbers are not looked for in free text: a phone number with a country code is
+ * twelve or thirteen digits, and a parcel is not worth mistaking one for.
+ */
+fun trackingNumberIn(text: String?): String? {
+    if (text.isNullOrBlank()) return null
+    SPACED_NP.findAll(text).forEach { match ->
+        val digits = match.value.filter { it.isDigit() }
+        if (digits.length == 14) return digits
+    }
+    return S10_ANYWHERE.find(text.uppercase())?.value
+}
+
+/** What a parcel added from its number alone is called until it is renamed. */
+fun parcelNameFor(number: String): String = "Посилка …${number.takeLast(4)}"
+
+// ------------------------------------------------------------ returns
+
+/** The return windows offered on filing. Nought is "not tracking it". */
+val RETURN_CHOICES = listOf(14, 30, 90, 0)
+
+/** Two weeks: the statutory window for a distance purchase in Ukraine. */
+const val RETURN_DAYS_DEFAULT = 14
+
+/** Temu's own policy is ninety days. */
+const val RETURN_DAYS_TEMU = 90
+
+/** Said under the chips, because the law has exceptions the app cannot know about. */
+const val RETURN_NOTE = "Для покупок онлайн закон дає 14 днів, але є винятки — перевір умови магазину."
+
+/**
+ * The window a purchase starts with when it is filed.
+ *
+ * None for a download: once a game key is revealed it is usually not returnable,
+ * and a reminder about it would be noise. Temu's ninety days for Temu; the
+ * statutory fourteen for everything else, including a Black Friday buy — the
+ * consumer service says a «акційний товар поверненню не підлягає» label is unlawful.
+ */
+fun defaultReturnDays(order: Order): Int = when {
+    order.digital -> 0
+    order.url.contains("temu.", ignoreCase = true) -> RETURN_DAYS_TEMU
+    else -> RETURN_DAYS_DEFAULT
+}
+
+fun returnChoiceLabel(days: Int): String = if (days <= 0) "не стежити" else daysLabel(days)
+
+/** Days left to send it back on [today], or null when nothing is tracked or it is over. */
+fun returnDaysLeft(order: Order, today: Long): Int? =
+    order.returnBy.takeIf { it > 0L && it >= today }?.let { (it - today).toInt() }
+
+/** The line on the archived card while the window is open. */
+fun returnLine(order: Order, today: Long): String? {
+    val left = returnDaysLeft(order, today) ?: return null
+    val until = formatDate(java.time.LocalDate.ofEpochDay(order.returnBy))
+    return if (left == 0) "Повернути можна ще сьогодні" else "Повернути можна до $until · ще ${daysLabel(left)}"
+}
+
+/** How close to the end a window has to be before the morning message says so. */
+const val RETURN_WARN_DAYS = 2
+
+/** One line per window about to close, for the morning message. */
+fun returnLines(orders: List<Order>, today: Long): List<String> =
+    orders.mapNotNull { order ->
+        val left = returnDaysLeft(order, today) ?: return@mapNotNull null
+        if (left > RETURN_WARN_DAYS) return@mapNotNull null
+        val whenText = when (left) {
+            0 -> "сьогодні останній день"
+            1 -> "завтра останній день"
+            else -> "ще ${daysLabel(left)}"
+        }
+        "Повернення «${order.name}»: $whenText"
+    }
+
 /** Where the open/shut state of the purchase archive is remembered. */
 const val SECTION_ORDER_ARCHIVE = "orderarchive"
 
