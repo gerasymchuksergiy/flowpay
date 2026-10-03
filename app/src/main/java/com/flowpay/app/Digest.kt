@@ -233,7 +233,16 @@ private fun paymentLines(
 ): List<String> = remindersDue(pays, today, holidays, marks).map { reminder ->
     val amount = amountLabel(reminder.pay.amount, reminder.pay.currency)
     val moved = reminder.movedFrom?.let { " (перенесено з ${dayMonth(it)})" }.orEmpty()
-    "${reminder.pay.name} $amount — ${dueLabel(reminder.daysAway)}$moved"
+    // The last reminder before a free trial turns into a charge says until when it
+    // can still be cancelled. Written here because this, not [reminderText], is
+    // what the morning message actually prints — the first version of this line
+    // went into the other function and never reached the phone.
+    val cancel = reminder.cancelBy
+    if (cancel != null) {
+        "${reminder.pay.name}: безкоштовне скінчується, далі $amount — скасувати до ${dayMonth(cancel)}"
+    } else {
+        "${reminder.pay.name} $amount — ${dueLabel(reminder.daysAway)}$moved"
+    }
 }
 
 /**

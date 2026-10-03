@@ -61,6 +61,26 @@ class NudgeFeaturesTest {
     }
 
     @Test
+    fun `the morning message itself says until when to cancel`() {
+        // The message, not a helper: the first version of this line was written into
+        // a function the digest does not call, and only the APK check caught it.
+        val today = LocalDate.of(2026, 10, 17)
+        val trial = Pay(
+            "YouTube Premium", 179.0, day = 20, warnDays = 3,
+            trialEnd = LocalDate.of(2026, 10, 20).toEpochDay()
+        )
+        val message = digest(
+            wishes = emptyList(),
+            pays = listOf(trial),
+            orders = emptyList(),
+            today = today,
+            usdSellRate = 0.0,
+            income = 0.0
+        )
+        assertTrue(message.body, (message.title + message.body).contains("скасувати до 19 жовтня"))
+    }
+
+    @Test
     fun `an ordinary charge does not talk about cancelling`() {
         val today = LocalDate.of(2026, 10, 19)
         val rent = Pay("Оренда", 11_000.0, day = 20)
