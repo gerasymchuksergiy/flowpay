@@ -19,6 +19,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
 import androidx.lifecycle.Lifecycle
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
 import androidx.glance.appwidget.updateAll
@@ -48,6 +51,8 @@ import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.lazy.LazyRow
@@ -1965,6 +1970,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         // gone there is nothing left worth keeping, and the honest answer is to
         // leave the chrome where it is.
         val barGone = barDown.value && !LocalReducedMotion.current
+        val glass = remember { HazeState() }
         val barHidden by animateFloatAsState(
             if (barGone) barTravel else 0f,
             Motion.spatial(),
@@ -1978,77 +1984,28 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
             containerColor = Color.Transparent,
             contentColor = TextPrimary,
             snackbarHost = { SnackbarHost(notices) },
-            floatingActionButton = {
-                addLabel?.let { label ->
-                    // Collapses to a plus once you scroll. Its full width was
-                    // covering the bottom of whichever card sat under it, three
-                    // separate times; the label is needed once, not always.
-                    ExtendedFloatingActionButton(
-                        onClick = { adding = true },
-                        expanded = !barGone,
-                        containerColor = Accent,
-                        contentColor = AccentInk,
-                        shape = Radius.pill,
-                        icon = { Icon(Icons.Default.Add, null) },
-                        text = { Text(label, fontWeight = Type.medium) }
-                    )
-                }
-            },
+            // No floating button: each screen's "+" sits in its header now. See
+            // [AddButton] for what the floating one used to cover.
             bottomBar = {
-                Column(Modifier.offset { IntOffset(0, barHidden.roundToInt()) }) {
-                    // An edge, because a translucent bar and the list showing
-                    // through it are otherwise one continuous grey.
-                    Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(HairLine))
-                    NavigationBar(
-                        // Translucent rather than a slab: the list keeps running
-                        // underneath, which is what says there is more of it. But
-                        // only just — at 0.82 the rows behind were legible enough to
-                        // read through the tab labels («24 жовтня» across «Бажання»
-                        // on the owner's screenshots), and two layers of text on top
-                        // of each other is noise, not a hint.
-                        containerColor = SurfaceLow.copy(alpha = 0.96f),
-                        tonalElevation = 0.dp
-                    ) {
-                        val tabs = listOf(
-                            Icons.Default.FavoriteBorder to "Бажання",
-                            Icons.Default.SwapVert to "Курс",
-                            Icons.Default.ReceiptLong to "Платежі",
-                            Icons.Default.LocalShipping to "Покупки",
-                            Icons.Default.Insights to "Огляд"
-                        )
-                        tabs.forEachIndexed { index, item ->
-                            NavigationBarItem(
-                                selected = tab == index,
-                                onClick = { tab = index },
-                                icon = { Icon(item.first, item.second) },
-                                label = {
-                                    Text(
-                                        item.second,
-                                        fontSize = Type.navLabelSize,
-                                        letterSpacing = Type.navLabelTracking,
-                                        fontWeight = Type.medium,
-                                        maxLines = 1
-                                    )
-                                },
-                                // Labelling only the active tab makes the row change
-                                // width as you switch, which reads as a glitch.
-                                alwaysShowLabel = true,
-                                colors = NavigationBarItemDefaults.colors(
-                                    indicatorColor = AccentSoft,
-                                    selectedIconColor = Accent,
-                                    selectedTextColor = Accent,
-                                    unselectedIconColor = TextSecondary,
-                                    unselectedTextColor = TextSecondary
-                                )
-                            )
-                        }
-                    }
-                }
+                // Frosted glass, which HANDOFF §12 once ruled out because blur does
+                // nothing below Android 12. The owner's phone is Android 16, the
+                // rows readable through the 0.82 bar were the complaint, and Haze
+                // falls back to a plain tinted bar below 12 — no worse than before.
+                // Decided with the owner on 3 October 2026.
+                FlowPayNavBar(
+                    destinations = NAV_DESTINATIONS,
+                    selected = tab,
+                    modifier = Modifier
+                        .offset { IntOffset(0, barHidden.roundToInt()) }
+                        .hazeEffect(glass, NavGlass)
+                ) { tab = it }
             }
         ) { padding ->
             Column(
                 Modifier
                     .fillMaxSize()
+                    // What the bar's glass blurs: everything the screens draw.
+                    .hazeSource(glass)
                     // Everything but the bottom. The navigation bar is translucent
                     // and the lists run underneath it, so its height is left to
                     // navClearance() inside each list rather than cut out here.
@@ -2160,6 +2117,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                     store = store,
                                     health = line,
                                     onOpenHealth = { healthOpen = true },
+                                    next = nextPayment(stillOwing(pays, paid, today), today, usdSell),
+                                    usdRate = usdSell,
+                                    onOpenTab = { tab = it },
                                     bin = bin,
                                     onRestore = { id -> store.restoreFromBin(id); reload() },
                                     onDropFromBin = { id ->
@@ -2210,48 +2170,29 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
  */
 @Composable
 fun ScreenHeader(
-    kicker: String,
     title: String,
-    subtitle: String? = null,
     trailing: (@Composable () -> Unit)? = null,
     /** Zero where the list around it already supplies the screen margin. */
     inset: Dp = Space.screen
 ) {
-    // Overline, title and subtitle form one group, at most 8dp apart, followed by a
-    // 32dp break. That break is what gives the screen a readable shape.
-    Column(
+    // The tab's own name and the screen's actions, on one line. The lime overline
+    // and the sentence under the title explained the app to its own owner on every
+    // visit, and took a seventh of the screen to do it.
+    Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = inset, end = inset, top = Space.md, bottom = Space.lg)
+            .padding(start = inset, end = inset, top = Space.lg, bottom = Space.lg),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                kicker,
-                color = Accent,
-                fontSize = Type.overlineSize,
-                fontWeight = Type.strong,
-                letterSpacing = Type.overlineTracking
-            )
-            Spacer(Modifier.weight(1f))
-            trailing?.invoke()
-        }
-        Spacer(Modifier.height(Space.sm))
         Text(
             title,
+            Modifier.weight(1f),
             fontSize = Type.screenTitleSize,
             lineHeight = Type.screenTitleLine,
             letterSpacing = Type.screenTitleTracking,
             fontWeight = Type.strong
         )
-        subtitle?.let {
-            Text(
-                it,
-                color = TextSecondary,
-                fontSize = Type.bodySize,
-                lineHeight = Type.bodyLine,
-                modifier = Modifier.padding(top = Space.xs)
-            )
-        }
+        trailing?.invoke()
     }
 }
 
@@ -2419,6 +2360,7 @@ fun WishlistScreen(
                             }
                         }
                         refreshAction()
+                        AddButton("Додати бажання") { setAdding(true) }
                     }
                 }
                 // The same actions plus the figure, for the bar the large title
@@ -2469,9 +2411,7 @@ fun WishlistScreen(
                         // bar measures to know when to take over.
                         item(span = { GridItemSpan(maxLineSpan) }) {
                             ScreenHeader(
-                                kicker = "FLOWPAY",
-                                title = "Мої бажання",
-                                subtitle = "Ціна, ціль та історія в одному місці",
+                                title = "Бажання",
                                 // The grid already supplies the screen margin.
                                 inset = 0.dp,
                                 trailing = headerActions
@@ -2538,7 +2478,7 @@ fun WishlistScreen(
                                         Spacer(Modifier.width(Space.sm))
                                         Text(
                                             sort.label,
-                                            color = Accent,
+                                            color = TextPrimary,
                                             fontSize = Type.captionSize,
                                             fontWeight = Type.medium
                                         )
@@ -2617,7 +2557,7 @@ fun WishlistScreen(
                             }
                         }
                     }
-                    CollapsingTitle("Мої бажання", gridState, trailing = barActions)
+                    CollapsingTitle("Бажання", gridState, trailing = barActions)
                 }
             }
         }
@@ -2759,13 +2699,15 @@ private fun CategoryChip(label: String, amount: String, active: Boolean, onClick
     Column(
         Modifier
             .clip(Radius.pill)
-            .background(if (active) Accent else SurfaceHigh)
+            // Chosen is a lighter neutral with a white label, like the view switch
+            // on Платежі: a filter is never the subject of the screen.
+            .background(if (active) HairLine else SurfaceBase)
             .clickable(onClick = onClick)
             .padding(horizontal = Space.lg, vertical = Space.sm)
     ) {
         Text(
             label,
-            color = if (active) AccentInk else TextPrimary,
+            color = if (active) TextPrimary else TextSecondary,
             fontSize = Type.captionSize,
             fontWeight = Type.medium,
             maxLines = 1
@@ -2774,7 +2716,7 @@ private fun CategoryChip(label: String, amount: String, active: Boolean, onClick
             amount,
             // Two thirds opacity rather than a second colour: on the lime chip any
             // muted grey from the palette turns muddy against it.
-            color = if (active) AccentInk.copy(alpha = 0.7f) else TextSecondary,
+            color = if (active) TextSecondary else TextDisabled,
             fontSize = Type.overlineSize,
             maxLines = 1,
             style = Tabular
@@ -4879,15 +4821,17 @@ fun SharedTransitionScope.WishCard(
             // Withheld while the reading is doubtful, because a fall computed from a
             // price the shop no longer states is a claim about nothing.
             if (wish.history.size > 1 && change <= -1.0 && !stale && !held) {
+                // A dark chip with lime figures rather than a lime chip: on a grid
+                // of falling prices the lime blocks were most of the screen's colour.
                 Text(
                     signedPercent(change, 0),
-                    color = AccentInk,
+                    color = Accent,
                     fontSize = Type.captionSize,
                     fontWeight = Type.strong,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(Space.sm)
-                        .background(Accent, Radius.pill)
+                        .background(AppBackground.copy(alpha = 0.82f), Radius.pill)
                         .padding(horizontal = Space.sm, vertical = 2.dp),
                     style = Tabular
                 )
@@ -5053,13 +4997,18 @@ fun CalculatorScreen(store: Store) {
             // said MONOBANK, including on the days the rate was the NBU's.
             item {
                 ScreenHeader(
-                    when (rate.source) {
-                        SOURCE_MONOBANK -> "MONOBANK"
-                        SOURCE_NBU -> "НБУ"
-                        else -> "КУРС"
-                    },
-                    "Курс і суми",
-                    "Конвертація валют та швидкі розрахунки"
+                    "Курс",
+                    trailing = {
+                        Text(
+                            when (rate.source) {
+                                SOURCE_MONOBANK -> "Monobank"
+                                SOURCE_NBU -> "НБУ"
+                                else -> ""
+                            },
+                            color = TextSecondary,
+                            fontSize = Type.captionSize
+                        )
+                    }
                 )
             }
             item {
@@ -5266,7 +5215,7 @@ fun CalculatorScreen(store: Store) {
                 }
             }
         }
-        CollapsingTitle("Курс і суми", listState)
+        CollapsingTitle("Курс", listState)
     }
     if (askingTarget) {
         AlertDialog(
@@ -5417,11 +5366,17 @@ fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {
         Text(
             committedHeadline(bar),
-            fontSize = Type.sectionSize,
-            lineHeight = Type.sectionLine,
+            // One line: the label and the figure are one sentence, and at the hero
+            // size «Лишається 27 891,06 ₴» broke in two.
+            fontSize = 22.sp,
+            lineHeight = 28.sp,
+            letterSpacing = (-0.4).sp,
+            maxLines = 1,
             fontWeight = Type.strong,
             color = when (bar.state) {
-                CommittedState.KNOWN -> Accent
+                // White, not lime: lime text this large haloes on near-black, and
+                // the lime on this screen belongs to the hero panel above.
+                CommittedState.KNOWN -> TextPrimary
                 CommittedState.OVERSPENT -> Negative
                 CommittedState.UNKNOWN -> TextSecondary
             },
@@ -5456,7 +5411,7 @@ fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
                         .fillMaxWidth(bar.share.coerceIn(0f, 1f))
                         .height(height)
                         .background(
-                            if (bar.state == CommittedState.OVERSPENT) Negative else Accent,
+                            if (bar.state == CommittedState.OVERSPENT) Negative else TextPrimary,
                             Radius.pill
                         )
                 )
@@ -5521,7 +5476,7 @@ fun PaymentsScreen(
             contentPadding = PaddingValues(bottom = navClearance() + Space.fabClearance)
         ) {
             // Item zero is the header alone: that is the block the compact bar watches.
-            item { ScreenHeader("ЩОМІСЯЦЯ", "Постійні витрати", "Оренда, комуналка, зв'язок і підписки") }
+            item { ScreenHeader("Платежі", trailing = { AddButton("Додати витрату") { setAdding(true) } }) }
             // Two halves of one screen: what is coming, and what already went. The
             // second used to live at the bottom of Огляд, which is not where anyone
             // looks for "скільки я заплатив за вересень".
@@ -5575,19 +5530,17 @@ fun PaymentsScreen(
                                     "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
                                 else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
                             },
-                            muted = next == null
+                            muted = next == null,
+                            // The next thirty days belong to the next payment's panel —
+                            // one thought, "what leaves and when", in one block. On the
+                            // page beneath it the strip was an island between two cards.
+                            footer = if (items.isEmpty()) null else {
+                                {
+                                    DaysStrip(days = 30, marked = paymentOffsets(items, today), onLime = true)
+                                }
+                            }
                         )
-                        if (items.isNotEmpty()) {
-                            Spacer(Modifier.height(Space.md))
-                            DaysStrip(days = 30, marked = paymentOffsets(items, today))
-                            Spacer(Modifier.height(Space.xs))
-                            Text(
-                                "Списання у найближчі 30 днів",
-                                color = TextSecondary,
-                                fontSize = Type.captionSize
-                            )
-                        }
-                        Spacer(Modifier.height(Space.md))
+                        Spacer(Modifier.height(Space.lg))
                         Card(
                             modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
                             colors = CardDefaults.cardColors(containerColor = SurfaceBase),
@@ -5681,9 +5634,33 @@ fun PaymentsScreen(
                 paymentGroups(items, today).forEach { group ->
                     item(key = group.date.toString()) {
                         val isToday = group.date == today
+                        // The date is the group's label, above it, the way a calendar
+                        // writes a day over its entries — not lime text inside a box.
+                        Column(
+                            Modifier.padding(horizontal = Space.screen).padding(top = Space.md, bottom = Space.xs)
+                        ) {
+                            Text(
+                                if (isToday) "Сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
+                                color = if (isToday) TextPrimary else TextSecondary,
+                                fontSize = Type.captionSize,
+                                fontWeight = Type.medium
+                            )
+                            // A day of the month is a lie four or five times a year.
+                            // When the charge lands on a weekend or a holiday the row
+                            // says so and names the day the money actually has to be
+                            // there by — which is the day the reminder already counts to.
+                            paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
+                                Text(
+                                    note,
+                                    color = TextDisabled,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                        }
                         Card(
                             Modifier
-                                .padding(horizontal = Space.screen, vertical = Space.xs)
+                                .padding(horizontal = Space.screen)
                                 .fillMaxWidth()
                                 // The edge on every one of them, including today's
                                 // tinted card. The timeline was the one run of cards
@@ -5697,25 +5674,7 @@ fun PaymentsScreen(
                             ),
                             shape = Radius.md
                         ) {
-                            Column(Modifier.padding(Space.lg)) {
-                                Text(
-                                    if (isToday) "сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
-                                    color = Accent,
-                                    fontSize = Type.captionSize,
-                                    fontWeight = Type.medium
-                                )
-                                // A day of the month is a lie four or five times a year.
-                                // When the charge lands on a weekend or a holiday the row
-                                // says so and names the day the money actually has to be
-                                // there by — which is the day the reminder already counts to.
-                                paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
-                                    Text(
-                                        note,
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize,
-                                        lineHeight = Type.captionLine
-                                    )
-                                }
+                            Column(Modifier.padding(horizontal = Space.lg, vertical = Space.xs)) {
                                 group.positions.forEach { position ->
                                     val pay = items[position]
                                     Row(
@@ -5945,7 +5904,7 @@ fun PaymentsScreen(
                 }
             }
         }
-        CollapsingTitle("Постійні витрати", listState)
+        CollapsingTitle("Платежі", listState, trailing = { AddButton("Додати витрату") { setAdding(true) } })
     }
     if (adding) AddPaymentSheet({ setAdding(false) }) {
         save(items + it)
@@ -6172,8 +6131,13 @@ fun OrdersScreen(
             // Item zero is the header alone: that is the block the compact bar watches.
             item {
                 ScreenHeader(
-                    "ДОСТАВКА", "Мої покупки", "Вставте посилання — решту FlowPay заповнить сам",
-                    trailing = checkAction
+                    "Покупки",
+                    trailing = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            checkAction()
+                            AddButton("Додати покупку") { setAdding(true) }
+                        }
+                    }
                 )
             }
             message?.let { text ->
@@ -6197,236 +6161,20 @@ fun OrdersScreen(
                     }
                 }
             }
-            items(open, key = { it.id }) { order ->
-                Card(
-                    Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth(),
-                    shape = Radius.md
-                ) {
-                    // Only this block opens the parcel, not the whole card. The
-                    // rail underneath it sets the stage by tapping a stop, and the
-                    // row below that carries four controls — a card-wide target
-                    // would sit under all of them, and every correction of a stage
-                    // would be a race between two handlers on the same pixel.
-                    Row(
-                        Modifier
-                            .clickable { setOpened(order.id) }
-                            .padding(Space.lg)
-                    ) {
-                        AsyncImage(
-                            order.image, order.name,
-                            Modifier.size(72.dp).background(SurfaceRaised, Radius.sm),
-                            contentScale = ContentScale.Crop
-                        )
-                        Spacer(Modifier.width(Space.md))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                orderOverline(order).uppercase(),
-                                color = Accent,
-                                fontSize = Type.overlineSize,
-                                fontWeight = Type.strong,
-                                letterSpacing = Type.overlineTracking
-                            )
-                            Spacer(Modifier.height(Space.xs))
-                            Text(
-                                order.name,
-                                fontSize = Type.cardTitleSize,
-                                lineHeight = Type.cardTitleLine,
-                                fontWeight = Type.medium,
-                                maxLines = 2
-                            )
-                            if (order.price > 0) {
-                                Text(
-                                    money(order.price),
-                                    fontWeight = Type.strong,
-                                    fontSize = Type.bodySize,
-                                    style = Tabular
-                                )
-                            }
-                            if (order.tracking.isNotBlank()) {
-                                Text(
-                                    "Трек: ${order.tracking}",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize
-                                )
-                            }
-                            if (order.statusDetail.isNotBlank()) {
-                                Text(
-                                    order.statusDetail,
-                                    color = TextPrimary,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine,
-                                    modifier = Modifier.padding(top = Space.xs)
-                                )
-                            }
-                            if (order.problem) {
-                                Text(
-                                    problemNote(order.statusCode),
-                                    color = Negative,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine,
-                                    modifier = Modifier.padding(top = Space.xs)
-                                )
-                            }
-                            if (order.paidStorageFrom > 0) {
-                                val left = freeStorageDaysLeft(
-                                    LocalDate.ofEpochDay(order.paidStorageFrom),
-                                    LocalDate.now()
-                                ) ?: 0
-                                val pressing = left <= 2
-                                Row(
-                                    Modifier.fillMaxWidth().padding(top = Space.sm),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        "Безкоштовне зберігання",
-                                        color = TextSecondary,
-                                        fontSize = Type.captionSize
-                                    )
-                                    Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
-                                        DottedLeader(Modifier.fillMaxWidth())
-                                    }
-                                    Text(
-                                        if (left > 0) daysLabel(left) else "закінчилось",
-                                        color = if (pressing) Negative else Accent,
-                                        fontSize = Type.captionSize,
-                                        fontWeight = Type.strong
-                                    )
-                                }
-                                Text(
-                                    if (left > 0) {
-                                        "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}"
-                                    } else {
-                                        "платне з ${formatDate(LocalDate.ofEpochDay(order.paidStorageFrom))}, вже йде"
-                                    },
-                                    color = TextDisabled,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine
-                                )
-                            }
-                            if (order.scheduledDelivery > 0 && order.status != RECEIVED) {
-                                Text(
-                                    "Очікується ${formatDate(LocalDate.ofEpochDay(order.scheduledDelivery))}",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize
-                                )
-                            }
-                            if (order.amountToPay > 0) {
-                                Text(
-                                    "До сплати при отриманні ${money(order.amountToPay)}",
-                                    color = TextPrimary,
-                                    fontSize = Type.captionSize
-                                )
-                            }
-                            if (order.checkedAt > 0) {
-                                // Two lines, because this card used to carry one —
-                                // «перевірено 18:11» — and that is when the app
-                                // asked, not when the parcel moved. A parcel that
-                                // had sat still since yesterday looked, from that
-                                // line, exactly like one that had just arrived
-                                // somewhere. The scan goes first and in the
-                                // brighter ink, because it is the one that is about
-                                // the parcel.
-                                Text(
-                                    "$SCAN_LABEL: ${scanValue(order.details.scannedAt, today)}",
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine,
-                                    modifier = Modifier.padding(top = Space.xs)
-                                )
-                                Text(
-                                    "$ASKED_LABEL: ${askedValue(order.checkedAt)}",
-                                    color = TextDisabled,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine
-                                )
-                            } else {
-                                untrackedNote(order)?.let { note ->
-                                    Text(
-                                        note,
-                                        color = TextDisabled,
-                                        fontSize = Type.captionSize,
-                                        lineHeight = Type.captionLine,
-                                        modifier = Modifier.padding(top = Space.xs)
-                                    )
-                                }
-                            }
-                        }
-                        // The one thing on the card that says the block is a door.
-                        // Top aligned, so it sits beside the name rather than
-                        // floating in the middle of a card whose height depends on
-                        // how much the carrier happened to say.
-                        Icon(
-                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                            "Детальніше про посилку",
-                            Modifier.padding(start = Space.xs),
-                            tint = TextDisabled
-                        )
-                    }
-                    // A download has nowhere to travel, so it has no rail to draw.
-                    if (!order.digital) {
-                        StageRail(
-                            stages = PARCEL_STAGES,
-                            current = order.status,
-                            modifier = Modifier.padding(horizontal = Space.lg),
-                            label = { stageLabel(it, order.statusCode) }
-                        ) { status ->
-                            update { now -> now.map { if (it.id == order.id) it.copy(status = status) else it } }
-                        }
-                    }
-                    // Offered at every stage, not only once the rail reaches its last
-                    // stop: a parcel another post carries, or a game that never
-                    // travels, would otherwise have no way out of «Замовлено» at all.
-                    // Lime only when closing is the thing left to do — on a parcel
-                    // still on its way it is a quiet offer, because the lime on this
-                    // screen is already spent on the action button.
-                    CloseOrderButton(
-                        order,
-                        Modifier.padding(horizontal = Space.lg).padding(top = Space.sm)
-                    ) { closing = order }
-                    // Left aligned for the same reason as the wish card: the floating
-                    // action button sits over the bottom right corner.
-                    Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
-                        if (order.url.isNotBlank()) {
-                            TextButton({ openLink(context, order.url) }) {
-                                Text("До магазину ↗")
-                            }
-                        }
-                        IconButton({ tracking = order }) {
-                            Icon(Icons.Default.Edit, if (order.digital) "Змінити покупку" else "Трек-номер")
-                        }
-                        // The carrier's own page for a number the app cannot read, in
-                        // the place the check button would be — that button only ever
-                        // sat there greyed out on these.
-                        trackingSite(order)?.let { site ->
-                            IconButton({ openLink(context, site.url) }) {
-                                Icon(Icons.Default.TravelExplore, "Відстежити на сайті ${site.name}")
-                            }
-                        }
-                        if (isAutoTracked(order)) IconButton(
-                            onClick = {
-                                scope.launch {
-                                    val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
-                                    message = if (status == null) {
-                                        "Не вдалося отримати статус"
-                                    } else {
-                                        update { now ->
-                                            now.map {
-                                                if (it.id == order.id) {
-                                                    applyStatus(it, status, System.currentTimeMillis())
-                                                } else {
-                                                    it
-                                                }
-                                            }
-                                        }
-                                        status.text
-                                    }
-                                }
-                            }
-                        ) { Icon(Icons.Default.Sync, "Перевірити статус") }
-                        IconButton({ onDelete(order) }) { Icon(Icons.Default.DeleteOutline, "Видалити") }
-                        Spacer(Modifier.weight(1f))
-                    }
-                }
+            // One container for everything still on its way, a row per purchase.
+            // A parcel used to be a card a third of the screen tall — a photo, the
+            // whole four-stop rail with its labels and four buttons — so two fitted
+            // on a screen. The rail and the buttons live on the parcel's own page;
+            // the row says where it is in four segments and opens that page.
+            itemsIndexed(open, key = { _, order -> order.id }) { index, order ->
+                ParcelRow(
+                    order = order,
+                    today = today,
+                    first = index == 0,
+                    last = index == open.lastIndex,
+                    onOpen = { setOpened(order.id) },
+                    onClose = { closing = order }
+                )
             }
             if (archived.isNotEmpty()) {
                 item {
@@ -6467,7 +6215,16 @@ fun OrdersScreen(
                 }
             }
         }
-        CollapsingTitle("Мої покупки", listState, trailing = checkAction)
+        CollapsingTitle(
+            "Покупки",
+            listState,
+            trailing = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    checkAction()
+                    AddButton("Додати покупку") { setAdding(true) }
+                }
+            }
+        )
     }
     }
     }
@@ -7213,6 +6970,190 @@ fun ChargedDialog(line: MonthLine, close: () -> Unit, save: (Double, Boolean) ->
 }
 
 /**
+ * One figure from another tab, and the way into it.
+ *
+ * The label above, the figure large, one line of context — the same order every
+ * tile on the overview reads in, so four of them scan as a set.
+ */
+@Composable
+fun OverviewTile(
+    label: String,
+    value: String,
+    detail: String,
+    modifier: Modifier = Modifier,
+    alarm: Boolean = false,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier
+            .clip(Radius.md)
+            .background(SurfaceBase)
+            .clickable(onClick = onClick)
+            .padding(Space.lg)
+    ) {
+        Text(label, color = TextSecondary, fontSize = Type.captionSize, maxLines = 1)
+        Text(
+            value,
+            color = if (alarm) Negative else TextPrimary,
+            fontSize = 22.sp,
+            lineHeight = 28.sp,
+            fontWeight = Type.strong,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = Tabular,
+            modifier = Modifier.padding(top = Space.xs)
+        )
+        Text(
+            detail,
+            color = TextDisabled,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+/**
+ * One purchase in the list: what it is, where it is, and the way into its page.
+ *
+ * Rows of one container rather than cards: the corners round only at the ends of
+ * the group, and a hairline separates the rows. The stage is four segments beside
+ * a word — the same four stops as the rail on the page, small enough to read at
+ * a glance. A download has no segments, because it has nowhere to travel.
+ */
+@Composable
+fun ParcelRow(
+    order: Order,
+    today: LocalDate,
+    first: Boolean,
+    last: Boolean,
+    onOpen: () -> Unit,
+    onClose: () -> Unit
+) {
+    val corner = Radius.card
+    val shape = RoundedCornerShape(
+        topStart = if (first) corner else 0.dp,
+        topEnd = if (first) corner else 0.dp,
+        bottomStart = if (last) corner else 0.dp,
+        bottomEnd = if (last) corner else 0.dp
+    )
+    Column(
+        Modifier
+            .padding(horizontal = Space.screen)
+            .fillMaxWidth()
+            .clip(shape)
+            .background(SurfaceBase)
+    ) {
+        if (!first) Box(Modifier.padding(start = 84.dp).fillMaxWidth().height(Dp.Hairline).background(HairLine))
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onOpen)
+                .padding(horizontal = Space.lg, vertical = Space.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier.size(56.dp).clip(Radius.sm).background(SurfaceRaised),
+                contentAlignment = Alignment.Center
+            ) {
+                if (order.image.isNotBlank()) {
+                    AsyncImage(order.image, order.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                } else {
+                    Icon(
+                        if (order.digital) Icons.Default.SportsEsports else Icons.Default.Inventory2,
+                        null,
+                        tint = TextSecondary
+                    )
+                }
+            }
+            Spacer(Modifier.width(Space.md))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier.size(6.dp).background(
+                            when {
+                                order.problem -> Negative
+                                closeActionDue(order) -> Accent
+                                else -> TextSecondary
+                            },
+                            CircleShape
+                        )
+                    )
+                    Text(
+                        "  ${stageLabel(orderOverline(order), order.statusCode)}",
+                        color = if (order.problem) Negative else TextSecondary,
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.medium
+                    )
+                    if (!order.digital) {
+                        Spacer(Modifier.width(Space.sm))
+                        StageSegments(PARCEL_STAGES.indexOf(order.status).coerceAtLeast(0))
+                    }
+                }
+                Text(
+                    order.name,
+                    fontSize = Type.bodySize,
+                    lineHeight = Type.bodyLine,
+                    fontWeight = Type.medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+                val tail = listOfNotNull(
+                    money(order.price).takeIf { order.price > 0 },
+                    order.tracking.takeIf { it.isNotBlank() }?.let { "трек …${it.takeLast(4)}" }
+                ).joinToString(" · ")
+                if (tail.isNotBlank()) {
+                    Text(tail, color = TextSecondary, fontSize = Type.captionSize, style = Tabular)
+                }
+                // The one fact in the list that costs money to miss.
+                if (order.paidStorageFrom > 0) {
+                    val left = freeStorageDaysLeft(LocalDate.ofEpochDay(order.paidStorageFrom), today) ?: 0
+                    Text(
+                        if (left > 0) "Безкоштовне зберігання ще ${daysLabel(left)}" else "Зберігання вже платне",
+                        color = if (left <= 2) Negative else TextSecondary,
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.medium
+                    )
+                }
+            }
+            Icon(
+                Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                "Детальніше",
+                tint = TextDisabled
+            )
+        }
+        // Only when filing it is the thing left to do: in your hands, or a download.
+        // A parcel still on its way is closed from its page.
+        if (closeActionDue(order)) {
+            TextButton(
+                onClose,
+                Modifier.padding(start = 76.dp).padding(bottom = Space.xs)
+            ) {
+                Icon(Icons.Default.TaskAlt, null, Modifier.size(18.dp), tint = Accent)
+                Text("  ${closeActionLabel(order)}", color = Accent)
+            }
+        }
+    }
+}
+
+/** Four short bars, filled up to the stage the parcel has reached. */
+@Composable
+fun StageSegments(reached: Int, modifier: Modifier = Modifier) {
+    Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        repeat(PARCEL_STAGES.size) { index ->
+            Box(
+                Modifier
+                    .width(12.dp)
+                    .height(4.dp)
+                    .background(if (index <= reached) TextPrimary else HairLine, Radius.pill)
+            )
+        }
+    }
+}
+
+/**
  * The button that files a purchase away, at whatever stage it is.
  *
  * See [closeActionLabel] and [closeActionDue] for the wording and the colour; this
@@ -7440,6 +7381,12 @@ fun SettingsScreen(
     /** What the background passes last did. Null until it has been read. */
     health: HealthLine?,
     onOpenHealth: () -> Unit,
+    /** The next bill still owed, for its tile. */
+    next: NextPayment?,
+    /** The dollar sell rate, for its tile. Nought when none has loaded. */
+    usdRate: Double,
+    /** A tile was tapped: show the tab it summarises. */
+    onOpenTab: (Int) -> Unit,
     bin: List<BinEntry>,
     onRestore: (String) -> Unit,
     onDropFromBin: (String) -> Unit,
@@ -7511,7 +7458,7 @@ fun SettingsScreen(
     Box {
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
             // Item zero is the header alone: that is the block the compact bar watches.
-            item { ScreenHeader("FLOWPAY", "Огляд", "Скільки відкладено, що в дорозі, що лишається") }
+            item { ScreenHeader("Огляд") }
             // Waiting, not interrupting. It sits above the figures because it is
             // the one thing on this screen that is only here this month.
             recap?.let { deck ->
@@ -7527,36 +7474,85 @@ fun SettingsScreen(
             }
             item {
                 Column(Modifier.padding(horizontal = Space.screen)) {
-                    // The one loud block on this screen, with the ring reading the same
-                    // number a second way.
+                    // What is free until the month ends, with the standing costs as the
+                    // bar inside it — the question this screen is opened with. The
+                    // savings figure used to hold this panel, and on a phone that had
+                    // saved nothing yet the loudest thing here said «0 ₴», «0%» and an
+                    // empty ring: three ways of saying nothing.
+                    val bar = committedOf(
+                        Budget(summary.income, summary.monthlyExpenses, summary.freeCash, summary.overspent, summary.budgetUnknown)
+                    )
                     HeroPanel(
-                        label = "Відкладено на бажання",
-                        value = money(summary.savedTotal),
-                        caption = buildList {
-                            if (summary.wishTotal > 0) {
-                                add("з ${money(summary.wishTotal)} на ${positionsAfterNa(summary.wishCount)}")
-                            }
-                            if (summary.readyCount > 0) add("готових ${summary.readyCount}")
-                            summary.monthsToFundAll?.takeIf { it > 0 }?.let {
-                                add("все разом ${monthsLabel(it)}")
-                            }
-                        }.joinToString(" · ").ifBlank { null },
-                        muted = summary.savedTotal <= 0,
-                        trailing = if (summary.wishTotal > 0) {
+                        label = when {
+                            summary.budgetUnknown -> "Вкажіть дохід на Платежах"
+                            summary.overspent -> "Не сходиться цього місяця"
+                            else -> "Вільно до кінця місяця"
+                        },
+                        value = if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash),
+                        caption = committedDetail(bar),
+                        muted = summary.budgetUnknown,
+                        footer = if (summary.budgetUnknown) null else {
                             {
-                                ProgressRing(summary.savedProgress, diameter = 84.dp, stroke = 9.dp) {
-                                    Text(
-                                        "${(summary.savedProgress * 100).toInt()}%",
-                                        color = AccentInk,
-                                        fontSize = Type.captionSize,
-                                        fontWeight = Type.strong
+                                Box(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .height(8.dp)
+                                        .background(AccentInk.copy(alpha = 0.18f), Radius.pill)
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .fillMaxWidth(bar.share.coerceIn(0f, 1f))
+                                            .height(8.dp)
+                                            .background(AccentInk, Radius.pill)
                                     )
                                 }
                             }
-                        } else {
-                            null
                         }
                     )
+
+                    // Four tiles, each the one figure its own tab is about, each a door
+                    // into that tab. Bento rather than a column of rows: the four
+                    // answers sit where the eye can take them in one look.
+                    Spacer(Modifier.height(Space.md))
+                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                        OverviewTile(
+                            "Відкладено",
+                            money(summary.savedTotal),
+                            if (summary.wishTotal > 0) "${(summary.savedProgress * 100).toInt()}% з ${money(summary.wishTotal)}"
+                            else "бажань ще немає",
+                            Modifier.weight(1f).fillMaxHeight()
+                        ) { onOpenTab(TAB_WISHES) }
+                        OverviewTile(
+                            "Посилки",
+                            when {
+                                summary.parcelsAtBranch > 0 -> parcelsLabel(summary.parcelsAtBranch)
+                                summary.parcelsMoving > 0 -> parcelsLabel(summary.parcelsMoving)
+                                else -> "—"
+                            },
+                            when {
+                                summary.parcelsAtBranch > 0 -> "чекають на відділенні"
+                                summary.parcelsMoving > 0 -> "у дорозі"
+                                else -> "нічого не їде"
+                            },
+                            Modifier.weight(1f).fillMaxHeight(),
+                            alarm = summary.parcelsAtBranch > 0
+                        ) { onOpenTab(TAB_ORDERS) }
+                    }
+                    Spacer(Modifier.height(Space.md))
+                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                        OverviewTile(
+                            "Курс долара",
+                            if (usdRate > 0) rateFigure(usdRate) else "—",
+                            "продаж, ₴ за $1",
+                            Modifier.weight(1f).fillMaxHeight()
+                        ) { onOpenTab(TAB_RATE) }
+                        OverviewTile(
+                            "Наступний платіж",
+                            next?.let { money(it.total.total) } ?: "—",
+                            next?.let { "${dayMonth(it.date)} · ${dueSummary(it.items)}" } ?: "усе сплачено",
+                            Modifier.weight(1f).fillMaxHeight()
+                        ) { onOpenTab(TAB_PAYMENTS) }
+                    }
 
                     if (summary.plansConflict) {
                         Spacer(Modifier.height(Space.md))
@@ -7615,7 +7611,9 @@ fun SettingsScreen(
                                     lineHeight = Type.sectionLine,
                                     fontWeight = Type.strong,
                                     color = when {
-                                        moved.change < 0 -> Accent
+                                        // White, not lime: the lime on this screen is
+                                        // the hero panel's. A rise keeps its warning red.
+                                        moved.change < 0 -> TextPrimary
                                         moved.change > 0 -> Negative
                                         else -> TextPrimary
                                     },
@@ -7689,46 +7687,8 @@ fun SettingsScreen(
                         }
                     }
 
-                    Spacer(Modifier.height(Space.md))
-                    // Three figures and their targets in the height one card used to take,
-                    // with the rings restating them. This density is what the reference
-                    // gets right and a column of single-figure cards does not.
-                    StatStrip(
-                        columns = listOf(
-                            StatColumn(
-                                Icons.Default.ReceiptLong,
-                                "Витрати за місяць",
-                                money(summary.monthlyExpenses),
-                                summary.income.takeIf { it > 0 }?.let { money(it) }
-                            ),
-                            StatColumn(
-                                Icons.Default.Savings,
-                                if (summary.overspent) "Не сходиться" else "Вільно",
-                                if (summary.budgetUnknown) "—" else money(summary.freeCash)
-                            ),
-                            StatColumn(
-                                Icons.Default.Flag,
-                                "Плани на місяць",
-                                money(summary.plannedMonthly),
-                                summary.freeCash.takeIf { !summary.budgetUnknown && it > 0 }
-                                    ?.let { money(it) }
-                            )
-                        ),
-                        rings = listOf(
-                            summary.savedProgress,
-                            if (summary.income > 0) {
-                                (summary.monthlyExpenses / summary.income).toFloat().coerceIn(0f, 1f)
-                            } else {
-                                0f
-                            },
-                            if (summary.freeCash > 0) {
-                                (summary.plannedMonthly / summary.freeCash).toFloat().coerceIn(0f, 1f)
-                            } else {
-                                0f
-                            }
-                        )
-                    )
-
+                    // The three rings that restated these figures are gone: they
+                    // differed only in how see-through the lime was, and had no labels.
                     Spacer(Modifier.height(Space.lg))
                     Card(
                         Modifier.fillMaxWidth().litEdge(Radius.lg),

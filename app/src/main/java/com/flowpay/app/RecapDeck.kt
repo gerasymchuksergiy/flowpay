@@ -236,7 +236,7 @@ fun RecapInvite(recap: Recap, modifier: Modifier = Modifier, onOpen: () -> Unit)
             Column(Modifier.weight(1f)) {
                 Text(
                     "МІСЯЦЬ ГОТОВИЙ",
-                    color = Accent,
+                    color = TextSecondary,
                     fontSize = Type.overlineSize,
                     letterSpacing = Type.overlineTracking,
                     fontWeight = Type.medium

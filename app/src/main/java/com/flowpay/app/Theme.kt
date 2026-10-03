@@ -58,14 +58,19 @@ import androidx.compose.ui.unit.sp
 // Surfaces, darkest to lightest, each tinted slightly green so nothing fights the lime.
 val AppBackground = Color(0xff0a0b09)
 val SurfaceLow = Color(0xff121410)
-val SurfaceBase = Color(0xff161814)
-val SurfaceRaised = Color(0xff1e211b)
-val SurfaceHigh = Color(0xff22241e)
+// Redesign «Лайм 2.0», October 2026: one tone for a group container and one for
+// anything raised out of it. Raised and High were two greys a step apart, exactly
+// the "almost the same" pair this file argues against.
+val SurfaceBase = Color(0xff131510)
+val SurfaceRaised = Color(0xff1c1f19)
+val SurfaceHigh = Color(0xff1c1f19)
 
 // Text. Three live levels plus one for absent values.
 val TextPrimary = Color(0xfff1f3ec)
 val TextSecondary = Color(0xff9b9d96)
-val TextDisabled = Color(0xff5c5f56)
+// Was #5c5f56, which is 2.75:1 on a container — and it set text people had to
+// read. #83867c clears 4.5:1 on every surface here, which is the floor for text.
+val TextDisabled = Color(0xff83867c)
 
 /**
  * One accent, one tinted container for anything secondary, one alarm colour.
@@ -182,7 +187,7 @@ object Space {
      * Scaffold insets account for the navigation bar but not for the button, so
      * without this the last row scrolls underneath it and cannot be reached.
      */
-    val fabClearance = 96.dp
+    val fabClearance = 16.dp
 
     /**
      * The navigation bar's own height, above whatever the system reserves below it.
@@ -191,7 +196,7 @@ object Space {
      * this for us any more: a list has to add it to its own bottom padding or its
      * last row ends up behind the tabs.
      */
-    val navBar = 80.dp
+    val navBar = 64.dp
 
     /**
      * Height of the compact bar the large title shrinks into, and of the
@@ -266,12 +271,25 @@ fun Modifier.litEdge(shape: Shape, strength: Float = LitEdgeStrength): Modifier 
  * as greasy rather than strong.
  */
 object Type {
+    /**
+     * The one figure a screen exists for, on its lime panel.
+     *
+     * It was 28sp under a 30sp screen title: the most important number on the
+     * screen lost to the screen's own name. The kopecks ride at half size, so the
+     * hryvnia — the part a person actually reads — carries the weight.
+     */
+    val displaySize = 52.sp
+    val displayLine = 56.sp
+    val displayTracking = (-1.8).sp
+    val displayMinorSize = 26.sp
+
     val heroSize = 28.sp
     val heroLine = 32.sp
     val heroTracking = (-1.0).sp
 
-    val screenTitleSize = 30.sp
-    val screenTitleLine = 34.sp
+    // A step below the display figure, so the two can never be confused.
+    val screenTitleSize = 26.sp
+    val screenTitleLine = 30.sp
     val screenTitleTracking = (-0.6).sp
 
     val sectionSize = 20.sp
@@ -289,7 +307,7 @@ object Type {
     val overlineSize = 11.sp
     val overlineTracking = 1.2.sp
 
-    val navLabelSize = 10.sp
+    val navLabelSize = 12.sp
     val navLabelTracking = 0.3.sp
 
     val regular = FontWeight.Normal

@@ -97,6 +97,10 @@ dependencies {
  // its own version. The AAR declares minSdk 23, below this app's floor of 26.
  implementation("androidx.graphics:graphics-shapes:1.1.0")
  implementation("io.coil-kt:coil-compose:2.7.0")
+ // Frosted glass under the navigation bar. Pinned: 1.7.3 and 2.x are built with
+ // Kotlin 2.3+ and pull a newer Compose than the BOM, which this project's Kotlin
+ // 2.1 cannot read. Below Android 12 it draws a plain tint instead of blurring.
+ implementation("dev.chrisbanes.haze:haze:1.7.2")
  implementation("androidx.work:work-runtime-ktx:2.11.2")
  // The home screen widget. Glance is versioned on its own rather than through the
  // Compose BOM, so the version is pinned here.

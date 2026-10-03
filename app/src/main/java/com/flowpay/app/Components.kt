@@ -70,6 +70,28 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.IconButton
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.filled.CurrencyExchange
+import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.SpaceDashboard
+import androidx.compose.material.icons.outlined.CurrencyExchange
+import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.LocalShipping
+import androidx.compose.material.icons.outlined.SpaceDashboard
+import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.HazeTint
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.Modifier
@@ -119,7 +141,9 @@ fun HeroPanel(
     modifier: Modifier = Modifier,
     caption: String? = null,
     muted: Boolean = false,
-    trailing: (@Composable () -> Unit)? = null
+    trailing: (@Composable () -> Unit)? = null,
+    /** Something that belongs to the figure — the days strip on Платежі — inside the panel. */
+    footer: (@Composable () -> Unit)? = null
 ) {
     Card(
         modifier.fillMaxWidth(),
@@ -140,14 +164,23 @@ fun HeroPanel(
                     fontWeight = Type.medium
                 )
                 Spacer(Modifier.height(Space.sm))
+                // Whole units at display size, the rest at half: «433» then «,47 ₴».
+                val (whole, rest) = heroParts(value)
+                val ink = if (muted) AccentInk.copy(alpha = 0.45f) else AccentInk
                 Text(
-                    value,
-                    color = if (muted) AccentInk.copy(alpha = 0.45f) else AccentInk,
-                    fontSize = Type.heroSize,
-                    lineHeight = Type.heroLine,
-                    letterSpacing = Type.heroTracking,
-                    fontWeight = if (muted) Type.medium else FontWeight.Black,
-                    style = Tabular
+                    buildAnnotatedString {
+                        append(whole)
+                        withStyle(SpanStyle(fontSize = Type.displayMinorSize, color = ink.copy(alpha = ink.alpha * 0.6f))) {
+                            append(rest)
+                        }
+                    },
+                    color = ink,
+                    fontSize = Type.displaySize,
+                    lineHeight = Type.displayLine,
+                    letterSpacing = Type.displayTracking,
+                    fontWeight = Type.strong,
+                    style = Tabular,
+                    maxLines = 1
                 )
                 caption?.let {
                     Spacer(Modifier.height(Space.xs))
@@ -158,6 +191,10 @@ fun HeroPanel(
                         lineHeight = Type.captionLine
                     )
                 }
+                footer?.let {
+                    Spacer(Modifier.height(Space.md))
+                    it()
+                }
             }
             trailing?.let {
                 Spacer(Modifier.width(Space.lg))
@@ -165,6 +202,21 @@ fun HeroPanel(
             }
         }
     }
+}
+
+/**
+ * A figure split into the part read at a glance and the part read after it.
+ *
+ * "433,47 ₴" → "433" and ",47 ₴"; "11 000 ₴" → "11 000" and " ₴"; anything
+ * without a recognisable tail comes back whole. Formatting stays in [money] —
+ * this only cuts the finished string, so §7.1 still holds.
+ */
+fun heroParts(value: String): Pair<String, String> {
+    val comma = value.indexOf(',')
+    if (comma > 0) return value.substring(0, comma) to value.substring(comma)
+    val lastDigit = value.indexOfLast { it.isDigit() }
+    if (lastDigit in 0 until value.lastIndex) return value.substring(0, lastDigit + 1) to value.substring(lastDigit + 1)
+    return value to ""
 }
 
 /**
@@ -904,8 +956,10 @@ fun IconChip(
     icon: ImageVector,
     modifier: Modifier = Modifier,
     size: Dp = 40.dp,
-    background: Color = AccentSoft,
-    tint: Color = Accent
+    // Neutral since the redesign: a lime icon on every row of a list was most of
+    // the lime on the screen, and the hero panel stopped being the subject.
+    background: Color = SurfaceRaised,
+    tint: Color = TextPrimary
 ) {
     Box(
         modifier.size(size).background(background, Radius.pill),
@@ -1197,7 +1251,9 @@ fun DottedLeader(modifier: Modifier = Modifier) {
 fun DaysStrip(
     days: Int,
     marked: Set<Int>,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Drawn in ink on the hero panel rather than in colour on the page. */
+    onLime: Boolean = false
 ) {
     Row(
         modifier.fillMaxWidth().height(26.dp),
@@ -1217,6 +1273,8 @@ fun DaysStrip(
                     )
                     .background(
                         when {
+                            onLime && (offset == 0 || offset in marked) -> AccentInk
+                            onLime -> AccentInk.copy(alpha = 0.18f)
                             // Today is light rather than lime, so the colour keeps
                             // meaning one thing only: money.
                             offset == 0 -> TextPrimary
@@ -1679,6 +1737,134 @@ private fun CollapsingTitleBar(
     }
 }
 
+/** The five tabs, in the order of TAB_WISHES … TAB_OVERVIEW. */
+val NAV_DESTINATIONS = listOf(
+    NavDestination(Icons.Outlined.FavoriteBorder, Icons.Filled.Favorite, "Бажання"),
+    NavDestination(Icons.Outlined.CurrencyExchange, Icons.Filled.CurrencyExchange, "Курс"),
+    NavDestination(Icons.AutoMirrored.Outlined.ReceiptLong, Icons.AutoMirrored.Filled.ReceiptLong, "Платежі"),
+    NavDestination(Icons.Outlined.LocalShipping, Icons.Filled.LocalShipping, "Покупки"),
+    // Not the sparkle chart it was, which read as "AI" rather than "overview".
+    NavDestination(Icons.Outlined.SpaceDashboard, Icons.Filled.SpaceDashboard, "Огляд")
+)
+
+/** The bar's frosted glass: a heavy blur, tinted almost to the bar's own colour. */
+val NavGlass = HazeStyle(
+    backgroundColor = SurfaceLow,
+    tints = listOf(HazeTint(SurfaceLow.copy(alpha = 0.78f))),
+    blurRadius = 24.dp,
+    noiseFactor = 0.06f
+)
+
+/** One destination on the navigation bar: the icon when idle, when chosen, and its word. */
+data class NavDestination(val idle: ImageVector, val chosen: ImageVector, val label: String)
+
+/** How tall the bar is above the system's own buttons. Material 3 Expressive's short bar. */
+val NavBarHeight = 64.dp
+
+/**
+ * The tab bar, drawn by hand rather than with NavigationBar.
+ *
+ * NavigationBar is eighty density points tall and offers no way to say less; with
+ * the phone's own three buttons under it, the two together took about a seventh
+ * of the screen. This one is sixty-four, outlined icons turn solid when chosen,
+ * and the indicator does not blink from one tab to the next — it slides, on the
+ * fast spatial spring, which is the one movement here that says "you went there".
+ *
+ * The surface is left to the caller, so the frosted glass is applied where the
+ * content it blurs is known.
+ */
+@Composable
+fun FlowPayNavBar(
+    destinations: List<NavDestination>,
+    selected: Int,
+    modifier: Modifier = Modifier,
+    onSelect: (Int) -> Unit
+) {
+    Column(modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().height(Dp.Hairline).background(HairLine))
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .height(NavBarHeight)
+        ) {
+            val slot = maxWidth / destinations.size.coerceAtLeast(1)
+            val indicatorWidth = 56.dp
+            val travel by animateDpAsState(
+                slot * selected + (slot - indicatorWidth) / 2,
+                Motion.fastSpatial(),
+                label = "nav indicator"
+            )
+            Box(
+                Modifier
+                    .offset { IntOffset(travel.roundToPx(), 0) }
+                    .padding(top = 6.dp)
+                    .width(indicatorWidth)
+                    .height(30.dp)
+                    .background(AccentSoft, Radius.pill)
+            )
+            Row(Modifier.fillMaxSize()) {
+                destinations.forEachIndexed { index, destination ->
+                    val chosen = index == selected
+                    val tint by animateColorAsState(
+                        if (chosen) Accent else TextSecondary,
+                        Motion.effects(),
+                        label = "nav tint"
+                    )
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null
+                            ) { onSelect(index) }
+                            .semantics { role = Role.Tab; this.selected = chosen },
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Box(Modifier.padding(top = 9.dp).size(24.dp), contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (chosen) destination.chosen else destination.idle,
+                                destination.label,
+                                tint = tint
+                            )
+                        }
+                        Text(
+                            destination.label,
+                            color = tint,
+                            fontSize = Type.navLabelSize,
+                            letterSpacing = Type.navLabelTracking,
+                            fontWeight = Type.medium,
+                            maxLines = 1,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                }
+            }
+        }
+        // The phone's own buttons or gesture line sit under the bar, on the same glass.
+        Spacer(Modifier.fillMaxWidth().windowInsetsBottomHeight(WindowInsets.navigationBars))
+    }
+}
+
+/**
+ * The add action, in the header where the screen is named.
+ *
+ * It used to be a floating lime pill that covered the first row of every list —
+ * on Платежі, the name, sum and tick of the very next payment. Adding is rare;
+ * reading is constant. A quiet round button beside the title costs nothing.
+ */
+@Composable
+fun AddButton(label: String, onClick: () -> Unit) {
+    IconButton(onClick) {
+        Box(
+            Modifier.size(36.dp).background(SurfaceRaised, CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Add, label, tint = TextPrimary, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
 /**
  * Bottom padding for a list that scrolls underneath the translucent navigation bar.
  *
@@ -1756,7 +1942,9 @@ fun SegmentedControl(
                 .width(slot)
                 .fillMaxHeight()
                 .padding(Space.xs)
-                .background(Accent, Radius.pill)
+                // A raised neutral, not lime: a view switch is never the subject of
+                // a screen, and a lime one sat right above the lime hero.
+                .background(HairLine, Radius.pill)
         )
         Row(Modifier.fillMaxSize()) {
             options.forEachIndexed { index, label ->
@@ -1770,7 +1958,7 @@ fun SegmentedControl(
                 ) {
                     Text(
                         label,
-                        color = if (index == active) AccentInk else TextSecondary,
+                        color = if (index == active) TextPrimary else TextSecondary,
                         fontSize = Type.captionSize,
                         fontWeight = Type.medium,
                         maxLines = 1
