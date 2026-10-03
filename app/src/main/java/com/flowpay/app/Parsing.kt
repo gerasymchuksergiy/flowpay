@@ -168,11 +168,17 @@ private fun decodeCodePoint(code: Int): String? {
  */
 fun metaContent(html: String, key: String): String {
     val escaped = Regex.escape(key)
+    // The value runs to the quote it opened with, not to the first quote of either
+    // kind. It used to stop at any apostrophe, and Ukrainian is full of them:
+    // «Карта пам'яті Kingston» was saved as the wish «Карта пам».
+    val value = """content=(?:"([^"]*)"|'([^']*)')"""
     val patterns = listOf(
-        Regex("""<meta[^>]+(?:property|name)=["']$escaped["'][^>]+content=["']([^"']*)""", RegexOption.IGNORE_CASE),
-        Regex("""<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']$escaped["']""", RegexOption.IGNORE_CASE)
+        Regex("""<meta[^>]+(?:property|name)=["']$escaped["'][^>]+$value""", RegexOption.IGNORE_CASE),
+        Regex("""<meta[^>]+$value[^>]+(?:property|name)=["']$escaped["']""", RegexOption.IGNORE_CASE)
     )
-    return patterns.firstNotNullOfOrNull { it.find(html)?.groupValues?.get(1) }.orEmpty()
+    return patterns.firstNotNullOfOrNull { pattern ->
+        pattern.find(html)?.let { it.groupValues[1].ifEmpty { it.groupValues[2] } }
+    }.orEmpty()
 }
 
 // Non-breaking spaces are what shops actually put between the digits, and one
@@ -196,8 +202,29 @@ fun cleanProductTitle(raw: String): String {
     val collapsed = decoded.replace(Regex("""\s+"""), " ").trim()
     val withoutPrice = TITLE_PRICE_SUFFIX.replace(collapsed, "").trim()
     val trimmed = withoutPrice.trimEnd(',', ';', ':', '|', '-', '–', '—', ' ')
-    return trimmed.ifBlank { collapsed }
+    return withoutMarketplaceTail(trimmed.ifBlank { collapsed })
 }
+
+/**
+ * " - Temu Ukraine" and its kind, off the end of a title.
+ *
+ * Done here as well as in [withoutShopSuffix], because this runs on every stored
+ * name on its way off the phone: a purchase saved with the tail on it — the
+ * owner's controller, «… для пк з - Temu Ukraine» — sheds it without anything
+ * having to fetch the page again.
+ */
+private fun withoutMarketplaceTail(title: String): String {
+    val cut = Regex("""\s+[-–—|·]\s+""").findAll(title).lastOrNull() ?: return title
+    val tail = title.substring(cut.range.last + 1)
+    if (!MARKETPLACE_TAIL.containsMatchIn(tail)) return title
+    return title.substring(0, cut.range.first).trim().ifBlank { title }
+}
+
+/** A tail that is only a marketplace's name, perhaps with a country after it. */
+private val MARKETPLACE_TAIL = Regex(
+    """^\s*(?:temu|aliexpress|rozetka|розетка|prom\.ua|епіцентр|epicentrk)(?:\s+\p{L}+)?\s*$""",
+    RegexOption.IGNORE_CASE
+)
 
 /**
  * What a page says about the thing, beyond its price.
@@ -256,7 +283,8 @@ fun extractAbout(html: String): ProductAbout {
 
     val microRating = priceNumber(
         Regex("""itemprop=["']ratingValue["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            .find(html)?.groupValues?.get(1).orEmpty()
+            .find(html)?.groupValues?.get(1).orEmpty(),
+        grouping = false
     ) ?: 0.0
     val microCount = priceNumber(
         Regex("""itemprop=["'](?:reviewCount|ratingCount)["'][^>]*content=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
@@ -290,6 +318,9 @@ private fun aboutFromJsonLd(html: String): ProductAbout {
     return about
 }
 
+/** Platforms that put their own name in a product's brand field. */
+private val MARKETPLACE_BRANDS = setOf("temu", "aliexpress", "rozetka", "prom", "prom.ua", "epicentr")
+
 private fun aboutInNode(node: Any?, found: ProductAbout, depth: Int): ProductAbout {
     if (depth > 6) return found
     var about = found
@@ -309,10 +340,15 @@ private fun aboutInNode(node: Any?, found: ProductAbout, depth: Int): ProductAbo
                     is String -> brand
                     else -> ""
                 }
-                if (name.isNotBlank()) about = about.copy(brand = name)
+                // A marketplace naming itself is not a maker. Temu writes
+                // "brand":"Temu" on every seller's product, and the appraisal
+                // counts a brand as one of its grounds for speaking at all.
+                if (name.isNotBlank() && name.trim().lowercase() !in MARKETPLACE_BRANDS) {
+                    about = about.copy(brand = name)
+                }
             }
             if (about.rating <= 0 && node.has("ratingValue")) {
-                val value = priceNumber(node.opt("ratingValue").toString()) ?: 0.0
+                val value = priceNumber(node.opt("ratingValue").toString(), grouping = false) ?: 0.0
                 val count = priceNumber(
                     node.opt("reviewCount")?.toString().orEmpty().ifBlank {
                         node.opt("ratingCount")?.toString().orEmpty()
@@ -339,8 +375,12 @@ private fun aboutInNode(node: Any?, found: ProductAbout, depth: Int): ProductAbo
                 collect(node.opt("additionalProperty"))
                 if (list.isNotEmpty()) about = about.copy(specs = list)
             }
+            // Not into reviews. One buyer's "ratingValue": 5 and their own
+            // "description" are not the product's, and on Temu's page the review
+            // list comes before the aggregate — the walk took the first one it met
+            // and stored one person's five stars with a count of nought.
             node.keys().forEach { key ->
-                if (key != "additionalProperty") {
+                if (key != "additionalProperty" && key != "review" && key != "reviews") {
                     about = aboutInNode(node.opt(key), about, depth + 1)
                 }
             }
@@ -576,17 +616,33 @@ fun pageAvailability(html: String): Availability {
     return Availability.UNKNOWN
 }
 
+/** "1,299": a comma that groups thousands rather than marking kopecks. */
+private val THOUSANDS_COMMA = Regex("""^\d{1,3},\d{3}$""")
+
 /** Any space a shop might put inside a number, including the ones that are not spaces. */
 private const val PRICE_SPACES = " \u00a0\u202f\u2009"
 
-/** "2 199" / "2199,50" / "2 199.00" -> the number, or null when it is not one. */
-internal fun priceNumber(raw: String): Double? {
+/**
+ * "2 199" / "2199,50" / "2 199.00" -> the number, or null when it is not one.
+ *
+ * Two shapes used to come out a thousand times too small: "1,299" — a comma
+ * grouping thousands, read as one hryvnia thirty — and "1.299,50", where the last
+ * separator is the decimal one and the first was grouping. [grouping] is off for
+ * a rating, where "4,667" really is four and two thirds.
+ */
+internal fun priceNumber(raw: String, grouping: Boolean = true): Double? {
     var text = raw.trim()
     PRICE_SPACES.forEach { text = text.replace(it.toString(), "") }
-    text = if (text.count { it == ',' } == 1 && !text.contains('.')) {
-        text.replace(',', '.')
-    } else {
-        text.replace(",", "")
+    val lastComma = text.lastIndexOf(',')
+    val lastDot = text.lastIndexOf('.')
+    text = when {
+        // Both: whichever comes last is the decimal point.
+        lastComma >= 0 && lastDot >= 0 ->
+            if (lastComma > lastDot) text.replace(".", "").replace(',', '.') else text.replace(",", "")
+        // One comma followed by exactly three digits is a thousands separator.
+        grouping && THOUSANDS_COMMA.matches(text) -> text.replace(",", "")
+        text.count { it == ',' } == 1 -> text.replace(',', '.')
+        else -> text.replace(",", "")
     }
     if (!Regex("""^\d+(\.\d+)?$""").matches(text)) return null
     return text.toDoubleOrNull()?.takeIf { it > 0 }
@@ -633,7 +689,15 @@ private val SCRIPT_BODY = Regex(
  * costs sixty-four failed attempts before the engine gives up on it, and that is
  * a measurable pause on a six-hundred-kilobyte page.
  */
-private val QUOTED_VALUE = Regex("\"([^\"\\\\\\n]{1,64}+)\"")
+//
+// Every string is matched whole, escapes included, and its length is checked
+// afterwards. Bounding the match itself made an empty string or a long URL fail to
+// match, and its closing quote was then read as the opening of the next string —
+// on Temu's script, full of both, the price strings were never looked at.
+private val QUOTED_VALUE = Regex("\"((?:[^\"\\\\\\n]|\\\\.)*+)\"")
+
+/** The longest string worth reading as a price. */
+private const val QUOTED_LIMIT = 64
 
 /** The money words shops write, longest first so "грн." cannot be cut to "грн". */
 private const val CURRENCY_MARK =
@@ -729,7 +793,9 @@ fun inlinePriceOffers(html: String): List<Offer> {
     SCRIPT_BODY.findAll(html).forEach { script ->
         QUOTED_VALUE.findAll(script.groupValues[1]).forEach { quoted ->
             if (found.size >= INLINE_PRICE_LIMIT) return found.values.toList()
-            priceStringOffers(quoted.groupValues[1]).forEach { offer ->
+            val text = quoted.groupValues[1]
+            if (text.isEmpty() || text.length > QUOTED_LIMIT) return@forEach
+            priceStringOffers(text).forEach { offer ->
                 val key = Math.round(offer.price * 100)
                 if (found.size < INLINE_PRICE_LIMIT && !found.containsKey(key)) {
                     found[key] = offer
@@ -792,7 +858,10 @@ fun extractOffers(html: String): List<Offer> {
     if (found.isEmpty()) {
         add(
             priceNumber(
-                Regex(""""price"\s*:\s*["']?([0-9][0-9\s.,]*)""", RegexOption.IGNORE_CASE)
+                // Quoted only. A bare number after "price" is as often minor units
+                // as not — 145821 for 1 458,21 — and "price":1299,"x" used to pick
+                // up the comma that ends the field and fail on it.
+                Regex(""""price"\s*:\s*"([0-9][0-9\s.,]*)"""", RegexOption.IGNORE_CASE)
                     .find(html)?.groupValues?.get(1).orEmpty()
             ),
             ""
@@ -1004,10 +1073,93 @@ data class PageFacts(
 
 /** Everything the page gave up apart from the price. */
 fun pageFacts(html: String): PageFacts = PageFacts(
-    name = cleanProductTitle(metaContent(html, "og:title")),
-    image = decodeEntities(metaContent(html, "og:image")),
+    name = withoutShopSuffix(cleanProductTitle(metaContent(html, "og:title")), metaContent(html, "og:site_name")),
+    // The photograph the page declares as the product's own comes first. og:image
+    // is a sharing card as often as a product shot: Temu's is a promotional banner
+    // with «Купуйте на Temu» and a price printed on it, and that banner was the
+    // picture on the owner's purchase.
+    image = jsonLdImage(html)
+        .ifBlank { decodeEntities(metaContent(html, "og:image")) }
+        .ifBlank { decodeEntities(metaContent(html, "twitter:image")) },
     about = extractAbout(html)
 )
+
+/**
+ * A title without the shop's own name on the end of it.
+ *
+ * Only when the tail names the shop the page says it is — " - Temu Ukraine" on a
+ * page whose og:site_name is "temu". A tail that does not name the shop is kept,
+ * because it may be the colour or the size.
+ */
+fun withoutShopSuffix(title: String, siteName: String): String {
+    val site = siteName.trim().lowercase()
+    if (site.isEmpty()) return title
+    val cut = SHOP_TAIL.findAll(title).lastOrNull() ?: return title
+    val tail = title.substring(cut.range.last + 1).lowercase()
+    if (!tail.contains(site)) return title
+    return title.substring(0, cut.range.first).trim().ifBlank { title }
+}
+
+/** A spaced separator: where a shop's name is glued onto a title. */
+private val SHOP_TAIL = Regex("""\s+[-–—|·]\s+""")
+
+/**
+ * The product photograph from the page's structured data, or blank.
+ *
+ * `image` on a Product node is a string, a list of strings, or an ImageObject whose
+ * address is under any of four keys depending on the shop. Only an absolute
+ * address is taken: a relative one would need the page's own address to resolve.
+ */
+fun jsonLdImage(html: String): String {
+    Regex(
+        """<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    ).findAll(html).map { it.groupValues[1].trim() }.forEach { block ->
+        val root: Any = runCatching {
+            when {
+                block.startsWith("[") -> JSONArray(block)
+                block.startsWith("{") -> org.json.JSONObject(block)
+                else -> null
+            }
+        }.getOrNull() ?: return@forEach
+        productImage(root, 0).takeIf { it.isNotBlank() }?.let { return it }
+    }
+    return ""
+}
+
+private fun productImage(node: Any?, depth: Int): String {
+    if (depth > 6) return ""
+    return when (node) {
+        is JSONArray -> (0 until node.length()).firstNotNullOfOrNull { index ->
+            productImage(node.opt(index), depth + 1).takeIf { it.isNotBlank() }
+        }.orEmpty()
+        is org.json.JSONObject -> {
+            val type = node.opt("@type")?.toString().orEmpty()
+            val own = if (type.contains("Product")) imageAddress(node.opt("image")) else ""
+            own.ifBlank {
+                node.keys().asSequence()
+                    .filter { it != "review" && it != "reviews" && it != "image" }
+                    .firstNotNullOfOrNull { key ->
+                        productImage(node.opt(key), depth + 1).takeIf { it.isNotBlank() }
+                    }.orEmpty()
+            }
+        }
+        else -> ""
+    }
+}
+
+private fun imageAddress(value: Any?): String = when (value) {
+    is String -> decodeEntities(value.trim()).takeIf {
+        it.startsWith("https://") || it.startsWith("http://")
+    }.orEmpty()
+    is JSONArray -> (0 until value.length()).firstNotNullOfOrNull { index ->
+        imageAddress(value.opt(index)).takeIf { it.isNotBlank() }
+    }.orEmpty()
+    is org.json.JSONObject -> listOf("contentUrl", "contentURL", "url", "thumbnail", "thumbnailUrl")
+        .firstNotNullOfOrNull { key -> imageAddress(value.opt(key)).takeIf { it.isNotBlank() } }
+        .orEmpty()
+    else -> ""
+}
 
 /**
  * How to name an offer in a list of them.

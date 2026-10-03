@@ -109,6 +109,9 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
                     .setContentTitle(title)
                     .setContentText(text)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                    // The digest is mostly about money going out, so it opens
+                    // the payments tab. See Notifications.kt.
+                    .setContentIntent(openTabIntent(applicationContext, TAB_PAYMENTS))
                     .setAutoCancel(true)
                     .build()
             )

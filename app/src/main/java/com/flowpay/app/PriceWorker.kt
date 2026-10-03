@@ -39,13 +39,17 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
         val old = store.wishes()
         var pricesRead = 0
+        var pagesAnswered = 0
         val fresh = old.map { previous ->
             when (val reading = refreshed(previous, today, stamp)) {
                 Reading.Failed -> previous
                 // A page that answered without a price is still news about the item,
                 // so the new freshness is saved. It is deliberately not counted as a
                 // price read: a whole list of these is a shop outage, not a success.
-                is Reading.Stale -> reading.wish
+                is Reading.Stale -> {
+                    pagesAnswered++
+                    reading.wish
+                }
                 is Reading.Priced -> {
                     val current = reading.wish
                     pricesRead++
@@ -91,9 +95,22 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         // A hold that ran out while the app was closed has to announce itself, or
         // the pause quietly becomes a deletion: the card would sit at the foot of
         // the list with nobody ever told it was waiting for an answer.
-        fresh.filter { holdEnded(it, today) && it.holdUntil == today }.forEach { wish ->
-            notify(wish.name, "Ще хочеш? Пауза скінчилась", CHANNEL_PRICES, "Зміни цін")
+        //
+        // Once per pause, and within a few days of its end rather than only on the
+        // day itself: twice a day it used to ring again, and on a day no pass got
+        // to run it never rang at all.
+        val alerted = store.alerted().toMutableList()
+        fun once(key: String, send: () -> Unit) {
+            if (key in alerted) return
+            send()
+            alerted += key
         }
+        fresh.filter { holdEnded(it, today) && it.holdUntil in (today - HOLD_GRACE_DAYS)..today }
+            .forEach { wish ->
+                once("hold-${wish.id}-${wish.holdUntil}") {
+                    notify(wish.name, "Ще хочеш? Пауза скінчилась", CHANNEL_PRICES, "Зміни цін")
+                }
+            }
 
         val parcels = store.orders()
         // A filed purchase is history and a download has no carrier, so neither is
@@ -112,14 +129,19 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             val left = freeStorageDaysLeft(status.paidStorageFrom, java.time.LocalDate.now())
             // Storage running out tomorrow is the exception, because by the next
             // digest it is already being billed.
+            // Once per day of the countdown: after free storage ran out it used to
+            // ring twice a day, every day, until the parcel was collected.
             if (status.stage == AT_BRANCH && left != null && storageIsUrgent(left)) {
-                notify(order.name, urgentStorageText(left), CHANNEL_PARCELS, "Статус посилок")
+                once("storage-${order.id}-${status.paidStorageFrom}-$left") {
+                    notify(order.name, urgentStorageText(left), CHANNEL_PARCELS, "Статус посилок")
+                }
             }
             applyStatus(order, status, checkedAt)
         }
         if (trackable.isNotEmpty()) {
             store.saveOrders(mergeById(store.orders(), parcels, freshParcels) { it.id })
         }
+        store.saveAlerted(alerted)
 
         // Once a year, and never in a way that can fail the pass. The payment
         // reminder shifts off weekends with or without this; the calendar only
@@ -138,7 +160,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
         // Retry only when there was something to fetch and none of it arrived,
         // which is what a dropped connection looks like from here.
-        if (shouldRetryPass(old, trackable.size, pricesRead, parcelsRead)) {
+        if (shouldRetryPass(old, trackable.size, pricesRead, parcelsRead, pagesAnswered)) {
             // Not stamped: a pass that fetched nothing is exactly the pass the
             // health panel exists to make visible, and recording it as a success
             // would paper over the silence it is meant to expose.
@@ -150,6 +172,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
     }
 
     private fun notify(name: String, text: String, channelId: String, channelName: String) {
+        val tab = if (channelId == CHANNEL_PARCELS) TAB_ORDERS else TAB_WISHES
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_DEFAULT)
@@ -165,6 +188,10 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                     .setContentTitle(name)
                     .setContentText(text)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                    .setContentIntent(openTabIntent(applicationContext, tab))
+                    // The same alert posted again by a later pass replaces the
+                    // first silently rather than ringing a second time.
+                    .setOnlyAlertOnce(true)
                     .setAutoCancel(true)
                     .build()
             )
@@ -173,6 +200,9 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
     companion object {
         private const val CHANNEL_PRICES = "price_changes"
+
+        /** How long after a pause ends it may still be announced, if no pass ran. */
+        private const val HOLD_GRACE_DAYS = 3L
 
         // Separate channels so parcel news can be silenced without losing price
         // alerts, and the other way round.

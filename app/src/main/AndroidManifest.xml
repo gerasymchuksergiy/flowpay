@@ -25,6 +25,13 @@
     <data android:mimeType="text/plain"/>
     <data android:mimeType="text/html"/>
    </intent-filter>
+   <!-- What a long press on the Quick Settings tile looks for. Without it the
+        system falls back to the App info screen; the ACTIVITY_NAME meta-data on
+        the service below is not a key the platform reads. -->
+   <intent-filter>
+    <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES"/>
+    <category android:name="android.intent.category.DEFAULT"/>
+   </intent-filter>
    <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
   </activity>
   <!-- One figure in the notification shade, reachable without leaving whatever
@@ -39,10 +46,8 @@
    <intent-filter>
     <action android:name="android.service.quicksettings.action.QS_TILE"/>
    </intent-filter>
-   <!-- A long press opens the app; a short press swaps which figure is shown. -->
-   <meta-data
-    android:name="android.service.quicksettings.ACTIVITY_NAME"
-    android:value="com.flowpay.app.MainActivity"/>
+   <!-- A short press swaps which figure is shown; a long press opens the app
+        through the QS_TILE_PREFERENCES filter on MainActivity. -->
   </service>
   <receiver
    android:name=".FlowPayWidgetReceiver"

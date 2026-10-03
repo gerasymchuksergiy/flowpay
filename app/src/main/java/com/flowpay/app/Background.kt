@@ -26,6 +26,9 @@ import java.time.ZoneId
  * platform will name the reason a job is waiting, it repeats it.
  */
 
+/** How many sent alerts are remembered, so one is never sent twice. */
+const val ALERT_MEMORY = 200
+
 /** The unique work names, which are also the keys the last run is stored under. */
 const val WORK_PRICES = "prices"
 const val WORK_DIGEST = "payment-reminders"
@@ -66,10 +69,16 @@ fun shouldRetryPass(
     wishes: List<Wish>,
     trackableParcels: Int,
     pricesRead: Int,
-    parcelsRead: Int
+    parcelsRead: Int,
+    /**
+     * Pages that answered without a price — sold out, gone, unreadable. They are
+     * not prices, but they are the network working, which is all this asks. A list
+     * whose only wish was sold out used to retry for ever and light the alarm.
+     */
+    pagesAnswered: Int = 0
 ): Boolean {
     val fetchable = wishes.any { it.freshness != Freshness.MANUAL } || trackableParcels > 0
-    return fetchable && pricesRead == 0 && parcelsRead == 0
+    return fetchable && pricesRead == 0 && parcelsRead == 0 && pagesAnswered == 0
 }
 
 /** A pass, and when it last got all the way through. Zero means never. */

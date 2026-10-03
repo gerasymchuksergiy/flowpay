@@ -43,7 +43,8 @@ class NoPriceAddTest {
         val facts = pageFacts(describedPage)
 
         assertTrue(facts.describable)
-        assertEquals("ігровий контролер gamesir super nova - Temu Ukraine", facts.name)
+        // The marketplace's name is not part of the thing's name.
+        assertEquals("ігровий контролер gamesir super nova", facts.name)
         assertEquals("https://img.example/nova.jpg", facts.image)
         assertEquals("Бездротовий геймпад із холлівськими стіками.", facts.about.description)
     }
@@ -79,7 +80,7 @@ class NoPriceAddTest {
 
         assertTrue(read is PageAdd.Described)
         val wish = (read as PageAdd.Described).wish
-        assertEquals("ігровий контролер gamesir super nova - Temu Ukraine", wish.name)
+        assertEquals("ігровий контролер gamesir super nova", wish.name)
         assertEquals("https://img.example/nova.jpg", wish.image)
         assertEquals("Бездротовий геймпад із холлівськими стіками.", wish.about.description)
         assertEquals("https://temu.example/x", wish.url)
@@ -188,7 +189,7 @@ class NoPriceAddTest {
 
         val filled = refreshedWish(placeholder, read, 20_000L).copy(name = read.name)
 
-        assertEquals("ігровий контролер gamesir super nova - Temu Ukraine", filled.name)
+        assertEquals("ігровий контролер gamesir super nova", filled.name)
         assertEquals("https://img.example/nova.jpg", filled.image)
         assertEquals("Бездротовий геймпад із холлівськими стіками.", filled.about.description)
     }

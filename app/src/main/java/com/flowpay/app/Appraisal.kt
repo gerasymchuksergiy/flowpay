@@ -1286,14 +1286,7 @@ fun AppraisalSection(
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable {
-                                                    context.startActivity(
-                                                        Intent(
-                                                            Intent.ACTION_VIEW,
-                                                            source.url.toUri()
-                                                        )
-                                                    )
-                                                }
+                                                .clickable { openLink(context, source.url) }
                                                 .padding(vertical = Space.xs)
                                         )
                                     }

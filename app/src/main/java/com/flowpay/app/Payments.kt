@@ -1248,6 +1248,34 @@ data class PaidMark(
 /** Months of marks kept: this one and the twelve before it. */
 const val PAID_HISTORY_MONTHS = 13
 
+/**
+ * Which month the tick beside an expense is about, on [today].
+ *
+ * Two answers were each wrong half the time. "This month" — what the tick used
+ * to mean — is right on the 3rd for rent paid on the 1st, but on the 30th, with
+ * November's rent reminded about and paid, the tick still answered for October:
+ * tapping it took October's mark back off, and nothing could ever mark November,
+ * so the reminder and the pill went on asking. "The month of the next charge" —
+ * what [stillOwing] uses — is right on the 30th and wrong on the 3rd, when the
+ * charge just paid is October's and the next is a month away.
+ *
+ * So it follows the reminder. While the next charge is inside the expense's own
+ * notice period — the stretch in which the app is asking about it — the tick
+ * answers for that charge's month. Outside it, the tick answers for the charge
+ * that has already happened this month. An expense that is not charged this
+ * month at all (an annual fee due elsewhere) always answers for its next charge.
+ */
+fun tickMonth(pay: Pay, today: LocalDate, holidays: Set<Long> = emptySet()): String {
+    val next = nextCharge(pay, today)
+    val nextMonth = monthKey(next)
+    val thisMonth = monthKey(today)
+    if (nextMonth == thisMonth || !chargesIn(pay, today)) return nextMonth
+    // From the working day the money has to be there by, as the reminder counts.
+    val payOn = paymentDay(next, holidays).payOn
+    val daysAway = java.time.temporal.ChronoUnit.DAYS.between(today, payOn)
+    return if (daysAway <= pay.warnDays.coerceAtLeast(0)) nextMonth else thisMonth
+}
+
 /** Whether this expense already has a mark against it for [month]. */
 fun isPaid(marks: List<PaidMark>, name: String, month: String): Boolean =
     marks.any { it.name == name && it.month == month }
@@ -1266,6 +1294,24 @@ fun togglePaid(marks: List<PaidMark>, pay: Pay, month: String): List<PaidMark> =
     }
 
 /**
+ * Moves an expense's marks to its new name.
+ *
+ * A mark already under the new name for the same month wins, so renaming one
+ * expense onto another's name cannot leave a month with two marks for one row.
+ */
+fun renamePaidMarks(marks: List<PaidMark>, from: String, to: String): List<PaidMark> {
+    if (from == to) return marks
+    val taken = marks.filter { it.name == to }.map { it.month }.toSet()
+    return marks.mapNotNull { mark ->
+        when {
+            mark.name != from -> mark
+            mark.month in taken -> null
+            else -> mark.copy(name = to)
+        }
+    }
+}
+
+/**
  * Drops marks older than the window, and any month that has not happened yet.
  *
  * A future month can only come from a clock that was wrong when the mark was made,
@@ -1274,7 +1320,10 @@ fun togglePaid(marks: List<PaidMark>, pay: Pay, month: String): List<PaidMark> =
 fun prunePaidMarks(marks: List<PaidMark>, today: LocalDate): List<PaidMark> {
     val first = today.withDayOfMonth(1)
     val oldest = monthKey(first.minusMonths((PAID_HISTORY_MONTHS - 1).toLong()))
-    val newest = monthKey(first)
+    // Next month is kept: rent due on the 1st is paid on the 30th, and a mark
+    // made then is a mark for the month the charge falls in — see [tickMonth].
+    // Anything further out can only come from a clock that was wrong.
+    val newest = monthKey(first.plusMonths(1))
     return marks.filter { it.month in oldest..newest }
 }
 

@@ -395,7 +395,10 @@ class MainActivity : ComponentActivity() {
         // Only on a real launch. A recreation — the phone turned, the theme changed —
         // hands back the same intent, and the share or refresh it carried would run
         // a second time.
-        if (savedInstanceState == null) command = commandOf(intent)
+        // Nor when reopened from the recents screen, which hands back the share that
+        // first launched the task as though it had just been sent.
+        val fromHistory = intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0
+        if (savedInstanceState == null && !fromHistory) command = commandOf(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -431,7 +434,11 @@ class MainActivity : ComponentActivity() {
     // Read as a CharSequence: a text/html share arrives as a styled Spanned, and
     // getStringExtra answers null for one rather than the text inside it.
     private fun commandOf(intent: Intent?): AppCommand? =
-        appCommand(intent?.action, intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString())
+        appCommand(
+            intent?.action,
+            intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString(),
+            intent?.getIntExtra(EXTRA_TAB, -1) ?: -1
+        )
 }
 
 class Store(context: Context) {
@@ -550,6 +557,19 @@ class Store(context: Context) {
     fun lastBackupAt(): Long = prefs.getLong("bk_at", 0L)
 
     fun saveLastBackupAt(millis: Long) = prefs.edit { putLong("bk_at", millis) }
+    /**
+     * The interrupting alerts already sent, newest last, as keys like
+     * "hold-<id>-<day>". See [ALERT_MEMORY]. A view of the past rather than data,
+     * so it stays out of the backup.
+     */
+    fun alerted(): List<String> = runCatching {
+        val array = JSONArray(prefs.getString("alerted", "[]"))
+        (0 until array.length()).map { array.optString(it) }
+    }.getOrDefault(emptyList())
+
+    fun saveAlerted(keys: List<String>) =
+        prefs.edit { putString("alerted", JSONArray(keys.takeLast(ALERT_MEMORY)).toString()) }
+
     /** Epoch day the payment reminder last ran, so a day is never repeated. */
     fun lastReminderDay(): Long = prefs.getLong("reminded", 0L)
 
@@ -1220,9 +1240,22 @@ fun refreshedWish(
     previous.copy(
         image = current.image.ifBlank { previous.image },
         price = current.price,
-        history = appendPrice(previous.history, current.price, today, rate.sell, rate.source),
+        // Only a figure the page offered for sale may extend the history.
+        // [wishFromOffer] marks a sold-out placeholder, and a price it could not
+        // convert, with their own freshness — and this used to append them anyway
+        // and call the wish in stock, which is how sharing a sold-out page put a
+        // placeholder in as the all-time low.
+        history = if (current.price > 0.0 && current.freshness == Freshness.OK) {
+            appendPrice(previous.history, current.price, today, rate.sell, rate.source)
+        } else {
+            previous.history
+        },
         checkedDay = today,
-        freshness = if (current.price > 0.0) Freshness.OK else previous.freshness,
+        freshness = when {
+            current.price > 0.0 && current.freshness != Freshness.OK -> current.freshness
+            current.price > 0.0 -> Freshness.OK
+            else -> previous.freshness
+        },
         // What the page says about the thing is most of what a wish with no price
         // has to show, and this is the one path a shared link takes into the list.
         // Without it the description read from the page was dropped on the floor
@@ -1486,9 +1519,15 @@ fun installUpdate(context: Context, url: String, onMessage: (String) -> Unit) {
             )
         }
     }
+    // Exported, and on the application context. The completion broadcast comes from
+    // the system's download provider, which runs as its own app — a receiver marked
+    // not-exported on Android 14+ is not guaranteed to hear it, and one tied to the
+    // activity is lost if the activity goes while the APK downloads. The receiver
+    // only acts on this one download id, so a forged broadcast can at most open
+    // the installer on a file this app downloaded itself.
     ContextCompat.registerReceiver(
-        context, receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-        ContextCompat.RECEIVER_NOT_EXPORTED
+        context.applicationContext, receiver, IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
+        ContextCompat.RECEIVER_EXPORTED
     )
 }
 
@@ -1532,6 +1571,13 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // tab, the tab switch clears that tab's dialogs first and this runs second.
     LaunchedEffect(command, tab) {
         if (command == null) return@LaunchedEffect
+        // A tapped notification belongs to whichever tab it was about, not to the
+        // wishlist, so it is the one command that does not go through the switch.
+        if (command is AppCommand.OpenTab) {
+            onCommandHandled()
+            tab = command.tab
+            return@LaunchedEffect
+        }
         // Every command belongs to the wishlist. Switching costs a pass through
         // this effect, which is why it returns and waits for the new tab.
         if (tab != TAB_WISHES) {
@@ -1545,6 +1591,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         onCommandHandled()
         when (command) {
             is AppCommand.AddWish -> adding = true
+            is AppCommand.OpenTab -> Unit
             is AppCommand.RefreshPrices -> noticeScope.launch {
                 if (wishes.isEmpty()) {
                     say(refreshMessage(0, 0))
@@ -2781,7 +2828,7 @@ fun AddWishSheet(
                 LocalDate.now().toEpochDay(),
                 rate
             ).copy(
-                targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                targetPrice = parseAmount(target),
                 category = canonicalCategory(category, known)
             )
         )
@@ -2798,7 +2845,7 @@ fun AddWishSheet(
                 parseAmount(typedPrice),
                 LocalDate.now().toEpochDay()
             ).copy(
-                targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                targetPrice = parseAmount(target),
                 category = canonicalCategory(category, known)
             )
         )
@@ -2944,7 +2991,7 @@ fun EditWishSheet(
     save: (Wish) -> Unit
 ) {
     var name by remember { mutableStateOf(wish.name) }
-    var target by remember { mutableStateOf(wish.targetPrice.takeIf { it > 0 }?.toString().orEmpty()) }
+    var target by remember { mutableStateOf(amountText(wish.targetPrice)) }
     var category by remember { mutableStateOf(wish.category) }
     var price by remember { mutableStateOf(amountText(wish.price)) }
     val touch = rememberTouch()
@@ -2972,7 +3019,7 @@ fun EditWishSheet(
             save(
                 priced.copy(
                     name = name.ifBlank { wish.name },
-                    targetPrice = target.replace(',', '.').toDoubleOrNull() ?: 0.0,
+                    targetPrice = parseAmount(target),
                     category = canonicalCategory(category, known)
                 )
             )
@@ -3870,9 +3917,7 @@ fun SharedTransitionScope.WishDetailScreen(
                         terms = searchText,
                         onTerms = { searchText = it },
                         onSearch = {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, hotlineSearch(searchText).toUri())
-                            )
+                            openLink(context, hotlineSearch(searchText))
                         }
                     )
                 }
@@ -4081,17 +4126,24 @@ fun SharedTransitionScope.WishDetailScreen(
                             Text(
                                 when {
                                     stale -> "Поки ціна не читається, оцінювати нічого"
+                                    // The rule in [priceInsight] is a week and two
+                                    // recorded prices; this used to promise a fortnight.
                                     verdict == BuyVerdict.UNKNOWN ->
-                                        "Потрібно щонайменше два тижні спостережень і дві зміни ціни"
+                                        "Потрібно щонайменше тиждень спостережень і дві зміни ціни"
                                     verdict == BuyVerdict.GOOD ->
                                         if (insight.atReferenceLow)
                                             "Це найнижча ціна за останні ${daysLabel(insight.referenceDays)}"
                                         else "Ціна в нижній частині діапазону останніх ${daysLabel(insight.referenceDays)}"
                                     verdict == BuyVerdict.FAIR ->
                                         "Ціна в середині діапазону останніх ${daysLabel(insight.referenceDays)}"
+                                    // The low itself, and how far above it today is.
+                                    // The percentage used to be the distance from the
+                                    // window's high — 7% where the truth was 29%, and
+                                    // «на 0% нижче» at the top of the range.
                                     else ->
                                         "За останні ${daysLabel(insight.referenceDays)} ціна опускалась " +
-                                            "на ${figure(insight.offHighest, 0)}% нижче"
+                                            "до ${money(insight.referenceLow)} — зараз на " +
+                                            "${figure(overLowPercent(insight), 0)}% дорожче"
                                 },
                                 color = TextSecondary,
                                 fontSize = Type.captionSize,
@@ -4175,11 +4227,7 @@ fun SharedTransitionScope.WishDetailScreen(
                                     cheapest = cheapest != null && source.url == cheapest.url &&
                                         sources.size > 1,
                                     removable = sources.size > 1,
-                                    onOpen = {
-                                        context.startActivity(
-                                            Intent(Intent.ACTION_VIEW, source.url.toUri())
-                                        )
-                                    },
+                                    onOpen = { openLink(context, source.url) },
                                     onRemove = { onChange(withoutSource(wish, source.url)) }
                                 )
                             }
@@ -4451,7 +4499,7 @@ fun SharedTransitionScope.WishDetailScreen(
                         Text(" Оновити")
                     }
                     OutlinedButton(
-                        { context.startActivity(Intent(Intent.ACTION_VIEW, wish.url.toUri())) },
+                        { openLink(context, wish.url) },
                         Modifier.weight(1f),
                         shape = Radius.sm,
                         border = BorderStroke(1.dp, HairLine),
@@ -4828,15 +4876,15 @@ fun CalculatorScreen(store: Store) {
         if (rate.sell <= 0 || age > 30 * 60 * 1000L) refresh(asked = false)
     }
 
-    val source = amount.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val source = parseAmount(amount)
     val exchangeRate = if (hryvniaToDollar) rate.sell else rate.buy
     val converted = when {
         exchangeRate <= 0 -> 0.0
         hryvniaToDollar -> source / exchangeRate
         else -> source * exchangeRate
     }
-    val a = first.replace(',', '.').toDoubleOrNull() ?: 0.0
-    val b = second.replace(',', '.').toDoubleOrNull() ?: 0.0
+    val a = parseAmount(first)
+    val b = parseAmount(second)
     val total = when (operation) {
         "−" -> a - b
         "×" -> a * b
@@ -5603,7 +5651,10 @@ fun PaymentsScreen(
                                         // Anywhere else and the record would be a screen
                                         // you have to remember to visit, which is the same
                                         // as not having one.
-                                        val done = isPaid(paid, pay.name, thisMonth)
+                                        // The month this tick is about, which is not
+                                    // always this one — see [tickMonth].
+                                    val markMonth = tickMonth(pay, today, holidays)
+                                    val done = isPaid(paid, pay.name, markMonth)
                                         // A real two-state mark, and the two states feel
                                         // different: this is the one control in the app
                                         // you use without looking, halfway through paying
@@ -5611,7 +5662,7 @@ fun PaymentsScreen(
                                         // saying which way it went is the whole point.
                                         IconButton({
                                             touch.switched(!done)
-                                            setPaid(togglePaid(paid, pay, thisMonth))
+                                            setPaid(togglePaid(paid, pay, markMonth))
                                         }) {
                                             Icon(
                                                 if (done) {
@@ -5661,7 +5712,12 @@ fun PaymentsScreen(
                             }
                         }
                     }
-                    items(dormant, key = { "annual-${it.name}-${it.billingMonth}-${it.day}" }) { pay ->
+                    // Position in the key: two identical annual expenses are equal as
+                    // values, and a repeated key throws rather than drawing twice.
+                    itemsIndexed(
+                        dormant,
+                        key = { index, pay -> "annual-$index-${pay.name}-${pay.billingMonth}-${pay.day}" }
+                    ) { _, pay ->
                         Card(
                             Modifier
                                 .padding(horizontal = Space.screen, vertical = Space.xs)
@@ -5740,6 +5796,10 @@ fun PaymentsScreen(
                 }
             ) { changed ->
                 save(items.mapIndexed { i, item -> if (i == index) changed else item })
+                // Marks are matched by name, so a rename carries them across. Left
+                // behind, the renamed rent read as unpaid this month, the reminder
+                // started again, and every past month went red.
+                if (changed.name != pay.name) setPaid(renamePaidMarks(paid, pay.name, changed.name))
                 editing = null
             }
         }
@@ -6141,7 +6201,7 @@ fun OrdersScreen(
                     // Left aligned for the same reason as the wish card: the floating
                     // action button sits over the bottom right corner.
                     Row(Modifier.padding(horizontal = Space.sm), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton({ context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) }) {
+                        TextButton({ openLink(context, order.url) }) {
                             Text("До магазину ↗")
                         }
                         IconButton({ tracking = order }) {
@@ -6150,9 +6210,9 @@ fun OrdersScreen(
                         // The carrier's own page for a number the app cannot read, in
                         // the place the check button would be — that button only ever
                         // sat there greyed out on these.
-                        trackingPageUrl(order)?.let { page ->
-                            IconButton({ context.startActivity(Intent(Intent.ACTION_VIEW, page.toUri())) }) {
-                                Icon(Icons.Default.TravelExplore, "Відстежити на 17TRACK")
+                        trackingSite(order)?.let { site ->
+                            IconButton({ openLink(context, site.url) }) {
+                                Icon(Icons.Default.TravelExplore, "Відстежити на сайті ${site.name}")
                             }
                         }
                         if (isAutoTracked(order)) IconButton(
@@ -6339,7 +6399,7 @@ fun OrderDetailScreen(
     // Everything below the rail is one carrier's answer. On anything that carrier
     // never answered for it would be a page of blanks — see [carrierSectionsApply].
     val carrier = carrierSectionsApply(order)
-    val trackingPage = trackingPageUrl(order)
+    val trackingPage = trackingSite(order)
     // Read once, so a page left open across midnight cannot start disagreeing with
     // itself about which of its dates is "сьогодні".
     val now = remember { LocalDateTime.now() }
@@ -6495,11 +6555,11 @@ fun OrderDetailScreen(
                 order,
                 Modifier.padding(horizontal = Space.screen).padding(top = Space.sm)
             ) { onClose() }
-            trackingPage?.let { page ->
+            trackingPage?.let { site ->
                 TextButton(
-                    { context.startActivity(Intent(Intent.ACTION_VIEW, page.toUri())) },
+                    { openLink(context, site.url) },
                     Modifier.padding(horizontal = Space.sm).padding(top = Space.xs)
-                ) { Text("Відстежити на 17TRACK ↗") }
+                ) { Text("Відстежити на сайті ${site.name} ↗") }
             }
         }
 
@@ -6721,7 +6781,7 @@ fun OrderDetailScreen(
         if (order.url.isNotBlank()) {
             item {
                 TextButton(
-                    { context.startActivity(Intent(Intent.ACTION_VIEW, order.url.toUri())) },
+                    { openLink(context, order.url) },
                     Modifier.padding(horizontal = Space.sm).padding(top = Space.sm)
                 ) { Text("До магазину ↗") }
             }
@@ -7475,12 +7535,20 @@ fun SettingsScreen(
                 SettingsRow(
                     Icons.Default.NotificationsNone,
                     "Сповіщення",
-                    "Про падіння ціни, досягнення цілі та рух посилки. Ціни й доставка мають окремі канали."
+                    // What actually interrupts, and what waits for the morning.
+                    // The old line promised alerts for every fall and every move
+                    // of a parcel, which the app stopped sending long ago.
+                    "Одразу — лише ціль досягнута, товар знову в наявності, кінець паузи й " +
+                        "платне зберігання. Решта — в одному ранковому зведенні."
                 )
                 SettingsRow(
                     Icons.Default.Security,
                     "Приватність",
-                    "Вішлісти й фінанси зберігаються лише на телефоні. API-ключі не вшиті в APK."
+                    // Both halves of the old sentence were false: the appraisal
+                    // key is built into the APK on purpose (HANDOFF §10), and the
+                    // appraisal sends a wish's name and description to Google.
+                    "Вішлісти й фінанси зберігаються лише на телефоні. Оцінка товару " +
+                        "надсилає Google назву й опис товару — без ціни і без ваших сум."
                 )
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 ListItem(

@@ -89,14 +89,31 @@ fun monthsLabel(count: Int): String {
     return "$count $word"
 }
 
-/** Reads a typed amount, accepting a comma as the decimal separator. */
-fun parseAmount(text: String): Double = text.trim().replace(',', '.').toDoubleOrNull() ?: 0.0
+/**
+ * Reads a typed amount, accepting a comma as the decimal separator.
+ *
+ * Spaces are dropped first, ordinary and non-breaking alike: "1 500" and
+ * "1 500,50" are how a figure copied out of a bank app or a shop page arrives, and
+ * both used to read as nothing at all — a saving target silently set to nought.
+ */
+fun parseAmount(text: String): Double =
+    text.filterNot { it.isWhitespace() || it == ' ' || it == ' ' }
+        .replace(',', '.')
+        .toDoubleOrNull()
+        ?.takeIf { it.isFinite() } ?: 0.0
 
-/** Prefills an input box, leaving it empty for zero rather than showing "0.0". */
+/**
+ * Prefills an input box, leaving it empty for zero rather than showing "0.0".
+ *
+ * Rounded to kopecks. A figure that came out of arithmetic — income less a rent in
+ * dollars, a dollar price converted — is a double with a long tail, and the box
+ * used to open reading «8863.509999999998».
+ */
 fun amountText(value: Double): String = when {
-    value <= 0.0 -> ""
+    value <= 0.0 || !value.isFinite() -> ""
     value % 1.0 == 0.0 -> value.toLong().toString()
-    else -> value.toString()
+    else -> java.math.BigDecimal(value).setScale(2, java.math.RoundingMode.HALF_UP)
+        .stripTrailingZeros().toPlainString()
 }
 
 /** "19:45", for showing how fresh a cached figure is. */

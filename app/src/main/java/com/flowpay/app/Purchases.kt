@@ -91,7 +91,7 @@ fun untrackedNote(order: Order): String? = when {
     isAutoTracked(order) -> null
     order.tracking.isBlank() -> "Трек-номера ще немає. Етап можна змінити дотиком."
     else -> "Це не номер Нової Пошти, тож FlowPay сам його не перевіряє. " +
-        "Етап змінюється дотиком, а де посилка — видно на 17TRACK."
+        "Етап змінюється дотиком, а де посилка — видно на сайті ${trackingSite(order)?.name ?: "перевізника"}."
 }
 
 /**
@@ -113,18 +113,39 @@ fun closeActionLabel(order: Order): String =
  */
 fun closeActionDue(order: Order): Boolean = order.digital || order.status == RECEIVED
 
+/** A carrier's own tracking page, and what to call it on a button. */
+data class TrackingSite(val name: String, val url: String)
+
+// A UPU S10 number: two letters, nine digits, the country of the post that
+// accepted it. RL778364634EE is Estonia's; a number ending UA is Ukrposhta's own.
+private val S10 = Regex("""^[A-Z]{2}\d{9}[A-Z]{2}$""")
+private val UKRPOSHTA_DOMESTIC = Regex("""^\d{13}$""")
+
 /**
- * Where a number this app cannot read is followed instead.
+ * Where a number this app cannot read is followed instead, or null.
  *
- * 17TRACK reads several thousand carriers, including Ukrposhta and the European
- * posts that carry Temu's parcels into it, and it opens in Ukrainian. Null for an
- * empty number and for Nova Poshta, which the app follows itself.
+ * The carrier's own page where the number says who it is: thirteen digits, or an
+ * S10 ending in UA — the suffix only Ukraine's designated post may issue — is
+ * Ukrposhta. Everything else — a foreign
+ * post's S10, a marketplace's own number — goes to 17TRACK, which reads several
+ * thousand carriers, follows a Temu parcel across both posts, and opens in
+ * Ukrainian. None of these has a public API this app could ask instead: Ukrposhta
+ * and Meest both want a contract token. Null for an empty number, for a download,
+ * and for Nova Poshta, which the app follows itself.
  */
-fun trackingPageUrl(order: Order): String? {
-    val number = order.tracking.filter { !it.isWhitespace() }
+fun trackingSite(order: Order): TrackingSite? {
+    val number = order.tracking.filter { !it.isWhitespace() }.uppercase()
     if (order.digital || number.isEmpty() || isAutoTracked(order)) return null
-    return "https://t.17track.net/uk#nums=" + URLEncoder.encode(number, "UTF-8")
+    val encoded = URLEncoder.encode(number, "UTF-8")
+    return when {
+        UKRPOSHTA_DOMESTIC.matches(number) || (S10.matches(number) && number.endsWith("UA")) ->
+            TrackingSite("Укрпошти", "https://track.ukrposhta.ua/tracking_UA.html?barcode=$encoded")
+        else -> TrackingSite("17TRACK", "https://t.17track.net/uk#nums=$encoded")
+    }
 }
+
+/** Just the address of [trackingSite]. */
+fun trackingPageUrl(order: Order): String? = trackingSite(order)?.url
 
 /** Where the open/shut state of the purchase archive is remembered. */
 const val SECTION_ORDER_ARCHIVE = "orderarchive"

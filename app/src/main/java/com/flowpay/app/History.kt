@@ -106,6 +106,14 @@ fun windowPrices(
     return listOfNotNull(carried) + inside + listOfNotNull(now)
 }
 
+/** How far today stands above the window's low, as a percentage of that low. */
+fun overLowPercent(insight: PriceInsight): Double =
+    if (insight.referenceLow > 0.0 && insight.current > insight.referenceLow) {
+        (insight.current - insight.referenceLow) / insight.referenceLow * 100
+    } else {
+        0.0
+    }
+
 /** A price the app's own history says a later "discount" should be measured from. */
 data class PriorLow(val price: Double, val day: Long)
 
@@ -198,9 +206,19 @@ fun priceInsight(
 
     // A fall is in progress and the window was cheaper than the fall has reached:
     // that, and only that, is the inflate-then-discount pattern worth naming.
-    val priorLow = if (current > 0.0 && current < referenceHigh && referenceLow < current) {
-        recent.filter { it.price == referenceLow }.maxByOrNull { it.day }
-            ?.let { PriorLow(it.price, it.day) }
+    //
+    // In that order, and falling now. The condition used to look only at the three
+    // figures, so 1 500 → 900 → 1 200 — a price on its way up — was told in red
+    // that the shop counted a discount from 1 500 while it had been 900: a pattern
+    // claimed about a shop that had done nothing of the kind.
+    val lowPoint = recent.filter { it.price == referenceLow }.maxByOrNull { it.day }
+    val highDay = recent.filter { it.price == referenceHigh }.maxOfOrNull { it.day }
+    val falling = history.size >= 2 && history.last().price < history[history.size - 2].price
+    val priorLow = if (
+        current > 0.0 && current < referenceHigh && referenceLow < current &&
+        lowPoint != null && highDay != null && lowPoint.day < highDay && falling
+    ) {
+        PriorLow(lowPoint.price, lowPoint.day)
     } else {
         null
     }
@@ -334,7 +352,9 @@ fun priceAlertFor(previous: Wish, newPrice: Double): PriceAlertDecision {
     if (newPrice <= 0.0) return PriceAlertDecision(AlertKind.NONE, previous.notifiedPrice)
 
     val target = previous.targetPrice
-    if (target > 0 && previous.price > target && newPrice <= target) {
+    // A price of nought is "not known yet", not "already under the target": the
+    // first real reading of a wish added with a target is the crossing.
+    if (target > 0 && (previous.price <= 0 || previous.price > target) && newPrice <= target) {
         return PriceAlertDecision(AlertKind.TARGET_REACHED, newPrice)
     }
 
@@ -342,7 +362,11 @@ fun priceAlertFor(previous: Wish, newPrice: Double): PriceAlertDecision {
     // a thing back in stock can go out again, whereas a low price is still a low
     // price tomorrow. The price alone would announce nothing, since a page that
     // stopped answering usually resumes at the figure it left off at.
-    if (isStale(previous.freshness)) {
+    //
+    // Only from sold out, though. Any stale state used to count, so a shared link
+    // whose page failed the first time, or a shop that served one half-page,
+    // interrupted with «Знову в наявності» about something that was never sold out.
+    if (previous.freshness == Freshness.OUT_OF_STOCK) {
         return PriceAlertDecision(AlertKind.BACK_IN_STOCK, newPrice)
     }
 

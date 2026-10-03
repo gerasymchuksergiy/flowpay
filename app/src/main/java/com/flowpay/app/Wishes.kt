@@ -206,7 +206,14 @@ fun readSource(
     today: Long,
     rate: FxRate
 ): SourceReading = when (
-    val match = matchOffer(extractOffers(html), previous.variant, previous.price)
+    // Nearest in the page's own money. The stored price is hryvnia, and for a shop
+    // quoting dollars the editions are in dollars — $59.99 and $69.99 measured
+    // against ₴2 460 picked the dearer one, a false 17% rise on the next refresh.
+    val match = matchOffer(
+        extractOffers(html),
+        previous.variant,
+        if (previous.currency != UAH && previous.amount > 0.0) previous.amount else previous.price
+    )
 ) {
     is OfferMatch.Found -> {
         val converted = toHryvnia(match.offer.price, match.offer.currency, rate)
