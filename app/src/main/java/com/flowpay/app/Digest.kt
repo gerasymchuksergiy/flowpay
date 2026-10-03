@@ -57,9 +57,26 @@ fun urgentStorageText(daysLeft: Int): String =
  * point and is correctly reported as no news rather than as a change of its whole
  * price.
  */
-fun recentChange(wish: Wish, today: Long, days: Int = DIGEST_WINDOW_DAYS): Double? {
+fun recentChange(
+    wish: Wish,
+    today: Long,
+    days: Int = DIGEST_WINDOW_DAYS,
+    /**
+     * The price the last morning message saw for this wish, when there was one.
+     *
+     * It is the honest baseline, and the day-based one is not: a fall recorded at
+     * two in the afternoon is dated yesterday by the time the next message is
+     * built, so it already counted as "before" — and the nine o'clock message of
+     * the day it happened had gone out hours earlier. About half of all falls were
+     * never told, and since the background pass no longer rings for an ordinary
+     * fall, the message was the only place they could have been.
+     */
+    lastSaid: Double? = null
+): Double? {
     if (wish.price <= 0.0) return null
-    val before = wish.history.lastOrNull { it.day in 1..(today - days) }?.price ?: return null
+    val before = lastSaid?.takeIf { it > 0.0 }
+        ?: wish.history.lastOrNull { it.day in 1..(today - days) }?.price
+        ?: return null
     val change = wish.price - before
     return change.takeIf { it != 0.0 }
 }
@@ -110,7 +127,9 @@ fun digest(
      * been filed, [priceLines] skips a wish deliberately put on hold. The payment
      * lines were the one place still nagging about something already dealt with.
      */
-    paid: List<PaidMark> = emptyList()
+    paid: List<PaidMark> = emptyList(),
+    /** Each wish's price as the previous message saw it, by id. See [recentChange]. */
+    lastSaid: Map<String, Double> = emptyMap()
 ): Digest {
     val news = buildList {
         // Leads, because it is the only line here the user asked for by name. The
@@ -131,7 +150,7 @@ fun digest(
         parcelLine(orders, today)?.let { add(it) }
         addAll(paymentLines(pays, today, holidays, paid))
         addAll(amountLines(pays, today.toEpochDay()))
-        addAll(priceLines(wishes, today.toEpochDay()))
+        addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
     }
     if (news.isEmpty()) return Digest("", emptyList())
 
@@ -259,10 +278,12 @@ private fun amountLines(pays: List<Pay>, today: Long): List<String> =
  * than an immediate alert may. One whose page stopped stating a readable price is
  * showing its last known figure, so a "fall" against it would be an invention.
  */
-private fun priceLines(wishes: List<Wish>, today: Long): List<String> {
+private fun priceLines(wishes: List<Wish>, today: Long, lastSaid: Map<String, Double>): List<String> {
     val moved = wishes
         .filterNot { onHold(it, today) || isStale(it.freshness) }
-        .mapNotNull { wish -> recentChange(wish, today)?.let { wish to it } }
+        .mapNotNull { wish ->
+            recentChange(wish, today, lastSaid = lastSaid[wish.id])?.let { wish to it }
+        }
     val fell = moved.filter { it.second < 0 }.sortedBy { it.second }
     val rose = moved.count { it.second > 0 }
     return buildList {

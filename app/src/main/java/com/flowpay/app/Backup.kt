@@ -25,7 +25,11 @@ private const val BACKUP_SUFFIX = ".json"
 
 /** "flowpay-2026-09-12.json" — dated, so the folder sorts itself by name. */
 fun backupFileName(date: LocalDate): String =
-    "%s%04d-%02d-%02d%s".format(BACKUP_PREFIX, date.year, date.monthValue, date.dayOfMonth, BACKUP_SUFFIX)
+    String.format(
+        java.util.Locale.ROOT,
+        "%s%04d-%02d-%02d%s",
+        BACKUP_PREFIX, date.year, date.monthValue, date.dayOfMonth, BACKUP_SUFFIX
+    )
 
 /**
  * Whether a file in the folder is one of ours.

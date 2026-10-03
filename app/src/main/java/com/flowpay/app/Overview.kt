@@ -42,6 +42,24 @@ data class Overview(
     val movement: PriceMovement
 )
 
+/**
+ * What one wish asks of this month.
+ *
+ * The plan as it is actually set: a wish planned by date asks what the date
+ * demands, and a wish already fully saved for asks nothing. Summing the stored
+ * monthly figure instead counted «Знаю дату» wishes as nought — so «Плани не
+ * сходяться» could never fire for them — and kept paying into wishes already paid.
+ */
+fun plannedMonthly(wish: Wish, today: LocalDate): Double {
+    val goal = wishGoal(wish)
+    if (goal > 0.0 && wish.saved >= goal) return 0.0
+    if (wish.deadline > 0L) {
+        return deadlinePlan(goal, wish.saved, today, LocalDate.ofEpochDay(wish.deadline))
+            .monthly.coerceAtLeast(0.0)
+    }
+    return wish.monthlyPlan.coerceAtLeast(0.0)
+}
+
 fun overview(
     wishes: List<Wish>,
     pays: List<Pay>,
@@ -56,7 +74,7 @@ fun overview(
     val expenses = monthlyTotal(pays, usdSellRate, today)
     val month = budget(income, expenses)
     val remaining = (goals - saved).coerceAtLeast(0.0)
-    val planned = wishes.sumOf { it.monthlyPlan.coerceAtLeast(0.0) }
+    val planned = wishes.sumOf { plannedMonthly(it, today) }
     return Overview(
         movement = priceMovement(wishes),
         wishCount = wishes.size,
@@ -117,9 +135,15 @@ fun widgetSummary(
     orders: List<Order>,
     income: Double,
     usdSellRate: Double,
-    today: LocalDate
+    today: LocalDate,
+    /**
+     * What has been ticked off. The pill and the digest leave a paid bill out
+     * through [stillOwing], and the widget kept announcing it — three surfaces
+     * that must agree, and one of them did not.
+     */
+    marks: List<PaidMark> = emptyList()
 ): WidgetSummary {
-    val next = nextPayment(pays, today, usdSellRate)
+    val next = nextPayment(stillOwing(pays, marks, today), today, usdSellRate)
     val month = budget(income, monthlyTotal(pays, usdSellRate, today))
     return WidgetSummary(
         paymentName = next?.let { dueSummary(it.items) } ?: "Платежів не заплановано",
@@ -128,6 +152,7 @@ fun widgetSummary(
         paymentAmount = next?.let { totalLabel(it.total) }.orEmpty(),
         hasPayment = next != null,
         freeCash = freeCashLine(month),
-        parcels = branchLine(orders.count { it.status == AT_BRANCH })
+        // A filed purchase is not waiting anywhere.
+        parcels = branchLine(orders.count { it.status == AT_BRANCH && it.archivedDay == 0L })
     )
 }

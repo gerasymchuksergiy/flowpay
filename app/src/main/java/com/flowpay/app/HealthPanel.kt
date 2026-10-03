@@ -229,7 +229,7 @@ private fun HourChip(hour: Int, selected: Boolean, onPick: () -> Unit) {
             .padding(horizontal = Space.lg, vertical = Space.md)
     ) {
         Text(
-            "%02d:00".format(hour),
+            String.format(java.util.Locale.ROOT, "%02d:00", hour),
             color = if (selected) AccentInk else TextSecondary,
             fontSize = Type.captionSize,
             fontWeight = Type.medium,

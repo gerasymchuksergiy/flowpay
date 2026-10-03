@@ -570,6 +570,16 @@ class Store(context: Context) {
     fun saveAlerted(keys: List<String>) =
         prefs.edit { putString("alerted", JSONArray(keys.takeLast(ALERT_MEMORY)).toString()) }
 
+    /** Each wish's price as the last morning message saw it. Not app data: no backup. */
+    fun digestPrices(): Map<String, Double> = runCatching {
+        val o = JSONObject(prefs.getString("digest_p", "{}") ?: "{}")
+        o.keys().asSequence().associateWith { o.optDouble(it, 0.0) }
+    }.getOrDefault(emptyMap())
+
+    fun saveDigestPrices(prices: Map<String, Double>) = prefs.edit {
+        putString("digest_p", JSONObject().apply { prices.forEach { (id, price) -> put(id, price) } }.toString())
+    }
+
     /** Epoch day the payment reminder last ran, so a day is never repeated. */
     fun lastReminderDay(): Long = prefs.getLong("reminded", 0L)
 
@@ -612,15 +622,28 @@ class Store(context: Context) {
      * only sharpen it.
      */
     fun holidays(year: Int): Set<Long> = runCatching {
-        val cached = JSONObject(prefs.getString("hol", "{}") ?: "{}")
+        // One key per year, so December can hold January's calendar as well. The
+        // single "hol" key the app used before is still read for its own year.
+        val raw = prefs.getString("hol_$year", null) ?: prefs.getString("hol", "{}") ?: "{}"
+        val cached = JSONObject(raw)
         if (cached.optInt("y") != year) return emptySet()
         val days = cached.optJSONArray("d") ?: return emptySet()
         (0 until days.length()).map { days.getLong(it) }.toSet()
     }.getOrDefault(emptySet())
 
+    /**
+     * The holidays a charge in the coming weeks can fall on.
+     *
+     * In December that includes next year's: a charge due on Sunday the 3rd of
+     * January moves back to Friday the 1st, which is New Year's Day, unless the
+     * new year's calendar is already known.
+     */
+    fun holidaysAround(today: LocalDate): Set<Long> =
+        holidays(today.year) + if (today.monthValue == 12) holidays(today.year + 1) else emptySet()
+
     fun saveHolidays(year: Int, days: Set<Long>) = prefs.edit {
         putString(
-            "hol",
+            "hol_$year",
             JSONObject()
                 .put("y", year)
                 .put("d", JSONArray().apply { days.sorted().forEach { put(it) } })
@@ -1097,7 +1120,9 @@ fun payJson(pay: Pay): JSONObject = JSONObject()
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
-    o.optDouble("a"),
+    // A default, so an entry missing its amount reads as nought rather than NaN,
+    // which would quietly poison every total it was summed into.
+    o.optDouble("a", 0.0).takeIf { it.isFinite() } ?: 0.0,
     o.optInt("d", 1),
     // Entries saved before currencies existed were all hryvnia.
     o.optString("cur", UAH).ifBlank { UAH },
@@ -4358,7 +4383,8 @@ fun SharedTransitionScope.WishDetailScreen(
                         )
 
                         byDate && monthsLeft == 0 -> PlanTile(
-                            "Менше місяця до дати",
+                            // A date already behind is not «less than a month away».
+                            if (deadlineDate?.isAfter(today) == true) "Менше місяця до дати" else "Дата вже минула",
                             "Потрібно ${money(plan.remaining)} одразу",
                             Modifier.fillMaxWidth()
                         )
@@ -4899,7 +4925,19 @@ fun CalculatorScreen(store: Store) {
             contentPadding = PaddingValues(bottom = navClearance() + Space.huge)
         ) {
             // Item zero is the header alone: that is the block the compact bar watches.
-            item { ScreenHeader("MONOBANK", "Курс і суми", "Конвертація валют та швидкі розрахунки") }
+            // The source the figure on this screen actually came from. It always
+            // said MONOBANK, including on the days the rate was the NBU's.
+            item {
+                ScreenHeader(
+                    when (rate.source) {
+                        SOURCE_MONOBANK -> "MONOBANK"
+                        SOURCE_NBU -> "НБУ"
+                        else -> "КУРС"
+                    },
+                    "Курс і суми",
+                    "Конвертація валют та швидкі розрахунки"
+                )
+            }
             item {
                 Column(Modifier.padding(horizontal = Space.screen)) {
                     Card(
@@ -5348,7 +5386,7 @@ fun PaymentsScreen(
     val record = monthRecord(items, paid, thisMonth, today, rate.sell)
     // Empty until a background pass has fetched the year, and empty is a working
     // state: the weekend rule stands on its own without it.
-    val holidays = remember { store.holidays(today.year) }
+    val holidays = remember { store.holidaysAround(today) }
     val listState = rememberLazyListState()
     // Which half of the screen is showing. Not remembered: the schedule is what
     // the tab is opened for, and the history is a question asked on purpose.
@@ -5388,7 +5426,9 @@ fun PaymentsScreen(
                         // The loudest figure should be one you can act on. A monthly total is
                         // read and forgotten; the next payment is prepared for, so it takes
                         // the panel and the total moves down into the summary rows.
-                        val next = nextPayment(items, today, rate.sell)
+                        // What is still owed, as the pill and the digest count it: a
+                    // bill already ticked off is not the next thing to prepare for.
+                    val next = nextPayment(stillOwing(items, paid, today), today, rate.sell)
                         HeroPanel(
                             label = if (next != null) {
                                 "Найближчий платіж · ${dueLabel(next.daysAway)}"
@@ -7149,7 +7189,8 @@ fun SettingsScreen(
     var lastBackup by remember { mutableLongStateOf(store.lastBackupAt()) }
     var backingUp by remember { mutableStateOf(false) }
     var exportingCsv by remember { mutableStateOf(false) }
-    val thisYear = remember { LocalDate.now().year }
+    // The year the export is about, which through January is the one just ended.
+    val thisYear = remember { exportYear(LocalDate.now()) }
     val backupPermitted = remember(backupFolder, lastBackup) {
         holdsBackupPermission(context, backupFolder)
     }

@@ -65,12 +65,47 @@ val CSV_HEADER = listOf("Розділ", "Назва", "Коли", "Сума", "�
  * do. It is avoided here because a quoted numeric cell is a cell Excel may decide
  * is text, and a column of text is a column that will not total.
  */
-fun csvField(value: String): String =
-    if (value.any { it == CSV_SEPARATOR || it == '"' || it == '\n' || it == '\r' }) {
-        "\"" + value.replace("\"", "\"\"") + "\""
+fun csvField(value: String): String {
+    val safe = if (looksLikeFormula(value)) "'$value" else value
+    return if (safe.any { it == CSV_SEPARATOR || it == '"' || it == '\n' || it == '\r' }) {
+        "\"" + safe.replace("\"", "\"\"") + "\""
     } else {
-        value
+        safe
     }
+}
+
+/**
+ * Whether a spreadsheet would run this text as a formula.
+ *
+ * «+380 Київстар» and «-30% Навушники» opened as #NAME? in Excel. A leading
+ * apostrophe is the spreadsheet's own way of saying "this is text", and it is not
+ * shown. A plain negative number is left alone, so an amount stays an amount.
+ */
+private fun looksLikeFormula(value: String): Boolean {
+    val first = value.firstOrNull() ?: return false
+    if (first == '=' || first == '+' || first == '@' || first == '\t') return true
+    return first == '-' && value.drop(1).replace(',', '.').toDoubleOrNull() == null
+}
+
+/**
+ * The year an export is about on [today].
+ *
+ * The year that has just ended, through January. On the 5th of January the new
+ * year holds five days and no marks, and the export used to write a file of
+ * nothing but projected subscriptions — and report success — while the whole of
+ * the old year was still on the phone and could not be had.
+ */
+fun exportYear(today: LocalDate): Int =
+    if (today.monthValue == 1) today.year - 1 else today.year
+
+/**
+ * Whether a year's rows hold anything that happened.
+ *
+ * The subscription rows are a projection and are always there when an expense
+ * exists, so they cannot answer whether the year is empty.
+ */
+fun hasRecordedRows(rows: List<List<String>>): Boolean =
+    rows.any { it.firstOrNull() == SECTION_PAID || it.firstOrNull() == SECTION_PURCHASE }
 
 /** One line of the table. */
 fun csvRow(fields: List<String>): String =

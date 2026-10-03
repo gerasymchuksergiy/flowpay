@@ -375,7 +375,11 @@ private fun theMonthItself(
     }
     // Nothing to compare against, so the same figures answer the other question:
     // not what changed, but what survives them.
-    val bar = committedOf(budget(income, monthlyTotal(pays, usdSellRate, today)))
+    // The recap's own month. Built from today's it described September with
+    // October's costs — an annual fee that lands in October included.
+    val bar = committedOf(
+        budget(income, monthlyTotal(pays, usdSellRate, today, monthKeyDate(month) ?: today))
+    )
     if (bar.state != CommittedState.UNKNOWN && bar.committed > 0.0) {
         return RecapCard(
             kind = RecapKind.COMMITTED_SHARE,
@@ -404,6 +408,9 @@ private fun theMonthItself(
  * not a judgement — nothing here says the subscriptions should have been the
  * headphones — it is the same number in a unit the person picked themselves.
  */
+/** Below this a multiple reads as «0,4 ×», and a share of the wish says it better. */
+private const val ALMOST_ONE = 0.95
+
 private fun conversion(
     wishes: List<Wish>,
     pays: List<Pay>,
@@ -415,10 +422,17 @@ private fun conversion(
     val dearest = wishes.filter { wishGoal(it) > 0.0 }.maxByOrNull { wishGoal(it) }
     if (dearest != null) {
         val goal = wishGoal(dearest)
+        val times = yearly.total / goal
         return RecapCard(
             kind = RecapKind.YEAR_IN_WISHES,
             overline = "Рік постійних витрат — це",
-            headline = "${figure(yearly.total / goal, 1)} × «${dearest.name}»",
+            // A share below one used to print as «0,0 × «Ноутбук»», which says
+            // nothing. Under one whole wish it is a percentage of it.
+            headline = if (times >= ALMOST_ONE) {
+                "${figure(times, 1)} × «${dearest.name}»"
+            } else {
+                "${figure(times * 100, 0)}% «${dearest.name}»"
+            },
             detail = "${totalLabel(yearly)} на рік, ${money(goal)} за бажання"
         )
     }
@@ -434,8 +448,7 @@ private fun conversion(
 
 /** What the subscriptions themselves did, with the good outcome said out loud. */
 private fun subscriptions(pays: List<Pay>, firstDay: Long, lastDay: Long): RecapCard? {
-    val moved = pays.mapNotNull { pay -> lastAmountChange(pay)?.let { pay to it } }
-        .filter { it.second.day in firstDay..lastDay }
+    val moved = pays.mapNotNull { pay -> amountChangeIn(pay, firstDay, lastDay)?.let { pay to it } }
         .maxByOrNull { kotlin.math.abs(it.second.percent) }
     if (moved != null) {
         val (pay, change) = moved
@@ -506,12 +519,13 @@ private fun label(
         return card("Снайпер", "«${sniped.name}» куплено за найнижчою ціною, яку бачив трекер")
     }
 
-    val caught = pays.mapNotNull { pay -> lastAmountChange(pay)?.let { pay to it } }
-        .firstOrNull { it.second.day in firstDay..lastDay }
+    val caught = pays.firstNotNullOfOrNull { pay -> amountChangeIn(pay, firstDay, lastDay)?.let { pay to it } }
     if (caught != null) {
         return card(
             "Ревізор",
-            "${caught.first.name} змінила ціну, і це не пройшло непоміченим"
+            // Without a verb that has to agree with the name's gender, which the
+            // app cannot know: «Інтернет змінила ціну» was the result.
+            "${caught.first.name}: ціна змінилась, і це не пройшло непоміченим"
         )
     }
 
@@ -522,7 +536,13 @@ private fun label(
 
     val due = monthKeyDate(month)?.let { start -> pays.filter { chargesIn(it, start) } }.orEmpty()
     if (due.isNotEmpty() && due.all { isPaid(marks, it.name, month) }) {
-        return card("Бухгалтер", "Усі ${paymentsLabel(due.size)} цього місяця позначені")
+        // The recap is about a month that has ended, so not «цього місяця»; and
+        // not «Усі 1 платіж» when there was one.
+        return card(
+            "Бухгалтер",
+            if (due.size == 1) "Єдиний платіж місяця позначено"
+            else "Усі ${paymentsLabel(due.size)} місяця позначені"
+        )
     }
 
     if (wishes.size >= CARTOGRAPHER_POSITIONS) {

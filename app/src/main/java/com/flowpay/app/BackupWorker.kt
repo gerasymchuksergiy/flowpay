@@ -49,7 +49,10 @@ class BackupWorker(context: Context, parameters: WorkerParameters) :
 
     companion object {
         fun schedule(context: Context) {
-            val request = PeriodicWorkRequestBuilder<BackupWorker>(BACKUP_DAYS, TimeUnit.DAYS)
+            // Asked daily, written weekly: [backupDue] is the gate. A seven-day period
+            // behind a seven-day check meant any copy made by hand pushed the next
+            // automatic one a whole extra week out — fourteen days between copies.
+            val request = PeriodicWorkRequestBuilder<BackupWorker>(1, TimeUnit.DAYS)
                 // Nothing here leaves the phone, so no network is asked for: the
                 // chosen folder may well be a card or the phone's own storage.
                 .setConstraints(Constraints.Builder().build())
@@ -157,12 +160,13 @@ fun writeExpenseCsv(context: Context, store: Store, today: LocalDate): CsvExport
     val marks = store.paidMarks(today)
     val orders = store.orders()
     val rate = store.fxRate().first.sell
-    val rows = expenseRows(pays, marks, orders, today.year, rate)
+    val year = exportYear(today)
+    val rows = expenseRows(pays, marks, orders, year, rate)
     // A file holding nothing but column names is worse than no file: it looks like
     // the export worked and the year was empty, and only one of those is true.
-    if (rows.isEmpty()) return CsvExport(null, 0)
+    if (!hasRecordedRows(rows)) return CsvExport(null, 0)
 
-    val name = expenseCsvFileName(today.year)
+    val name = expenseCsvFileName(year)
     val written = runCatching {
         val tree = store.backupFolder().toUri()
         val parent = DocumentsContract.buildDocumentUriUsingTree(
@@ -185,7 +189,7 @@ fun writeExpenseCsv(context: Context, store: Store, today: LocalDate): CsvExport
             // Encoded explicitly. The byte order mark at the head of the text is
             // only worth writing if the bytes after it are actually UTF-8.
             stream.write(
-                expenseCsv(pays, marks, orders, today.year, rate).toByteArray(Charsets.UTF_8)
+                expenseCsv(pays, marks, orders, year, rate).toByteArray(Charsets.UTF_8)
             )
         } ?: error("тека недоступна для запису")
     }.isSuccess

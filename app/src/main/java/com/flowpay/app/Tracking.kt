@@ -458,9 +458,13 @@ fun parseCarrierDate(raw: String): LocalDate? {
     val head = raw.trim().take(10)
     val parts = head.split('.', '-')
     if (parts.size != 3) return null
-    val day = parts[0].toIntOrNull() ?: return null
+    // Year first is unambiguous when the first part has four digits, and the same
+    // response writes TrackingUpdateDate that way — a storage date in that shape
+    // used to read as day 2026 and vanish, taking the paid-storage warning with it.
+    val yearFirst = parts[0].length == 4
+    val day = (if (yearFirst) parts[2] else parts[0]).toIntOrNull() ?: return null
     val month = parts[1].toIntOrNull() ?: return null
-    val year = parts[2].toIntOrNull() ?: return null
+    val year = (if (yearFirst) parts[0] else parts[2]).toIntOrNull() ?: return null
     if (year < 2000 || month !in 1..12 || day !in 1..31) return null
     return runCatching { LocalDate.of(year, month, day) }.getOrNull()
 }

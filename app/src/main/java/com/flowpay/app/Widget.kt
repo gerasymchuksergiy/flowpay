@@ -46,7 +46,8 @@ class FlowPayWidget : GlanceAppWidget() {
             // The widget never fetches: a rate it cannot refresh is one the app
             // already has, and totalLabel says so out loud when it is missing.
             usdSellRate = store.fxRate().first.sell,
-            today = LocalDate.now()
+            today = LocalDate.now(),
+            marks = store.paidMarks()
         )
         provideContent { WidgetBody(summary) }
     }

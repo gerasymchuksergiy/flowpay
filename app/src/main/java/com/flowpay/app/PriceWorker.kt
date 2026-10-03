@@ -37,10 +37,16 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         }
         val stamp = rate ?: store.fxRate().first
 
+        // WorkManager stops a worker at ten minutes, and nothing is saved until the
+        // end — so on a bad network a long list used to lose the whole pass. Past
+        // this budget the remaining wishes keep what they had and the pass saves
+        // what it did read; the next pass starts from the top again.
+        val deadline = System.currentTimeMillis() + PASS_BUDGET_MS
         val old = store.wishes()
         var pricesRead = 0
         var pagesAnswered = 0
         val fresh = old.map { previous ->
+            if (System.currentTimeMillis() > deadline) return@map previous
             when (val reading = refreshed(previous, today, stamp)) {
                 Reading.Failed -> previous
                 // A page that answered without a price is still news about the item,
@@ -120,7 +126,9 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         var parcelsRead = 0
         val checkedAt = System.currentTimeMillis()
         val freshParcels = parcels.map { order ->
-            if (!followed(order)) return@map order
+            if (!followed(order) || System.currentTimeMillis() > deadline + PARCEL_BUDGET_MS) {
+                return@map order
+            }
             val status = runCatching { parcelStatus(order.tracking) }.getOrNull() ?: return@map order
             parcelsRead++
             // A parcel changing stage is news, not an emergency: it goes into the
@@ -146,8 +154,10 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         // Once a year, and never in a way that can fail the pass. The payment
         // reminder shifts off weekends with or without this; the calendar only
         // adds the days a weekend rule cannot know about.
-        val year = java.time.LocalDate.now().year
-        if (store.holidays(year).isEmpty()) {
+        // In December, next year's as well — see [Store.holidaysAround].
+        val now = java.time.LocalDate.now()
+        val years = if (now.monthValue == 12) listOf(now.year, now.year + 1) else listOf(now.year)
+        years.filter { store.holidays(it).isEmpty() }.forEach { year ->
             runCatching { fetchHolidays(year) }.getOrNull()
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { store.saveHolidays(year, it) }
@@ -184,7 +194,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             NotificationManagerCompat.from(applicationContext).notify(
                 (name + text).hashCode(),
                 NotificationCompat.Builder(applicationContext, channelId)
-                    .setSmallIcon(android.R.drawable.star_big_on)
+                    .setSmallIcon(R.drawable.ic_tile)
                     .setContentTitle(name)
                     .setContentText(text)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -200,6 +210,12 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
     companion object {
         private const val CHANNEL_PRICES = "price_changes"
+
+        /** What the price half of a pass may spend before it stops asking shops. */
+        private const val PASS_BUDGET_MS = 7 * 60_000L
+
+        /** And the parcels after it, leaving a minute for saving and the widget. */
+        private const val PARCEL_BUDGET_MS = 90_000L
 
         /** How long after a pause ends it may still be announced, if no pass ran. */
         private const val HOLD_GRACE_DAYS = 3L

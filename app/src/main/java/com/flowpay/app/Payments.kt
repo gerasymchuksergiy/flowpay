@@ -292,7 +292,10 @@ fun annualElsewhereNote(items: List<Pay>, today: LocalDate, usdSellRate: Double)
     val dormant = annualElsewhere(items, today)
     if (dormant.isEmpty()) return null
     val total = totalOf(dormant.map { it.currency to it.amount }, usdSellRate)
-    return "Цього місяця не списуються · ${totalLabel(total)} протягом року"
+    // Not «цього місяця не списуються»: a fee charged on the 1st of this month
+    // moves here on the 2nd, and the sentence was then false about the one charge
+    // the month's total had just counted.
+    return "Далі ніж за місяць · ${totalLabel(total)} протягом року"
 }
 
 /**
@@ -350,6 +353,16 @@ fun withAmount(pay: Pay, amount: Double, today: Long): Pay {
     val seeded = pay.amounts.ifEmpty {
         listOfNotNull(PricePoint(pay.amount, 0L).takeIf { pay.amount > 0.0 })
     }
+    // A second edit on the same day corrects the first rather than following it.
+    // 269 → 3090 (a slip) → 309 used to keep all three, so the row read «було
+    // 3 090 → стало 309, −90%», the digest announced it, and the real 269 → 309
+    // raise was gone from «було».
+    val last = seeded.lastOrNull()
+    if (last != null && last.day == today && today > 0L) {
+        val before = seeded.dropLast(1)
+        val corrected = if (before.lastOrNull()?.price == amount) before else before + last.copy(price = amount)
+        return pay.copy(amount = amount, amounts = corrected)
+    }
     return pay.copy(amount = amount, amounts = appendPrice(seeded, amount, today))
 }
 
@@ -383,6 +396,21 @@ data class AmountChange(
     val percent: Double
 ) {
     val raised: Boolean get() = to > from
+}
+
+/**
+ * The largest move dated inside a span of days, or null.
+ *
+ * Every step of the trail, not only the last: a raise on the 20th of September
+ * followed by another on the 2nd of October left September's recap reading «Жодна
+ * не подорожчала», because the only change it looked at was October's.
+ */
+fun amountChangeIn(pay: Pay, firstDay: Long, lastDay: Long): AmountChange? {
+    val trail = amountTrail(pay)
+    return trail.zipWithNext()
+        .filter { (from, to) -> to.day in firstDay..lastDay && from.price > 0.0 && from.price != to.price }
+        .map { (from, to) -> AmountChange(from.price, to.price, to.day, (to.price - from.price) / from.price * 100) }
+        .maxByOrNull { kotlin.math.abs(it.percent) }
 }
 
 /** The latest move, or null while the expense has only ever cost one thing. */

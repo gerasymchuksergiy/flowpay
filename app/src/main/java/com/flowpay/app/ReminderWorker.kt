@@ -67,7 +67,7 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             today = today,
             usdSellRate = rate,
             income = store.income(),
-            holidays = store.holidays(today.year),
+            holidays = store.holidaysAround(today),
             rateTarget = rateTarget,
             rateDay = rateDay,
             // Read here rather than defaulted, because a default of "nothing was
@@ -75,7 +75,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             // morning message named bills that had been ticked off on the payments
             // screen days earlier, and a notification cannot be waved away in place
             // the way the pill now can.
-            paid = store.paidMarks(today)
+            paid = store.paidMarks(today),
+            lastSaid = store.digestPrices()
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
@@ -88,8 +89,16 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             store.saveRateTarget(disarmRateTarget(rateTarget, today.toEpochDay()))
         }
 
+        // What this message saw, so tomorrow's compares against it rather than
+        // against a calendar day — see [recentChange].
+        store.saveDigestPrices(store.wishes().filter { it.price > 0.0 }.associate { it.id to it.price })
         store.saveLastReminderDay(today.toEpochDay())
         store.saveLastRunAt(WORK_DIGEST, System.currentTimeMillis())
+        // Pins tomorrow's run to the chosen hour again. A twenty-four-hour period
+        // is absolute time, so each late start and each clock change used to carry
+        // over into every day after — on the 25th of October the message would
+        // have moved from nine to eight for good.
+        schedule(applicationContext)
         return Result.success()
     }
 
@@ -105,7 +114,7 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             NotificationManagerCompat.from(applicationContext).notify(
                 CHANNEL.hashCode(),
                 NotificationCompat.Builder(applicationContext, CHANNEL)
-                    .setSmallIcon(android.R.drawable.ic_popup_reminder)
+                    .setSmallIcon(R.drawable.ic_tile)
                     .setContentTitle(title)
                     .setContentText(text)
                     .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -141,15 +150,45 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             enqueue(context, ExistingPeriodicWorkPolicy.CANCEL_AND_REENQUEUE)
 
         private fun enqueue(context: Context, policy: ExistingPeriodicWorkPolicy) {
-            val hour = Store(context).digestHour()
+            val store = Store(context)
+            val now = LocalDateTime.now()
+            val nextAt = System.currentTimeMillis() + nextDigestDelay(
+                now,
+                store.digestHour(),
+                ranToday = store.lastReminderDay() == now.toLocalDate().toEpochDay()
+            )
+            // The exact moment of the next run, rather than an initial delay. An
+            // update keeps the original enqueue time and counts the new delay from
+            // it, so opening the app at two with the hour set to six fired the
+            // message at once, and every day at two after that.
             val request = PeriodicWorkRequestBuilder<ReminderWorker>(1, TimeUnit.DAYS)
-                .setInitialDelay(millisUntilNext(LocalTime.of(hour, 0)), TimeUnit.MILLISECONDS)
+                .setNextScheduleTimeOverride(nextAt)
                 // No network needed: this only reads what is already on the phone.
                 .setConstraints(Constraints.Builder().build())
                 .build()
             WorkManager.getInstance(context)
                 .enqueueUniquePeriodicWork(WORK_DIGEST, policy, request)
         }
+
+        /**
+         * How long until the next message should go.
+         *
+         * The next occurrence of the hour — unless the hour has passed today and
+         * today's message has not gone yet, which is what a phone asleep through
+         * nine looks like when it is opened at ten. Then soon, rather than pushing
+         * the day's message to tomorrow.
+         */
+        internal fun nextDigestDelay(now: LocalDateTime, hour: Int, ranToday: Boolean): Long {
+            val time = LocalTime.of(hour.coerceIn(0, 23), 0)
+            return if (!ranToday && now.toLocalTime() >= time) {
+                LATE_DIGEST_DELAY_MS
+            } else {
+                millisUntilNext(time, now)
+            }
+        }
+
+        /** A minute, so a late message is not sent in the middle of opening the app. */
+        private const val LATE_DIGEST_DELAY_MS = 60_000L
 
         /** Delay that lands the first run on the next occurrence of [time]. */
         internal fun millisUntilNext(time: LocalTime, from: LocalDateTime = LocalDateTime.now()): Long {

@@ -163,7 +163,7 @@ class BillingPeriodTest {
     fun `the annual section totals the real charges without dividing them by twelve`() {
         val note = annualElsewhereNote(listOf(domain, internet), today, usdSellRate = 0.0)
 
-        assertEquals("Цього місяця не списуються · ${money(1_200.0)} протягом року", note)
+        assertEquals("Далі ніж за місяць · ${money(1_200.0)} протягом року", note)
     }
 
     @Test
