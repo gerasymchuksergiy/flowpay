@@ -263,6 +263,9 @@ fun readSource(
                     amount = converted.amount,
                     currency = converted.currency,
                     rate = converted.rate,
+                    // What the shop says it used to cost, read on every visit: a
+                    // "discount" is a claim made on a particular day.
+                    listPrice = listPriceIn(html, match.offer, rate),
                     // Rewritten every read, not merely set when it is bad news, so
                     // that a shop which stocks the thing again cannot leave "знято
                     // з продажу" sitting under a live price for ever.

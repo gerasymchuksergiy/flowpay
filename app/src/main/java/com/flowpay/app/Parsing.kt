@@ -1036,6 +1036,7 @@ fun wishFromOffer(
                 variant = offer.label,
                 freshness = state,
                 checkedDay = today,
+                listPrice = if (state == Freshness.OK) listPriceIn(html, offer, rate) else 0.0,
                 amount = converted.amount,
                 currency = converted.currency,
                 rate = converted.rate,

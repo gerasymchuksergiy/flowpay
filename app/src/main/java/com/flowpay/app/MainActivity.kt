@@ -145,7 +145,12 @@ data class WishSource(
      * majority of shops, which declare nothing. Nothing is derived from it that a
      * shop's silence could get wrong.
      */
-    val availability: Availability = Availability.UNKNOWN
+    val availability: Availability = Availability.UNKNOWN,
+    /**
+     * The crossed-out "was" price the page declares beside [price], in hryvnia.
+     * Zero when it declares none. See Discounts.kt.
+     */
+    val listPrice: Double = 0.0
 )
 
 data class Wish(
@@ -985,6 +990,7 @@ fun sourceJson(source: WishSource): JSONObject = JSONObject()
     // By name, like the freshness beside it, so that the stored file stays readable
     // and adding a value later cannot silently renumber the ones already written.
     .put("av", source.availability.name)
+    .put("lp", source.listPrice)
 
 fun sourceOf(o: JSONObject): WishSource = WishSource(
     url = o.optString("u"),
@@ -1000,7 +1006,9 @@ fun sourceOf(o: JSONObject): WishSource = WishSource(
     // A source stored before availability was read declared nothing as far as this
     // app is concerned, which is exactly what [Availability.UNKNOWN] means, so old
     // data reads back behaving precisely as it did.
-    availability = availabilityStored(o.optString("av"))
+    availability = availabilityStored(o.optString("av")),
+    // Absent on everything read before the crossed-out price was: nothing declared.
+    listPrice = o.optDouble("lp", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0
 )
 
 /**
@@ -4181,11 +4189,34 @@ fun SharedTransitionScope.WishDetailScreen(
                             // The shop's own discount, checked against the app's record of
                             // what the price actually was before it. This is the figure EU
                             // law makes a shop quote, and the reason the rule exists.
+                            //
+                            // When the page itself crosses a figure out, that claim is
+                            // checked instead — see Discounts.kt — and the app's own
+                            // inference stays quiet so the two are not said twice.
                             if (!stale) {
-                                priorLowNote(insight)?.let { claim ->
+                                val listPrice = bestSource(wishSources(wish))?.listPrice ?: 0.0
+                                val todayDay = today.toEpochDay()
+                                val shopClaim = shopDiscountNote(listPrice, wish.price, wish.history, todayDay)
+                                (shopClaim ?: priorLowNote(insight))?.let { claim ->
                                     Text(
                                         claim,
-                                        color = Negative,
+                                        color = if (
+                                            shopClaim != null &&
+                                            discountIsReal(listPrice, wish.price, wish.history, todayDay)
+                                        ) {
+                                            TextPrimary
+                                        } else {
+                                            Negative
+                                        },
+                                        fontSize = Type.captionSize,
+                                        lineHeight = Type.captionLine,
+                                        modifier = Modifier.padding(top = Space.sm)
+                                    )
+                                }
+                                blackFridayNote(today, insight.daysTracked)?.let { note ->
+                                    Text(
+                                        note,
+                                        color = TextSecondary,
                                         fontSize = Type.captionSize,
                                         lineHeight = Type.captionLine,
                                         modifier = Modifier.padding(top = Space.sm)

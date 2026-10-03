@@ -272,8 +272,12 @@ fun referenceWindowNote(insight: PriceInsight): String? = when {
  */
 fun priorLowNote(insight: PriceInsight): String? {
     val prior = insight.priorLow ?: return null
-    return "Магазин рахує знижку від ${money(insight.referenceHigh)}, але за останні " +
-        "${daysLabel(insight.referenceDays)} ціна вже була ${money(prior.price)}"
+    // Said as what the app saw, not as what the shop claims: the shop's own
+    // crossed-out figure, when the page declares one, has its own sentence in
+    // Discounts.kt. This one used to put «Магазин рахує знижку від» in front of a
+    // number the app had taken from its own history.
+    return "Ціна впала з ${money(insight.referenceHigh)}, але за останні " +
+        "${daysLabel(insight.referenceDays)} вона вже була ${money(prior.price)}"
 }
 
 /** What to put on the card for each verdict. */
