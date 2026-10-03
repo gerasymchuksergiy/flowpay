@@ -298,6 +298,23 @@ tests over the pure functions. There are no instrumented tests and no device in
 the loop — **nothing in this app has ever been verified by looking at it.** Say so
 when it matters.
 
+**Screenshots without a phone (added 3 October 2026).** `ScreenShots.kt` in
+`app/src/test/java/com/flowpay/app/screens/` renders every tab of the real app,
+seeded with sample data, through Robolectric's native renderer and saves PNGs to
+`app/build/outputs/roborazzi/`:
+
+```bash
+./gradlew :app:testDebugUnitTest -Pshots
+```
+
+Same environment as above. Without `-Pshots` the screens are excluded, so CI never
+renders anything. Pinned on purpose: Roborazzi **1.60.0** (1.61+ is built with
+Kotlin 2.3, unreadable by this project's 2.1) and Robolectric `sdk = 34` (36 needs
+Java 21; 35+ also breaks on the space in the user folder path, which is why
+`maven.repo.local` points at `C:/Temp/robolectric-m2`). It is not a phone: no
+status bar, no HyperOS, blur and shaders unproven — but the composables, fonts
+and data are real, and the first renders matched the owner's own screenshots.
+
 ---
 
 ## 6. Shipping
