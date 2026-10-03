@@ -64,6 +64,11 @@ class ScreenShots {
         // The app's own motion snaps to its end state when this is nought, which
         // is what a still picture needs.
         Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 0f)
+        // The owner's Apple emoji, if this machine has them unpacked (they are
+        // not in the repository — see EmojiPack). Without them the renders fall
+        // back to the emoji font, which is what any other phone shows.
+        val pack = java.io.File(System.getProperty("flowpay.emojiPack") ?: "C:/Temp/flowpay-emoji")
+        if (pack.isDirectory) pack.copyRecursively(java.io.File(app.filesDir, "emoji"), overwrite = true)
         Store(app).run {
             saveWishes(sampleWishes())
             savePays(samplePays())
@@ -86,6 +91,13 @@ class ScreenShots {
     @Test fun payments() = shot(TAB_PAYMENTS, "3-payments")
     @Test fun orders() = shot(TAB_ORDERS, "4-orders")
     @Test fun overview() = shot(TAB_OVERVIEW, "5-overview")
+
+    // The same screens on a very tall window, so a whole list fits in one picture.
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h1900dp-440dpi")
+    fun paymentsWhole() = shot(TAB_PAYMENTS, "3b-payments-whole")
+
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h2600dp-440dpi")
+    fun overviewWhole() = shot(TAB_OVERVIEW, "5b-overview-whole")
 
     // ------------------------------------------------------------ sample data
 
@@ -116,7 +128,9 @@ class ScreenShots {
         Pay("Мобільний", 231.0, day = 23),
         Pay("Інтернет", 300.0, day = 1),
         Pay("Оренда квартири", 11_000.0, day = 1),
-        Pay("YouTube Premium", 179.0, day = 20)
+        Pay("YouTube Premium", 179.0, day = 20),
+        Pay("Netflix", 299.0, day = 28),
+        Pay("iCloud+", 99.0, day = 30)
     )
 
     private fun sampleOrders() = listOf(

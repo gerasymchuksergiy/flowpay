@@ -143,13 +143,19 @@ fun HeroPanel(
     muted: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
     /** Something that belongs to the figure — the days strip on Платежі — inside the panel. */
-    footer: (@Composable () -> Unit)? = null
+    footer: (@Composable () -> Unit)? = null,
+    /** A sticker in the top corner: what the figure is about. See Bento.kt. */
+    emoji: String? = null
 ) {
     Card(
         modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Accent),
         shape = Radius.lg
     ) {
+      Box {
+        emoji?.let {
+            EmojiSticker(it, HeroStickerSize, Modifier.align(Alignment.TopEnd).padding(top = Space.md, end = Space.lg))
+        }
         Row(
             // Generous at the sides, tighter top and bottom: the panel was carrying
             // more empty height than the figure inside it earned.
@@ -159,6 +165,8 @@ fun HeroPanel(
             Column(Modifier.weight(1f)) {
                 Text(
                     label,
+                    // Clear of the sticker, which sits over this line's far end.
+                    Modifier.padding(end = if (emoji != null) HeroStickerSize else 0.dp),
                     color = AccentInk.copy(alpha = 0.65f),
                     fontSize = Type.captionSize,
                     fontWeight = Type.medium
@@ -167,25 +175,30 @@ fun HeroPanel(
                 // Whole units at display size, the rest at half: «433» then «,47 ₴».
                 val (whole, rest) = heroParts(value)
                 val ink = if (muted) AccentInk.copy(alpha = 0.45f) else AccentInk
+                // In the bento display face, which is wide: the size steps down
+                // with the number of digits so a large sum stays on one line.
+                val size = displayFigureSize(whole, Type.displayBentoSize)
                 // The digits roll when the figure changes — a payment ticked off,
                 // the income edited — and stand still when the screen merely opens.
                 Row(verticalAlignment = Alignment.Bottom) {
                     RollingText(
                         whole,
                         color = ink,
-                        fontSize = Type.displaySize,
-                        letterSpacing = Type.displayTracking,
-                        fontWeight = Type.strong
+                        fontSize = size,
+                        letterSpacing = Type.displayBentoTracking,
+                        fontWeight = Type.strong,
+                        style = Tabular.copy(fontFamily = Display)
                     )
                     if (rest.isNotEmpty()) {
                         RollingText(
                             rest,
                             // Lifted to sit on the big figure's baseline: bottoms of
                             // two sizes align their descents, not their baselines.
-                            Modifier.padding(bottom = 7.dp),
+                            Modifier.padding(bottom = 4.dp),
                             color = ink.copy(alpha = ink.alpha * 0.6f),
-                            fontSize = Type.displayMinorSize,
-                            fontWeight = Type.strong
+                            fontSize = size * 0.5f,
+                            fontWeight = Type.strong,
+                            style = Tabular.copy(fontFamily = Display)
                         )
                     }
                 }
@@ -208,8 +221,12 @@ fun HeroPanel(
                 it()
             }
         }
+      }
     }
 }
+
+/** The hero panel's sticker. Large enough to read as the panel's subject. */
+val HeroStickerSize = 52.dp
 
 /**
  * A figure split into the part read at a glance and the part read after it.

@@ -117,6 +117,34 @@ val Negative = Color(0xffff7a6b)
 val HairLine = Color(0xff33362c)
 
 /**
+ * The bento tiles: six pastels with dark ink on them.
+ *
+ * The owner chose these on 3 October 2026, after calling the one-accent screens
+ * monotonous («все таке монотонне, скучне»). They do not replace [Accent]: lime
+ * stays the one loud panel per screen and the selected tab. A pastel is a
+ * *container* — the thing a payment or a parcel sits on — so the colour says
+ * "this is one of a set", never "look here".
+ *
+ * Ink is near-black at full strength and [TileInkSoft] at 72%, which is the
+ * lightest that still clears 4.5:1 on the darkest of the six (lavender, 5.1:1).
+ * At 62% it fell to 4.1. Never put [TextSecondary] or [Accent] on a tile: both
+ * are light colours meant for the dark ground and vanish on a pastel.
+ */
+val TileLavender = Color(0xffc9b8ff)
+val TileSky = Color(0xffa6d8ff)
+val TilePeach = Color(0xffffc4a3)
+val TileMint = Color(0xffa8efc9)
+val TilePink = Color(0xffffb8d9)
+val TileSand = Color(0xffefe9da)
+val TileInk = Color(0xff141414)
+val TileInkSoft = TileInk.copy(alpha = 0.72f)
+/** [Negative] is a light red for the dark ground; on a pastel it is 2.2:1. */
+val TileAlarm = Color(0xffa3221a)
+
+/** In the order a run of tiles takes them, so neighbours differ. */
+val TILE_COLOURS = listOf(TileLavender, TileSky, TilePeach, TileMint, TilePink, TileSand)
+
+/**
  * Grain, because near-black is where a panel runs out of numbers.
  *
  * An OLED cannot hold [AppBackground] accurately. Down here the effective
@@ -282,6 +310,10 @@ object Type {
     val displayLine = 56.sp
     val displayTracking = (-1.8).sp
     val displayMinorSize = 26.sp
+    // The hero figure in [Display]. Smaller than [displaySize] because Unbounded is
+    // wide: «27 891,06 ₴» at 52sp would run off a 393dp screen.
+    val displayBentoSize = 44.sp
+    val displayBentoTracking = (-1.0).sp
 
     val heroSize = 28.sp
     val heroLine = 32.sp
@@ -291,6 +323,8 @@ object Type {
     val screenTitleSize = 26.sp
     val screenTitleLine = 30.sp
     val screenTitleTracking = (-0.6).sp
+    // The title in [Display]; two sizes down from Inter's, for the width.
+    val screenTitleBentoSize = 24.sp
 
     val sectionSize = 20.sp
     val sectionLine = 26.sp
@@ -353,6 +387,23 @@ val Inter = FontFamily(
     Font(R.font.inter_regular, FontWeight.Normal),
     Font(R.font.inter_semibold, FontWeight.SemiBold),
     Font(R.font.inter_bold, FontWeight.Bold)
+)
+
+/**
+ * The display face of the bento look: Unbounded, wide and round.
+ *
+ * For figures and screen titles only — the things read at a glance. Running text
+ * stays in [Inter]: Unbounded is wide enough that a sentence in it takes a third
+ * more room and reads slowly. Two static weights, made from the variable file the
+ * same way Inter's were (Latin-1, Cyrillic, punctuation, ₴), about 96 KB each.
+ *
+ * It is wide, so a figure in it needs room: see [displayFigureSize].
+ *
+ * Licensed under the SIL Open Font License 1.1; the text is in `app/licenses/`.
+ */
+val Display = FontFamily(
+    Font(R.font.unbounded_semibold, FontWeight.SemiBold),
+    Font(R.font.unbounded_bold, FontWeight.Bold)
 )
 
 /**

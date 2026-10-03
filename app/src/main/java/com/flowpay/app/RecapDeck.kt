@@ -233,6 +233,8 @@ fun RecapInvite(recap: Recap, modifier: Modifier = Modifier, onOpen: () -> Unit)
             Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(Space.lg),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            EmojiGlyph("🎬", 36.dp)
+            Spacer(Modifier.width(Space.md))
             Column(Modifier.weight(1f)) {
                 Text(
                     "МІСЯЦЬ ГОТОВИЙ",

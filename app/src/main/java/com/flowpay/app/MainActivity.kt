@@ -339,7 +339,14 @@ data class Pay(
      * months, so every "наступні 30 днів" view hid it eleven months out of twelve
      * while [yearlyCost] quietly multiplied it by twelve on top.
      */
-    val billingMonth: Int = 0
+    val billingMonth: Int = 0,
+    /**
+     * The emoji picked by hand. Empty means "guess from the name" — see Emoji.kt.
+     *
+     * Stored only when a person chose one, so a rename still re-guesses for every
+     * payment nobody has touched, and an improved guess reaches them too.
+     */
+    val emoji: String = ""
 )
 data class Order(
     val id: String,
@@ -420,7 +427,9 @@ data class Order(
      * «Залишаю». Finder found 6–8% of people missed a return because they forgot
      * or the window ran out; the morning message is where that is caught.
      */
-    val returnBy: Long = 0L
+    val returnBy: Long = 0L,
+    /** The emoji picked by hand. Empty means "guess from the name" — see Emoji.kt. */
+    val emoji: String = ""
 )
 
 class MainActivity : ComponentActivity() {
@@ -1163,6 +1172,8 @@ fun payJson(pay: Pay): JSONObject = JSONObject()
     // and an annual domain fee comes back as a monthly one twelve times the size.
     .put("am", amountsJson(pay.amounts)).put("te", pay.trialEnd)
     .put("bm", pay.billingMonth)
+    // A choice somebody made by hand, so it travels through the bin and the backup.
+    .put("em", pay.emoji)
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
@@ -1184,7 +1195,9 @@ fun payOf(o: JSONObject): Pay = Pay(
     // genuinely was — there was no other rhythm to save. Anything outside 1..12
     // is read the same way rather than trusted, since a month of 13 would put a
     // charge on a date [LocalDate] refuses to build.
-    o.optInt("bm", 0).takeIf { it in 1..MONTHS_IN_YEAR } ?: 0
+    o.optInt("bm", 0).takeIf { it in 1..MONTHS_IN_YEAR } ?: 0,
+    // Absent on everything saved before emoji existed: guessed from the name.
+    emoji = o.optString("em")
 )
 
 fun orderJson(order: Order): JSONObject = JSONObject()
@@ -1207,6 +1220,7 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("sg", sightingsJson(order.sightings))
     .put("dg", order.digital)
     .put("rb", order.returnBy)
+    .put("em", order.emoji)
 
 /**
  * A parcel read back off the phone.
@@ -1259,7 +1273,9 @@ fun orderOf(o: JSONObject): Order = Order(
     // flag has been written, it is the answer — including a «no» set by hand.
     digital = if (o.has("dg")) o.optBoolean("dg", false) else isDigitalStore(o.optString("u")),
     // Absent on everything filed before return windows were kept: none tracked.
-    returnBy = o.optLong("rb", 0L)
+    returnBy = o.optLong("rb", 0L),
+    // Absent on everything saved before emoji existed: guessed from the name.
+    emoji = o.optString("em")
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -2236,7 +2252,8 @@ fun ScreenHeader(
         Text(
             title,
             Modifier.weight(1f),
-            fontSize = Type.screenTitleSize,
+            fontFamily = Display,
+            fontSize = Type.screenTitleBentoSize,
             lineHeight = Type.screenTitleLine,
             letterSpacing = Type.screenTitleTracking,
             fontWeight = Type.strong
@@ -2675,38 +2692,24 @@ fun WishSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
  */
 @Composable
 fun WishlistTotalPanel(sum: WishlistTotal, label: String) {
-    Card(
-        Modifier.fillMaxWidth().padding(bottom = Space.lg).litEdge(Radius.md),
-        colors = CardDefaults.cardColors(containerColor = SurfaceRaised),
-        shape = Radius.md
-    ) {
-        Column(Modifier.padding(horizontal = Space.lg, vertical = Space.md)) {
-            Text(
-                label,
-                color = TextSecondary,
-                fontSize = Type.captionSize,
-                fontWeight = Type.medium
-            )
-            Spacer(Modifier.height(Space.xs))
-            Text(
-                approxMoney(sum.total),
-                color = TextPrimary,
-                fontSize = Type.heroSize,
-                lineHeight = Type.heroLine,
-                letterSpacing = Type.heroTracking,
-                fontWeight = Type.strong,
-                style = Tabular
-            )
-            Spacer(Modifier.height(Space.xs))
-            Text(
-                wishlistTotalNote(sum),
+    BentoTile(TileLavender, Modifier.fillMaxWidth().padding(bottom = Space.lg)) {
+        Box(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(end = HeroStickerSize)) {
+                Text(
+                    label,
+                    color = TileInkSoft,
+                    fontSize = Type.captionSize,
+                    fontWeight = Type.medium
+                )
+                Spacer(Modifier.height(Space.xs))
+                SplitFigure(approxMoney(sum.total), 30.sp)
+                Spacer(Modifier.height(Space.xs))
                 // Never an alarm colour. Nothing has gone wrong — some pages
                 // simply do not state a price, and this line is the sum being
                 // honest about itself rather than the app reporting a fault.
-                color = TextSecondary,
-                fontSize = Type.captionSize,
-                lineHeight = Type.captionLine
-            )
+                TileCaption(wishlistTotalNote(sum), TileLavender, maxLines = 3)
+            }
+            EmojiSticker("🛍️", 48.dp, Modifier.align(Alignment.TopEnd))
         }
     }
 }
@@ -4869,7 +4872,17 @@ fun SharedTransitionScope.WishCard(
                         )
                 )
             } else {
-                Box(Modifier.fillMaxWidth().aspectRatio(1f).background(SurfaceRaised))
+                // No photo yet: a pastel square with what the thing is, instead of
+                // an empty grey one that reads as a picture that failed to load.
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .background(tileColours(listOf(wish.id)).first()),
+                    contentAlignment = Alignment.Center
+                ) {
+                    EmojiGlyph(wishEmoji(wish.name), 56.dp)
+                }
             }
             // The one thing worth knowing without opening the item: it got cheaper.
             // Withheld while the reading is doubtful, because a fall computed from a
@@ -5592,41 +5605,50 @@ fun PaymentsScreen(
                                 {
                                     DaysStrip(days = 30, marked = paymentOffsets(items, today), onLime = true)
                                 }
-                            }
+                            },
+                            // What leaves next, as its own emoji; a calendar when
+                            // several things leave on the same day.
+                            emoji = next?.let { coming -> coming.items.singleOrNull()?.let { shownEmoji(it) } ?: "🗓️" }
                         )
-                        Spacer(Modifier.height(Space.lg))
-                        Card(
-                            modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
-                            colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                            shape = Radius.md
-                        ) {
-                            Column(Modifier.padding(Space.lg)) {
-                                // Not "here are your subscriptions" but "here is what
-                                // survives them". The same figures as a bite out of
-                                // the month, which is what makes a small number feel
-                                // consequential without exaggerating it by a hryvnia.
-                                Row(
-                                    Modifier.fillMaxWidth().clickable { editingIncome = true },
-                                    verticalAlignment = Alignment.Top
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(
-                                            if (month.unknown) "Вкажіть дохід" else "Місяць",
-                                            color = TextSecondary,
-                                            fontSize = Type.captionSize
-                                        )
-                                        Spacer(Modifier.height(Space.sm))
-                                        CommittedBar(committedOf(month))
-                                    }
-                                    Spacer(Modifier.width(Space.md))
-                                    Icon(Icons.Default.Edit, "Змінити дохід", tint = TextSecondary)
+                        Spacer(Modifier.height(Space.md))
+                        // The month as two tiles side by side. Not "here are your
+                        // subscriptions" but "here is what survives them", beside
+                        // what has already gone — until the second existed the
+                        // screen could only ever state the plan.
+                        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                            MonthLeftTile(committedOf(month), Modifier.weight(1f).fillMaxHeight()) { editingIncome = true }
+                            BentoTile(TileSand, Modifier.weight(1f).fillMaxHeight()) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "Сплачено",
+                                        Modifier.weight(1f),
+                                        color = TileInkSoft,
+                                        fontSize = Type.captionSize
+                                    )
+                                    EmojiGlyph("✅", 24.dp)
                                 }
-                                if (items.isNotEmpty()) {
-                                    Spacer(Modifier.height(Space.md))
-                                    // What the month actually cost, beside what it was
-                                    // meant to. Until this row existed the screen could
-                                    // only ever state the plan.
-                                    LeaderRow("Сплачено цього місяця", totalLabel(record.paid))
+                                Spacer(Modifier.height(Space.xs))
+                                SplitFigure(totalLabel(record.paid), 22.sp)
+                                Spacer(Modifier.weight(1f))
+                                Spacer(Modifier.height(Space.sm))
+                                TileCaption(
+                                    if (record.plannedCount == 0) {
+                                        "цього місяця нічого"
+                                    } else {
+                                        "позначено ${record.paidCount} з ${record.plannedCount}"
+                                    },
+                                    TileSand
+                                )
+                            }
+                        }
+                        if (items.isNotEmpty()) {
+                            Spacer(Modifier.height(Space.md))
+                            Card(
+                                modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
+                                colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                                shape = Radius.md
+                            ) {
+                                Column(Modifier.padding(Space.lg)) {
                                     // A year of the same costs, because that is the scale at
                                     // which a subscription is worth arguing with.
                                     LeaderRow("Разом на рік", money(yearly.total))
@@ -5683,191 +5705,48 @@ fun PaymentsScreen(
                         )
                     }
                 }
-                // A timeline rather than a list: the date is said once for everything
-                // falling on it, instead of "1 числа щомісяця" repeated under every row.
-                paymentGroups(items, today).forEach { group ->
-                    item(key = group.date.toString()) {
-                      Column(Modifier.animateItem()) {
-                        val isToday = group.date == today
-                        // The date is the group's label, above it, the way a calendar
-                        // writes a day over its entries — not lime text inside a box.
-                        Column(
-                            Modifier.padding(horizontal = Space.screen).padding(top = Space.md, bottom = Space.xs)
+                // Every payment in the coming month as a tile, two to a row, soonest
+                // first. The date rides on each tile instead of heading a group: in a
+                // grid, a heading would sit over one tile and not over its neighbour.
+                val timeline = paymentGroups(items, today).flatMap { group -> group.positions.map { group.date to it } }
+                val colours = tileColours(timeline.map { (_, position) -> items[position].name })
+                timeline.chunked(2).forEachIndexed { row, pair ->
+                    item(key = "pays-" + pair.joinToString("|") { (date, position) -> "$date-$position" }) {
+                        Row(
+                            Modifier
+                                .animateItem()
+                                .padding(horizontal = Space.screen)
+                                .padding(bottom = Space.md)
+                                .height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(Space.md)
                         ) {
-                            Text(
-                                if (isToday) "Сьогодні · ${dayMonth(group.date)}" else dayMonth(group.date),
-                                color = if (isToday) TextPrimary else TextSecondary,
-                                fontSize = Type.captionSize,
-                                fontWeight = Type.medium
-                            )
-                            // A day of the month is a lie four or five times a year.
-                            // When the charge lands on a weekend or a holiday the row
-                            // says so and names the day the money actually has to be
-                            // there by — which is the day the reminder already counts to.
-                            paymentDayNote(paymentDay(group.date, holidays))?.let { note ->
-                                Text(
-                                    note,
-                                    color = TextDisabled,
-                                    fontSize = Type.captionSize,
-                                    lineHeight = Type.captionLine
+                            pair.forEachIndexed { column, (date, position) ->
+                                val pay = items[position]
+                                // The month this tick is about, which is not
+                                // always this one — see [tickMonth].
+                                val markMonth = tickMonth(pay, today, holidays)
+                                val done = isPaid(paid, pay.name, markMonth)
+                                PaymentTile(
+                                    pay = pay,
+                                    date = date,
+                                    today = today,
+                                    // A day of the month is a lie four or five times a
+                                    // year: on a weekend or a holiday the tile names the
+                                    // day the money actually has to be there by.
+                                    dayNote = paymentDayNote(paymentDay(date, holidays)),
+                                    usdSell = rate.sell,
+                                    colour = colours[row * 2 + column],
+                                    done = done,
+                                    modifier = Modifier.weight(1f).fillMaxHeight(),
+                                    onToggle = {
+                                        touch.switched(!done)
+                                        setPaid(togglePaid(paid, pay, markMonth))
+                                    },
+                                    onOpen = { editing = position }
                                 )
                             }
+                            if (pair.size == 1) Spacer(Modifier.weight(1f))
                         }
-                        Card(
-                            Modifier
-                                .padding(horizontal = Space.screen)
-                                .fillMaxWidth()
-                                // The edge on every one of them, including today's
-                                // tinted card. The timeline was the one run of cards
-                                // the original pass missed, so it sat flat directly
-                                // above sections that stand proud — and an edge that
-                                // came and went with the date would trade one
-                                // inconsistency for a stranger one.
-                                .litEdge(Radius.md),
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (isToday) AccentSoft else SurfaceBase
-                            ),
-                            shape = Radius.md
-                        ) {
-                            Column(Modifier.padding(horizontal = Space.lg, vertical = Space.xs)) {
-                                group.positions.forEach { position ->
-                                    val pay = items[position]
-                                    Row(
-                                        Modifier
-                                            .fillMaxWidth()
-                                            .clickable { editing = position }
-                                            .padding(vertical = Space.sm),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        IconChip(payIcon(pay.name))
-                                        Spacer(Modifier.width(Space.md))
-                                        // No dotted leader here. Two weighted children split
-                                        // the row in half, which cut "Оренда квартири" down to
-                                        // "Оренда к…" — and a name earns that space before a
-                                        // decoration does.
-                                        Column(Modifier.weight(1f).padding(end = Space.md)) {
-                                            Text(
-                                                pay.name,
-                                                fontSize = Type.cardTitleSize,
-                                                fontWeight = Type.medium,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
-                                            )
-                                            // The annual figure is the one that changes minds
-                                            // about a subscription, so it rides with the name
-                                            // rather than waiting on another screen. It never
-                                            // looks at the trial: what a year of this costs is
-                                            // what signing up commits you to, and a free month
-                                            // does not change it.
-                                            //
-                                            // An annual charge says both denominators instead,
-                                            // because either alone misleads — and it says the
-                                            // rhythm between them, so the smoothed one can
-                                            // never be mistaken for cash.
-                                            Text(
-                                                billingLine(pay),
-                                                color = TextSecondary,
-                                                fontSize = Type.captionSize,
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis,
-                                                // One of these under every name in the
-                                                // timeline, so they stack into a column
-                                                // whether or not anything drew one.
-                                                style = Tabular
-                                            )
-                                            // The date the free ride ends, on the row, in
-                                            // the accent — because it is the one fact about
-                                            // this expense that expires.
-                                            trialLabel(pay, today)?.let { free ->
-                                                Text(
-                                                    free,
-                                                    color = Accent,
-                                                    fontSize = Type.captionSize,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                            }
-                                            // What it used to cost, on the row rather
-                                            // than a screen away. A subscription earns
-                                            // by raising its price quietly, and the
-                                            // whole defence is the old figure sitting
-                                            // beside the new one where it is read. An
-                                            // expense the app has only ever seen at
-                                            // one price says nothing at all here.
-                                            val steps = amountStepPoints(pay)
-                                            amountMoveLine(pay)?.let { move ->
-                                                Spacer(Modifier.height(Space.xs))
-                                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                                    AmountStep(
-                                                        steps,
-                                                        Modifier.width(28.dp).height(14.dp)
-                                                    )
-                                                    Spacer(Modifier.width(Space.sm))
-                                                    Text(
-                                                        move,
-                                                        color = TextSecondary,
-                                                        fontSize = Type.captionSize,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis,
-                                                        // "було 199 → стало 249 ₴" is two
-                                                        // figures asking to be compared
-                                                        // across an arrow. Unequal digit
-                                                        // widths are exactly what stops
-                                                        // that reading as a comparison.
-                                                        style = Tabular
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Column(horizontalAlignment = Alignment.End) {
-                                            Text(
-                                                amountLabel(pay.amount, pay.currency),
-                                                fontWeight = Type.strong,
-                                                style = Tabular
-                                            )
-                                            if (pay.currency == USD && rate.sell > 0) {
-                                                Text(
-                                                    "≈ ${approxMoney(pay.amount * rate.sell)}",
-                                                    color = TextSecondary,
-                                                    fontSize = Type.captionSize,
-                                                    style = Tabular
-                                                )
-                                            }
-                                        }
-                                        // One tap, on the row you are already looking at.
-                                        // Anywhere else and the record would be a screen
-                                        // you have to remember to visit, which is the same
-                                        // as not having one.
-                                        // The month this tick is about, which is not
-                                    // always this one — see [tickMonth].
-                                    val markMonth = tickMonth(pay, today, holidays)
-                                    val done = isPaid(paid, pay.name, markMonth)
-                                        // A real two-state mark, and the two states feel
-                                        // different: this is the one control in the app
-                                        // you use without looking, halfway through paying
-                                        // something on another screen, so the phone
-                                        // saying which way it went is the whole point.
-                                        IconButton({
-                                            touch.switched(!done)
-                                            setPaid(togglePaid(paid, pay, markMonth))
-                                        }) {
-                                            // Fills and draws its tick — see PaidCheck.
-                                            PaidCheck(
-                                                done,
-                                                Modifier.semantics {
-                                                    contentDescription = if (done) {
-                                                        "Скасувати позначку про оплату"
-                                                    } else {
-                                                        "Позначити оплаченим"
-                                                    }
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                      }
                     }
                 }
                 // The annual blind spot, given a place to be visible from.
@@ -5919,7 +5798,7 @@ fun PaymentsScreen(
                                     .padding(Space.lg),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                IconChip(payIcon(pay.name))
+                                EmojiGlyph(shownEmoji(pay), 36.dp)
                                 Spacer(Modifier.width(Space.md))
                                 Column(Modifier.weight(1f).padding(end = Space.md)) {
                                     Text(
@@ -5992,13 +5871,137 @@ fun PaymentsScreen(
     }
 }
 
-/** A recurring expense is recognised by its name, since that is all it carries. */
-fun payIcon(name: String) = when {
-    name.contains("Оренда", true) -> Icons.Default.Home
-    name.contains("Комун", true) -> Icons.Default.Bolt
-    name.contains("Інтернет", true) -> Icons.Default.Wifi
-    name.contains("Мобіл", true) -> Icons.Default.Smartphone
-    else -> Icons.Default.Autorenew
+/**
+ * One payment as a tile: what it is, when, how much, and the tick.
+ *
+ * Everything the timeline row used to say is still here — the yearly figure, the
+ * free trial, the quiet raise, the weekend shift — stacked, because a tile is
+ * narrow and tall where the row was wide and short. The amount sits at the foot,
+ * so two tiles side by side line their amounts up.
+ */
+@Composable
+fun PaymentTile(
+    pay: Pay,
+    date: LocalDate,
+    today: LocalDate,
+    dayNote: String?,
+    usdSell: Double,
+    colour: Color,
+    done: Boolean,
+    modifier: Modifier = Modifier,
+    onToggle: () -> Unit,
+    onOpen: () -> Unit
+) {
+    // A paid tile steps back rather than vanishing: it is still this month's.
+    val faded by animateFloatAsState(if (done) 0.6f else 1f, Motion.effects(), label = "paid tile")
+    BentoTile(colour, modifier.graphicsLayer { alpha = faded }, onClick = onOpen, onClickLabel = "Змінити") {
+        Row(verticalAlignment = Alignment.Top) {
+            EmojiGlyph(shownEmoji(pay), 36.dp)
+            Spacer(Modifier.weight(1f))
+            // One tap, on the tile you are already looking at — this is the
+            // control used without looking, halfway through paying something on
+            // another screen, so the two states have to feel different.
+            Box(
+                Modifier
+                    .offset(x = Space.sm, y = -Space.sm)
+                    .size(Space.touchRow)
+                    .clip(CircleShape)
+                    .clickable(onClick = onToggle),
+                contentAlignment = Alignment.Center
+            ) {
+                PaidCheck(
+                    done,
+                    Modifier.semantics {
+                        contentDescription = if (done) "Скасувати позначку про оплату" else "Позначити оплаченим"
+                    },
+                    ring = TileInk.copy(alpha = 0.4f),
+                    fill = TileInk,
+                    tick = colour
+                )
+            }
+        }
+        TileChip(if (date == today) "Сьогодні" else dayMonth(date), colour, strong = date == today)
+        dayNote?.let { TileCaption(it, colour, Modifier.padding(top = Space.xs), maxLines = 3) }
+        Text(
+            pay.name,
+            Modifier.padding(top = Space.sm),
+            fontSize = Type.bodySize,
+            lineHeight = Type.bodyLine,
+            fontWeight = Type.medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+        // The annual figure is the one that changes minds about a subscription;
+        // an annual charge says both denominators. See [billingLine].
+        TileCaption(billingLine(pay), colour)
+        // The date the free ride ends: the one fact about this expense that expires.
+        trialLabel(pay, today)?.let { free ->
+            Text(
+                free,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                fontWeight = Type.strong,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        // What it used to cost: the whole defence against a quiet raise.
+        amountMoveLine(pay)?.let { TileCaption(it, colour) }
+        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(Space.sm))
+        SplitFigure(amountLabel(pay.amount, pay.currency), 20.sp)
+        if (pay.currency == USD && usdSell > 0) {
+            TileCaption("≈ ${approxMoney(pay.amount * usdSell)}", colour, maxLines = 1)
+        }
+    }
+}
+
+/**
+ * What survives the standing costs this month, on the dark ground beside the
+ * sand «Сплачено». Tapping it edits the income, as the row it replaced did.
+ */
+@Composable
+fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: () -> Unit) {
+    BentoTile(SurfaceRaised, modifier, onClick = onEditIncome, onClickLabel = "Змінити дохід") {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                when (bar.state) {
+                    CommittedState.KNOWN -> "Лишається"
+                    CommittedState.OVERSPENT -> "Бракує"
+                    CommittedState.UNKNOWN -> "Уже зайнято"
+                },
+                Modifier.weight(1f),
+                color = TextSecondary,
+                fontSize = Type.captionSize
+            )
+            Icon(Icons.Default.Edit, null, Modifier.size(16.dp), tint = TextSecondary)
+        }
+        Spacer(Modifier.height(Space.xs))
+        when (bar.state) {
+            CommittedState.KNOWN -> SplitFigure(money(bar.left), 22.sp)
+            CommittedState.OVERSPENT -> SplitFigure(money(-bar.left), 22.sp, colour = Negative)
+            CommittedState.UNKNOWN -> SplitFigure(money(bar.committed), 22.sp)
+        }
+        // No bar without an income: its denominator would be invented.
+        if (bar.state != CommittedState.UNKNOWN) {
+            Spacer(Modifier.height(Space.sm))
+            Box(Modifier.fillMaxWidth().height(6.dp).background(HairLine, Radius.pill)) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(bar.share.coerceIn(0f, 1f))
+                        .height(6.dp)
+                        .background(if (bar.state == CommittedState.OVERSPENT) Negative else Accent, Radius.pill)
+                )
+            }
+        }
+        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(Space.sm))
+        TileCaption(
+            if (bar.state == CommittedState.UNKNOWN) "Торкніться, щоб вказати дохід" else committedDetail(bar),
+            SurfaceRaised,
+            maxLines = 3
+        )
+    }
 }
 
 @Composable
@@ -6014,6 +6017,7 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
     var trialEnd by remember { mutableLongStateOf(0L) }
     var billingMonth by remember { mutableIntStateOf(0) }
+    var emoji by remember { mutableStateOf("") }
     // A free trial or a yearly fee is a decision as well as a charge, and a day's
     // notice at nine in the morning is often too late to make it. So the notice
     // moves to three days the moment either is set — visibly, on the chips, and
@@ -6042,7 +6046,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
                         // at the first edit instead can only say that it did.
                         listOf(PricePoint(value, today.toEpochDay())),
                         trialEnd,
-                        billingMonth
+                        billingMonth,
+                        emoji
                     )
                 )
             }
@@ -6061,6 +6066,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
             label = { Text("Назва") },
             singleLine = true
         )
+        // Follows the name as it is typed, until somebody picks one.
+        EmojiField(emoji, payEmoji(name)) { emoji = it }
         CurrencySegments(currency) { currency = it }
         NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
         BillingSegments(billingMonth, today) { billingMonth = it }
@@ -6215,18 +6222,27 @@ fun OrdersScreen(
                     }
                 }
             }
-            // One container for everything still on its way, a row per purchase.
-            // A parcel used to be a card a third of the screen tall — a photo, the
-            // whole four-stop rail with its labels and four buttons — so two fitted
-            // on a screen. The rail and the buttons live on the parcel's own page;
-            // the row says where it is in four segments and opens that page.
+            parcelsAtAGlance(open)?.let { glance ->
+                item(key = "parcels-glance") {
+                    ParcelsSummaryTile(
+                        glance,
+                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md)
+                    )
+                }
+            }
+            // A tile per purchase. A parcel used to be a card a third of the screen
+            // tall — a photo, the whole four-stop rail with its labels and four
+            // buttons — so two fitted on a screen. The rail and the buttons live on
+            // the parcel's own page; the tile says where it is in four segments and
+            // opens that page.
+            val colours = tileColours(open.map { it.id })
             itemsIndexed(open, key = { _, order -> order.id }) { index, order ->
                 ParcelRow(
                     order = order,
                     today = today,
-                    modifier = Modifier.animateItem(),
-                    first = index == 0,
-                    last = index == open.lastIndex,
+                    // Trouble is pink whatever the name would have given it.
+                    colour = if (order.problem) TilePink else colours[index],
+                    modifier = Modifier.animateItem().padding(bottom = Space.md),
                     onOpen = { setOpened(order.id) },
                     onClose = { closing = order }
                 )
@@ -6496,6 +6512,11 @@ fun OrderDetailScreen(
                     letterSpacing = Type.screenTitleTracking,
                     fontWeight = FontWeight.Black
                 )
+                // Applied to the parcel as it is, like every other change on this
+                // page, so a status landing at the same moment is not undone.
+                EmojiField(order.emoji, orderEmoji(order.name, order.digital)) { picked ->
+                    onApply { it.copy(emoji = picked) }
+                }
                 if (order.price > 0) {
                     Text(
                         money(order.price),
@@ -7032,116 +7053,84 @@ fun OverviewTile(
     label: String,
     value: String,
     detail: String,
+    emoji: String,
+    colour: Color,
     modifier: Modifier = Modifier,
     alarm: Boolean = false,
     onClick: () -> Unit
 ) {
-    val press = remember { MutableInteractionSource() }
-    Column(
-        modifier
-            .pressScale(press)
-            .clip(Radius.md)
-            .background(SurfaceBase)
-            .clickable(interactionSource = press, indication = LocalIndication.current, onClick = onClick)
-            .padding(Space.lg)
-    ) {
-        Text(label, color = TextSecondary, fontSize = Type.captionSize, maxLines = 1)
-        RollingText(
+    BentoTile(colour, modifier, onClick = onClick, onClickLabel = "Відкрити") {
+        EmojiGlyph(emoji, 32.dp)
+        Spacer(Modifier.height(Space.sm))
+        Text(label, color = softInkOn(colour), fontSize = Type.captionSize, maxLines = 1)
+        Spacer(Modifier.height(Space.xs))
+        // In the display face, a word or a figure alike: «2 посилки», «41,60».
+        SplitFigure(
             value,
-            Modifier.padding(top = Space.xs),
-            color = if (alarm) Negative else TextPrimary,
-            fontSize = 22.sp,
-            fontWeight = Type.strong
+            20.sp,
+            colour = when {
+                !alarm -> inkOn(colour)
+                isLightFill(colour) -> TileAlarm
+                else -> Negative
+            }
         )
-        Text(
-            detail,
-            color = TextDisabled,
-            fontSize = Type.captionSize,
-            lineHeight = Type.captionLine,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
+        Spacer(Modifier.height(Space.xs))
+        TileCaption(detail, colour)
     }
 }
 
 /**
- * One purchase in the list: what it is, where it is, and the way into its page.
+ * One purchase in the list as a tile: what it is, where it is, and the way into
+ * its page.
  *
- * Rows of one container rather than cards: the corners round only at the ends of
- * the group, and a hairline separates the rows. The stage is four segments beside
- * a word — the same four stops as the rail on the page, small enough to read at
- * a glance. A download has no segments, because it has nowhere to travel.
+ * The stage is four segments beside a word — the same four stops as the rail on
+ * the page, small enough to read at a glance. A download has no segments,
+ * because it has nowhere to travel. The photo stands in for the emoji when the
+ * shop gave one: it is the actual thing.
  */
 @Composable
 fun ParcelRow(
     order: Order,
     today: LocalDate,
+    colour: Color,
     modifier: Modifier = Modifier,
-    first: Boolean,
-    last: Boolean,
     onOpen: () -> Unit,
     onClose: () -> Unit
 ) {
-    val corner = Radius.card
-    val shape = RoundedCornerShape(
-        topStart = if (first) corner else 0.dp,
-        topEnd = if (first) corner else 0.dp,
-        bottomStart = if (last) corner else 0.dp,
-        bottomEnd = if (last) corner else 0.dp
-    )
-    val press = remember { MutableInteractionSource() }
-    Column(
-        modifier
-            .padding(horizontal = Space.screen)
-            .fillMaxWidth()
-            .clip(shape)
-            .background(SurfaceBase)
+    val ink = inkOn(colour)
+    BentoTile(
+        colour,
+        modifier.padding(horizontal = Space.screen).fillMaxWidth(),
+        onClick = onOpen,
+        onClickLabel = "Детальніше"
     ) {
-        if (!first) Box(Modifier.padding(start = 84.dp).fillMaxWidth().height(Dp.Hairline).background(HairLine))
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .pressScale(press)
-                .clickable(interactionSource = press, indication = LocalIndication.current, onClick = onOpen)
-                .padding(horizontal = Space.lg, vertical = Space.md),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                Modifier.size(56.dp).clip(Radius.sm).background(SurfaceRaised),
-                contentAlignment = Alignment.Center
-            ) {
-                if (order.image.isNotBlank()) {
-                    AsyncImage(crossfadeImage(order.image), order.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                } else {
-                    Icon(
-                        if (order.digital) Icons.Default.SportsEsports else Icons.Default.Inventory2,
-                        null,
-                        tint = TextSecondary
-                    )
-                }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (order.image.isNotBlank()) {
+                AsyncImage(
+                    crossfadeImage(order.image),
+                    order.name,
+                    Modifier.size(52.dp).clip(Radius.sm),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                EmojiGlyph(shownEmoji(order), 44.dp, Modifier.padding(4.dp))
             }
             Spacer(Modifier.width(Space.md))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(6.dp).background(
-                            when {
-                                order.problem -> Negative
-                                closeActionDue(order) -> Accent
-                                else -> TextSecondary
-                            },
-                            CircleShape
-                        )
-                    )
                     Text(
-                        "  ${stageLabel(orderOverline(order), order.statusCode)}",
-                        color = if (order.problem) Negative else TextSecondary,
+                        stageLabel(orderOverline(order), order.statusCode),
+                        color = if (order.problem) TileAlarm else softInkOn(colour),
                         fontSize = Type.captionSize,
                         fontWeight = Type.medium
                     )
                     if (!order.digital) {
                         Spacer(Modifier.width(Space.sm))
-                        StageSegments(PARCEL_STAGES.indexOf(order.status).coerceAtLeast(0))
+                        StageSegments(
+                            PARCEL_STAGES.indexOf(order.status).coerceAtLeast(0),
+                            filled = ink,
+                            empty = ink.copy(alpha = 0.18f)
+                        )
                     }
                 }
                 Text(
@@ -7158,49 +7147,80 @@ fun ParcelRow(
                     order.tracking.takeIf { it.isNotBlank() }?.let { "трек …${it.takeLast(4)}" }
                 ).joinToString(" · ")
                 if (tail.isNotBlank()) {
-                    Text(tail, color = TextSecondary, fontSize = Type.captionSize, style = Tabular)
+                    Text(tail, color = softInkOn(colour), fontSize = Type.captionSize, style = Tabular)
                 }
                 // The one fact in the list that costs money to miss.
                 if (order.paidStorageFrom > 0) {
                     val left = freeStorageDaysLeft(LocalDate.ofEpochDay(order.paidStorageFrom), today) ?: 0
                     Text(
                         if (left > 0) "Безкоштовне зберігання ще ${daysLabel(left)}" else "Зберігання вже платне",
-                        color = if (left <= 2) Negative else TextSecondary,
+                        color = if (left <= 2) TileAlarm else softInkOn(colour),
                         fontSize = Type.captionSize,
                         fontWeight = Type.medium
                     )
                 }
             }
-            Icon(
-                Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                "Детальніше",
-                tint = TextDisabled
-            )
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = softInkOn(colour))
         }
         // Only when filing it is the thing left to do: in your hands, or a download.
         // A parcel still on its way is closed from its page.
         if (closeActionDue(order)) {
-            TextButton(
-                onClose,
-                Modifier.padding(start = 76.dp).padding(bottom = Space.xs)
+            Spacer(Modifier.height(Space.md))
+            Row(
+                Modifier
+                    .clip(Radius.pill)
+                    .background(TileInk)
+                    .clickable(onClick = onClose)
+                    .heightIn(min = 40.dp)
+                    .padding(horizontal = Space.lg),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.Default.TaskAlt, null, Modifier.size(18.dp), tint = Accent)
-                Text("  ${closeActionLabel(order)}", color = Accent)
+                Spacer(Modifier.width(Space.sm))
+                Text(closeActionLabel(order), color = Accent, fontSize = Type.captionSize, fontWeight = Type.strong)
             }
+        }
+    }
+}
+
+/**
+ * The first tile on Покупки: how many are on their way, or waiting at a branch.
+ * See [parcelsAtAGlance] for what leads.
+ */
+@Composable
+fun ParcelsSummaryTile(glance: ParcelsAtAGlance, modifier: Modifier = Modifier) {
+    val colour = if (glance.alarm) TilePink else TileSky
+    BentoTile(colour, modifier) {
+        Box(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(end = HeroStickerSize)) {
+                Text(glance.label, color = softInkOn(colour), fontSize = Type.captionSize, fontWeight = Type.medium)
+                Spacer(Modifier.height(Space.xs))
+                SplitFigure(glance.figure, 26.sp)
+                glance.caption?.let {
+                    Spacer(Modifier.height(Space.xs))
+                    TileCaption(it, colour)
+                }
+            }
+            EmojiSticker(glance.emoji, 48.dp, Modifier.align(Alignment.TopEnd))
         }
     }
 }
 
 /** Four short bars, filled up to the stage the parcel has reached. */
 @Composable
-fun StageSegments(reached: Int, modifier: Modifier = Modifier) {
+fun StageSegments(
+    reached: Int,
+    modifier: Modifier = Modifier,
+    filled: Color = TextPrimary,
+    empty: Color = HairLine
+) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         repeat(PARCEL_STAGES.size) { index ->
             Box(
                 Modifier
                     .width(12.dp)
                     .height(4.dp)
-                    .background(if (index <= reached) TextPrimary else HairLine, Radius.pill)
+                    .background(if (index <= reached) filled else empty, Radius.pill)
             )
         }
     }
@@ -7507,6 +7527,30 @@ fun SettingsScreen(
             store.importJson(text)
         }.onSuccess { onImported(); message = "Дані відновлено" }.onFailure { message = "Файл FlowPay пошкоджений" }
     }
+    // The owner's Apple emoji, from a file of his own — see [EmojiPack] for why
+    // they are not inside the app. Counted into state so the row updates.
+    var emojiCount by remember { mutableIntStateOf(EmojiPack.count(context)) }
+    var importingEmoji by remember { mutableStateOf(false) }
+    val pickEmoji = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                importingEmoji = true
+                val result = withContext(Dispatchers.IO) { runCatching { EmojiPack.import(context, uri) } }
+                importingEmoji = false
+                message = result.fold(
+                    onSuccess = { count ->
+                        if (count > 0) {
+                            emojiCount = count
+                            "Емодзі завантажено: $count"
+                        } else {
+                            "У цьому файлі немає емодзі для FlowPay"
+                        }
+                    },
+                    onFailure = { "Не вдалося прочитати файл з емодзі" }
+                )
+            }
+        }
+    }
     val listState = rememberLazyListState()
     Box {
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
@@ -7544,6 +7588,7 @@ fun SettingsScreen(
                         value = if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash),
                         caption = committedDetail(bar),
                         muted = summary.budgetUnknown,
+                        emoji = "💰",
                         footer = if (summary.budgetUnknown) null else {
                             {
                                 Box(
@@ -7573,7 +7618,9 @@ fun SettingsScreen(
                             money(summary.savedTotal),
                             if (summary.wishTotal > 0) "${(summary.savedProgress * 100).toInt()}% з ${money(summary.wishTotal)}"
                             else "бажань ще немає",
-                            Modifier.weight(1f).fillMaxHeight()
+                            emoji = "🐷",
+                            colour = TileLavender,
+                            modifier = Modifier.weight(1f).fillMaxHeight()
                         ) { onOpenTab(TAB_WISHES) }
                         OverviewTile(
                             "Посилки",
@@ -7587,7 +7634,11 @@ fun SettingsScreen(
                                 summary.parcelsMoving > 0 -> "у дорозі"
                                 else -> "нічого не їде"
                             },
-                            Modifier.weight(1f).fillMaxHeight(),
+                            emoji = if (summary.parcelsAtBranch > 0) "📬" else "📦",
+                            // Waiting at a branch is the one tile that asks for
+                            // something, so it is the one that changes colour.
+                            colour = if (summary.parcelsAtBranch > 0) TilePink else TilePeach,
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
                             alarm = summary.parcelsAtBranch > 0
                         ) { onOpenTab(TAB_ORDERS) }
                     }
@@ -7597,13 +7648,17 @@ fun SettingsScreen(
                             "Курс долара",
                             if (usdRate > 0) rateFigure(usdRate) else "—",
                             "продаж, ₴ за $1",
-                            Modifier.weight(1f).fillMaxHeight()
+                            emoji = "💵",
+                            colour = SurfaceRaised,
+                            modifier = Modifier.weight(1f).fillMaxHeight()
                         ) { onOpenTab(TAB_RATE) }
                         OverviewTile(
                             "Наступний платіж",
                             next?.let { money(it.total.total) } ?: "—",
                             next?.let { "${dayMonth(it.date)} · ${dueSummary(it.items)}" } ?: "усе сплачено",
-                            Modifier.weight(1f).fillMaxHeight()
+                            emoji = next?.items?.singleOrNull()?.let { shownEmoji(it) } ?: "🗓️",
+                            colour = TileSky,
+                            modifier = Modifier.weight(1f).fillMaxHeight()
                         ) { onOpenTab(TAB_PAYMENTS) }
                     }
 
@@ -7643,15 +7698,19 @@ fun SettingsScreen(
                             shape = Radius.md
                         ) {
                             Column(Modifier.padding(Space.lg)) {
-                                Text(
-                                    when {
-                                        moved.change < 0 -> "Список подешевшав"
-                                        moved.change > 0 -> "Список подорожчав"
-                                        else -> "Ціни стоять на місці"
-                                    },
-                                    color = TextSecondary,
-                                    fontSize = Type.captionSize
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        when {
+                                            moved.change < 0 -> "Список подешевшав"
+                                            moved.change > 0 -> "Список подорожчав"
+                                            else -> "Ціни стоять на місці"
+                                        },
+                                        Modifier.weight(1f),
+                                        color = TextSecondary,
+                                        fontSize = Type.captionSize
+                                    )
+                                    EmojiGlyph(if (moved.change > 0) "📈" else "🏷️", 28.dp)
+                                }
                                 Spacer(Modifier.height(Space.xs))
                                 Text(
                                     if (moved.change == 0.0) {
@@ -7879,6 +7938,44 @@ fun SettingsScreen(
                         "надсилає Google назву й опис товару — без ціни і без ваших сум."
                 )
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
+                ListItem(
+                    leadingContent = { EmojiGlyph("😀", 28.dp) },
+                    headlineContent = { Text("Емодзі Apple", fontWeight = FontWeight.Bold) },
+                    supportingContent = {
+                        Text(
+                            if (emojiCount > 0) {
+                                "Завантажено $emojiCount емодзі з вашого файлу"
+                            } else {
+                                "Зараз показуються емодзі телефона. Виберіть файл FlowPay-emoji-Apple.zip"
+                            }
+                        )
+                    },
+                    trailingContent = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (emojiCount > 0) {
+                                IconButton({
+                                    EmojiPack.clear(context)
+                                    emojiCount = 0
+                                }) {
+                                    Icon(Icons.Default.DeleteOutline, "Прибрати емодзі Apple", tint = TextSecondary)
+                                }
+                            }
+                            OutlinedButton(
+                                shape = Radius.sm,
+                                border = BorderStroke(1.dp, HairLine),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                                onClick = {
+                                    pickEmoji.launch(
+                                        arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")
+                                    )
+                                },
+                                enabled = !importingEmoji
+                            ) {
+                                if (importingEmoji) BusyMark() else Text(if (emojiCount > 0) "Замінити" else "Вибрати")
+                            }
+                        }
+                    }
+                )
                 ListItem(
                     modifier = Modifier.padding(top = Space.sm),
                     leadingContent = { Icon(Icons.Default.SystemUpdate, null, tint = Accent) },
@@ -8113,6 +8210,7 @@ fun EditPaymentSheet(
     var warnDays by remember { mutableIntStateOf(pay.warnDays) }
     var trialEnd by remember { mutableLongStateOf(pay.trialEnd) }
     var billingMonth by remember { mutableIntStateOf(pay.billingMonth) }
+    var emoji by remember { mutableStateOf(pay.emoji) }
     val today = remember { LocalDate.now() }
     FormSheet(
         title = "Змінити витрату",
@@ -8131,7 +8229,8 @@ fun EditPaymentSheet(
                         day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
                         warnDays = warnDays,
                         trialEnd = trialEnd,
-                        billingMonth = billingMonth
+                        billingMonth = billingMonth,
+                        emoji = emoji
                     )
                 )
             }
@@ -8145,6 +8244,7 @@ fun EditPaymentSheet(
             label = { Text("Назва") },
             singleLine = true
         )
+        EmojiField(emoji, payEmoji(name)) { emoji = it }
         CurrencySegments(currency) { currency = it }
         NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
         // The last move, directly under the field showing today's figure. This is

@@ -244,3 +244,41 @@ fun purchasesLabel(count: Int): String {
     }
     return "$count $word"
 }
+
+// ------------------------------------------------------------ at a glance
+
+/** The tile at the top of Покупки: the one count worth reading first. */
+data class ParcelsAtAGlance(
+    val label: String,
+    val figure: String,
+    val caption: String?,
+    val emoji: String,
+    /** Something is waiting at a branch, where free storage runs out. */
+    val alarm: Boolean
+)
+
+/**
+ * What the open purchases come to, led by whatever needs doing soonest.
+ *
+ * A parcel at a branch outranks one on its way, because storage there starts
+ * costing money; a parcel on its way outranks a download, which is going nowhere.
+ * Null when nothing is open, so an empty screen keeps its invitation instead.
+ */
+fun parcelsAtAGlance(open: List<Order>): ParcelsAtAGlance? {
+    if (open.isEmpty()) return null
+    val parcels = open.filterNot { it.digital }
+    val atBranch = parcels.count { it.status == AT_BRANCH }
+    val moving = parcels.count { it.status == ORDERED || it.status == IN_TRANSIT }
+    val inHand = parcels.count { it.status == RECEIVED }
+    val downloads = open.count { it.digital }
+    val rest = listOfNotNull(
+        if (atBranch > 0 && moving > 0) "ще ${parcelsLabel(moving)} у дорозі" else null,
+        if (inHand > 0) "${parcelsLabel(inHand)} вже у вас" else null,
+        if (downloads > 0) "${purchasesLabel(downloads)} без доставки" else null
+    ).joinToString(" · ").ifEmpty { null }
+    return when {
+        atBranch > 0 -> ParcelsAtAGlance("Чекають на відділенні", parcelsLabel(atBranch), rest, "📬", alarm = true)
+        moving > 0 -> ParcelsAtAGlance("Зараз у дорозі", parcelsLabel(moving), rest, "🚚", alarm = false)
+        else -> ParcelsAtAGlance("Відкрито", purchasesLabel(open.size), rest, "🛍️", alarm = false)
+    }
+}

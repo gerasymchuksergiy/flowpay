@@ -148,22 +148,30 @@ fun rollDirection(before: String, after: String): Int {
  * second, so marking a bill paid looks like the act it is. Unticking runs it back.
  */
 @Composable
-fun PaidCheck(done: Boolean, modifier: Modifier = Modifier, size: Dp = 24.dp) {
-    val fill by animateFloatAsState(if (done) 1f else 0f, Motion.fastSpatial(), label = "paid fill")
-    val tick by animateFloatAsState(if (done) 1f else 0f, Motion.effects(), label = "paid tick")
+fun PaidCheck(
+    done: Boolean,
+    modifier: Modifier = Modifier,
+    size: Dp = 24.dp,
+    /** On a pastel tile the open ring and the fill are ink, and the tick is the tile. */
+    ring: Color = TextDisabled,
+    fill: Color = Accent,
+    tick: Color = AccentInk
+) {
+    val filled by animateFloatAsState(if (done) 1f else 0f, Motion.fastSpatial(), label = "paid fill")
+    val drawnTick by animateFloatAsState(if (done) 1f else 0f, Motion.effects(), label = "paid tick")
     Canvas(modifier.size(size)) {
         val stroke = size.toPx() * 0.09f
         val radius = this.size.minDimension / 2 - stroke / 2
         // The ring: grey when open, lime as it fills.
         drawCircle(
-            color = if (fill > 0.02f) Accent else TextDisabled,
+            color = if (filled > 0.02f) fill else ring,
             radius = radius,
             style = Stroke(width = stroke)
         )
-        if (fill > 0f) {
-            drawCircle(color = Accent, radius = radius * fill.coerceIn(0f, 1.15f))
+        if (filled > 0f) {
+            drawCircle(color = fill, radius = radius * filled.coerceIn(0f, 1.15f))
         }
-        if (tick > 0f) {
+        if (drawnTick > 0f) {
             val w = this.size.width
             val h = this.size.height
             val path = Path().apply {
@@ -173,8 +181,8 @@ fun PaidCheck(done: Boolean, modifier: Modifier = Modifier, size: Dp = 24.dp) {
             }
             val measure = PathMeasure().apply { setPath(path, false) }
             val drawn = Path()
-            measure.getSegment(0f, measure.length * tick.coerceIn(0f, 1f), drawn, true)
-            drawPath(drawn, AccentInk, style = Stroke(width = stroke * 1.4f, cap = StrokeCap.Round))
+            measure.getSegment(0f, measure.length * drawnTick.coerceIn(0f, 1f), drawn, true)
+            drawPath(drawn, tick, style = Stroke(width = stroke * 1.4f, cap = StrokeCap.Round))
         }
     }
 }

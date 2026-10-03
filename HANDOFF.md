@@ -444,6 +444,12 @@ Read its comments before drawing anything; they explain why each value exists.
 - **One accent.** `Accent` lime `#d7ff63` on near-black `#0a0b09`. One lime thing
   per screen. Do not introduce a second accent for any reason — not for AI, not
   for a new section.
+- **Bento tiles (owner's decision, 3 October 2026 — see §16).** Six pastels
+  (`TILE_COLOURS`) are *containers*, not accents: a payment, a parcel, an
+  overview figure sits on one. Dark ink on them (`TileInk`, `TileInkSoft` at 72%,
+  `TileAlarm`), never `TextSecondary`/`Accent`/`Negative`. `inkOn(colour)` picks.
+- **Display face:** Unbounded (`Display`), two static weights, for screen titles
+  and figures only. It is wide: size figures with `displayFigureSize`.
 - **Five surfaces**, five type levels, three radii, a 4dp rhythm. Pick from the
   scales; do not invent a value.
 - **Typeface:** Inter, three static weights, subset, in `app/src/main/res/font/`.
@@ -750,3 +756,51 @@ halves of their mapping and round-trip tested: `Order.dg` (digital), `Order.rb`
   but that relies on Temu serving crawlers differently, against its terms.
 - **Nova Poshta with the recipient's phone** unlocks more fields; it would need
   the owner's phone stored on the device. Not asked yet.
+
+---
+
+## 16. Bento and emoji (3 October 2026, evening)
+
+The owner called the «Лайм 2.0» screens monotonous. Ten styles were tried on his
+own screens in a private page (claude.ai artifact «Примірочна FlowPay»); he chose
+**bento** and asked for an emoji per thing («інтернет — то браузер емодзі, якщо
+телефон — то трубка»), then chose **Apple's emoji** over the free Fluent set after
+being told about the licence. Rendered and checked on the JVM screenshots; **not
+seen on the phone yet.**
+
+### New files
+| File | Holds |
+|---|---|
+| `Bento.kt` | `BentoTile`, `tileColours` (by name, never a neighbour's colour), `inkOn`, `SplitFigure`, `displayFigureSize`, `TileChip`, `EmojiSticker`, the emoji picker and `EmojiField` |
+| `Emoji.kt` | `payEmoji` / `orderEmoji` / `wishEmoji` rules (most specific first, word-start matching), `shownEmoji`, `emojiKey`, `packEntryKey`, `typedEmoji`, `EmojiPack`, `EmojiGlyph` |
+| `res/font/unbounded_*.ttf` | Unbounded SemiBold/Bold, subset like Inter; OFL in `app/licenses/` |
+
+### Apple emoji are never in this repository
+Apple's emoji are Apple's artwork and this repository and every APK are public.
+The owner imports them once: **Огляд → Налаштування → «Емодзі Apple» → Вибрати**,
+picking `FlowPay-emoji-Apple.zip` (3 370 PNGs, 72 px, named by `emojiKey`, made on
+his PC from the Figma community pack he downloaded — `Downloads\Emoji Mega Pack (3,900+ iOS
+Apple Emojis).zip`, a `fig-kiwi` file whose images are blobs in the message
+chunk). They live in `filesDir/emoji`, are not in the backup, and until imported
+— or on any other phone — `EmojiGlyph` draws the character in the phone's font.
+**Do not commit the PNGs, not even as test resources.** `ScreenShots.kt` reads
+them from `C:/Temp/flowpay-emoji` (or `-Dflowpay.emojiPack`) when present.
+
+### What changed on screen
+- **Платежі:** hero with the next payment's emoji as a sticker; «Лишається» and
+  «Сплачено» as two tiles; the year rows in one dark card; the timeline is a
+  two-column grid of pastel tiles (emoji, date chip, weekend note, name, yearly
+  line, trial, raise line, amount, tick). Tap a tile to edit, tap the ring to mark.
+- **Огляд:** sticker on the hero, pastel tiles with emoji, 🎬 on the recap invite,
+  the emoji row in settings.
+- **Покупки:** a summary tile (`parcelsAtAGlance`: at a branch → on the way →
+  open), each purchase a tile with its emoji (or photo), the close action a dark
+  pill inside it.
+- **Бажання:** the total as a lavender tile; a wish without a photo shows a
+  pastel square with `wishEmoji` instead of a grey one.
+- **Titles** in Unbounded on every tab.
+
+### New JSON fields
+`Pay.em`, `Order.em` — the hand-picked emoji; empty means "guess from the name".
+Both halves, round-trip tested (`EmojiTest`).
+
