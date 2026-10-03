@@ -321,12 +321,8 @@ fun openBackgroundSettings(context: Context) {
 
 /** The phone's page for this app's notifications. */
 fun openNotificationSettings(context: Context) {
-    val intent = if (Build.VERSION.SDK_INT >= 26) {
-        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-    } else {
-        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).setData("package:${context.packageName}".toUri())
-    }
+    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+        .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
     runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
 }
 

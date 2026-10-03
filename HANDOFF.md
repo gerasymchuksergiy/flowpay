@@ -1,7 +1,8 @@
 # FlowPay — handoff
 
 Everything the next session needs to work on this app without relearning it the
-expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests.
+expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
+to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed).
 
 Nearly every rule below exists because breaking it cost something real — a failed
 release, a silent data loss, three hours of the owner waiting. Where that is so,
@@ -42,7 +43,7 @@ before adding to it:
 
 > **Pure logic lives in the small files. Compose lives in `MainActivity.kt` and
 > `Components.kt`.** Everything that can be decided without a screen is a plain
-> function over plain data, and it has a unit test. This is why 1002 tests can
+> function over plain data, and it has a unit test. This is why 1096 tests can
 > cover an app with no instrumented tests at all.
 
 When you add a feature, the arithmetic goes in a small file with tests, and only
@@ -641,19 +642,94 @@ wrong.
 
 ## 14. Open items
 
+(Updated 3 October 2026 — the Search Suggestions item below is now done.)
+
 - **Nothing in this app has been verified visually.** Grain strength, the lit
   edge, the shape morph on a target-hit card, the appraisal card's states — all
   built and tested, none of them seen.
 - **The Glance widget receiver is `android:exported="false"`.** If the widget ever
   stops redrawing, that attribute is the first thing to try.
-- **Google's terms require displaying Search Suggestions** (`searchEntryPoint.renderedContent`)
-  whenever grounding returns them. It is an HTML blob and the app has no WebView,
-  so this is **not currently met**. Sources are shown; suggestions are not.
-- **The stored appraisal has no expiry.** Google's caching allowance is capped at
-  two years.
+- **Search Suggestions are now shown** under a fresh grounded review
+  (`SearchSuggestions.kt`, platform WebView, JS off, taps open the browser). They
+  are kept in memory only, as the terms require. **Never seen on a device.** Still
+  open with the owner: the terms forbid "modifying" grounded results, and the app
+  splits the answer into headings and rejects parts in code — arguably that.
+- **Stored reviews older than 730 days are no longer shown** (`appraisalKept`).
+- **`gemini-3.1-flash-lite` shuts down on 7 May 2027.** The named replacement is
+  `gemini-3.5-flash-lite` (dearer: $0.30/$2.50 per 1M). Not switched — the name
+  was not verified against a live call. Change `APPRAISAL_MODEL` before May.
+- **Android developer verification** reaches more countries from 2027. Once it
+  reaches Ukraine, an unregistered package cannot be installed or updated on a
+  certified phone, which would break self-update. The free limited-distribution
+  account (≤20 devices) with the current debug-key SHA-256 is the fix. Owner action.
+- **Holidays under martial law** are ordinary working days (Labour Code art. 73
+  is suspended), and the NBU payment system runs 24/7. The «святковий день —
+  платіж до …» shift is therefore stricter than necessary. Left as is; the
+  weekend rule is unaffected.
 - **Five Gemini API keys were pasted into a chat transcript** on 16 September 2026
   and should be rotated.
 - Retrieval of **independent lab results** (RTINGS, Which?, CHOICE) was proposed
   and not built: their failure mode is absence rather than error, which would let
   the appraisal make a real evaluative claim instead of restricting itself to what
   kind of thing something is.
+
+---
+
+## 15. What changed on 3 October 2026 (v3.13.0)
+
+A day of owner bug reports, a five-agent code audit, and two research passes.
+Everything below has unit tests; **nothing was seen on a screen** (no emulator,
+no device attached).
+
+### New files
+| File | Holds |
+|---|---|
+| `Purchases.kt` | Order kinds (download / Nova Poshta / other post), close button wording, carrier sites (Ukrposhta for 13-digit and `…UA` S10, 17TRACK otherwise), tracking numbers in free text, return windows |
+| `Merge.kt` | `mergeById`, `withoutRepeatedIds`, `binEntryId` — the rule for slow work landing on a list that changed |
+| `Discounts.kt` | The shop's crossed-out price vs the lowest of the 30 days *before* the current price; Black Friday date and note |
+| `Notifications.kt` | `openTabIntent` — every notification opens its tab |
+| `SearchSuggestions.kt` | Gemini Search Suggestions in a WebView |
+
+### Rules added — do not undo
+- **Never save the list a slow operation started from.** Every network-bound
+  path goes through `update { now -> … }` or `mergeById`. Saving the starting
+  list resurrected deleted wishes, dropped added ones, reverted typing, and made
+  duplicate ids that crashed the grid on every launch.
+- **The app re-reads the store on every return** (`LifecycleEventEffect(ON_START)`),
+  and `today`, the rate and the income are keyed on it. The activity lives for
+  days on this phone.
+- **Lists are read through `withoutRepeatedIds`.** A duplicate id must never be
+  able to lock the owner out again.
+- **Bin entries have their own ids** (`binEntryId`); a bought wish's parcel has
+  its own id too.
+- **The paid tick follows the reminder** (`tickMonth`): inside the notice period
+  it marks the coming charge's month, otherwise this month's. Next month's marks
+  are kept by `prunePaidMarks`.
+- **The digest remembers what it said** (`digest_p`) and compares against that,
+  not against a calendar day; it is pinned to its hour with
+  `setNextScheduleTimeOverride` and re-pinned after each run.
+- **`priceNumber(grouping = false)` for ratings.** "1,299" is a thousand; "4,667"
+  stars is not.
+- **`BACK_IN_STOCK` only from `OUT_OF_STOCK`.**
+
+### Owner decisions taken today (reversals of §12-style calls)
+- The background-health strip shows **only on trouble** (`stripLine`).
+- «По місяцях» lives on Платежі, not Огляд.
+- The navigation bar is nearly opaque (0.96).
+
+### New Store keys
+`alerted` (alerts already sent), `digest_p` (prices the last digest saw),
+`hol_<year>` (holidays per year; the old `hol` is still read), `sec_orderarchive`.
+None of them is app data, so none is in the backup. New JSON fields, all in both
+halves of their mapping and round-trip tested: `Order.dg` (digital), `Order.rb`
+(return by), `Wish.why`, `WishSource.lp` (crossed-out price).
+
+### Researched and deliberately not built
+- **Live Updates for parcels** — Google's own page says they are not for package
+  tracking.
+- **Ukrposhta / Meest / Nova Post Global tracking APIs** — all need a contract
+  token. The web pages are linked instead.
+- **Temu via a crawler User-Agent** — it does return JSON-LD with price and photo,
+  but that relies on Temu serving crawlers differently, against its terms.
+- **Nova Poshta with the recipient's phone** unlocks more fields; it would need
+  the owner's phone stored on the device. Not asked yet.

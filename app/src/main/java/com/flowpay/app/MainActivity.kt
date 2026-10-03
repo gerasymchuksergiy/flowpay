@@ -5560,8 +5560,8 @@ fun PaymentsScreen(
                         // read and forgotten; the next payment is prepared for, so it takes
                         // the panel and the total moves down into the summary rows.
                         // What is still owed, as the pill and the digest count it: a
-                    // bill already ticked off is not the next thing to prepare for.
-                    val next = nextPayment(stillOwing(items, paid, today), today, rate.sell)
+                        // bill already ticked off is not the next thing to prepare for.
+                        val next = nextPayment(stillOwing(items, paid, today), today, rate.sell)
                         HeroPanel(
                             label = if (next != null) {
                                 "Найближчий платіж · ${dueLabel(next.daysAway)}"
