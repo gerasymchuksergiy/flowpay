@@ -125,6 +125,26 @@ fun orderEmoji(name: String, digital: Boolean): String =
 /** A wish with no photo yet: what the thing is, or a present. */
 fun wishEmoji(name: String): String = firstRule(name, ORDER_RULES) ?: "🎁"
 
+/** The picture on each card of the month's recap. */
+fun recapEmoji(kind: RecapKind): String = when (kind) {
+    RecapKind.OPENING -> "👀"
+    RecapKind.DROPS_CAUGHT -> "📉"
+    RecapKind.PRICES_HELD -> "🧊"
+    RecapKind.LONGEST_WAIT -> "⏳"
+    RecapKind.DEAREST_WISH -> "💎"
+    RecapKind.PATIENCE_PAID -> "🎯"
+    RecapKind.CHEAPEST_BOUGHT -> "🪙"
+    RecapKind.MONTH_ON_MONTH -> "📊"
+    RecapKind.COMMITTED_SHARE -> "🍰"
+    RecapKind.STANDING_COSTS -> "🧾"
+    RecapKind.YEAR_IN_WISHES -> "🎁"
+    RecapKind.YEAR_IN_DOLLARS -> "💵"
+    RecapKind.SUB_PRICE_MOVED -> "📈"
+    RecapKind.TRIAL_ENDED -> "⌛"
+    RecapKind.SUBS_STEADY -> "🧘"
+    RecapKind.LABEL -> "✨"
+}
+
 /** What is drawn for a payment: the one picked by hand, else the guess. */
 fun shownEmoji(pay: Pay): String = pay.emoji.ifBlank { payEmoji(pay.name) }
 

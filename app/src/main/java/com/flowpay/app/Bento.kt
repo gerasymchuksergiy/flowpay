@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -319,6 +320,22 @@ fun EmojiPickerDialog(guessed: String, onPick: (String) -> Unit, onDismiss: () -
         },
         dismissButton = { TextButton(onDismiss) { Text("Скасувати") } }
     )
+}
+
+/** A page's picture when the thing has no photo: its emoji on a pastel band. */
+@Composable
+fun EmojiHeader(emoji: String, colour: Color, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .padding(horizontal = Space.screen)
+            .fillMaxWidth()
+            .height(160.dp)
+            .clip(TileRadius)
+            .background(colour),
+        contentAlignment = Alignment.Center
+    ) {
+        EmojiSticker(emoji, 72.dp)
+    }
 }
 
 /** The quieter text of a tile, in one place so every tile reads alike. */

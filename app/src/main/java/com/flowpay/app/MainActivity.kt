@@ -27,6 +27,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.glance.appwidget.updateAll
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.animateFloatAsState
@@ -3914,6 +3915,10 @@ fun SharedTransitionScope.WishDetailScreen(
                         contentScale = ContentScale.Crop
                     )
                 }
+            } else {
+                // The same pastel square the card shows, so opening a wish with no
+                // photo lands on the thing it came from rather than on nothing.
+                EmojiHeader(wishEmoji(wish.name), tileColours(listOf(wish.id)).first())
             }
 
             Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg)) {
@@ -4984,7 +4989,10 @@ fun SharedTransitionScope.WishCard(
 fun CalculatorScreen(store: Store) {
     val touch = rememberTouch()
     var amount by remember { mutableStateOf("") }
-    var hryvniaToDollar by remember { mutableStateOf(true) }
+    var deal by remember { mutableStateOf(Deal.BUY) }
+    // Dollars by default: «скільки коштуватиме купити сто доларів» is the question
+    // this is opened with. The arrows beside the field switch to hryvnias.
+    var amountInUah by remember { mutableStateOf(false) }
     var first by remember { mutableStateOf("") }
     var second by remember { mutableStateOf("") }
     var operation by remember { mutableStateOf("+") }
@@ -5037,13 +5045,6 @@ fun CalculatorScreen(store: Store) {
         if (rate.sell <= 0 || age > 30 * 60 * 1000L) refresh(asked = false)
     }
 
-    val source = parseAmount(amount)
-    val exchangeRate = if (hryvniaToDollar) rate.sell else rate.buy
-    val converted = when {
-        exchangeRate <= 0 -> 0.0
-        hryvniaToDollar -> source / exchangeRate
-        else -> source * exchangeRate
-    }
     val a = parseAmount(first)
     val b = parseAmount(second)
     val total = when (operation) {
@@ -5080,104 +5081,151 @@ fun CalculatorScreen(store: Store) {
             }
             item {
                 Column(Modifier.padding(horizontal = Space.screen)) {
-                    Card(
-                        Modifier.litEdge(Radius.lg),
-                        shape = Radius.lg,
-                        colors = CardDefaults.cardColors(containerColor = SurfaceRaised)
-                    ) {
-                        Column(Modifier.padding(Space.lg)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text("USD / UAH", color = TextSecondary, fontSize = Type.captionSize)
-                                    Text(rateHeadline(rate), fontWeight = FontWeight.Bold)
-                                    // Never the figure without its source: the official
-                                    // rate and a bank's rate differ by most of a hryvnia,
-                                    // and an unlabelled number invites reading one as the
-                                    // other.
-                                    rateSourceLabel(rate).takeIf { it.isNotBlank() }?.let {
-                                        Text(it, color = TextSecondary, fontSize = Type.captionSize)
-                                    }
-                                    if (fetchedAt > 0) {
-                                        Text(
-                                            "станом на ${timeLabel(fetchedAt)}" +
-                                                if (rateError) " · оновити не вдалося" else "",
-                                            color = if (rateError) Negative else TextSecondary,
-                                            fontSize = Type.captionSize
-                                        )
-                                    } else if (rateError) {
-                                        Text(
-                                            "Ні Monobank, ні НБУ не відповіли, спробуйте пізніше",
-                                            color = Negative,
-                                            fontSize = Type.captionSize
-                                        )
-                                    }
-                                }
-                                IconButton({ refresh(asked = true) }) {
-                                    if (loading) BusyMark()
-                                    else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
-                                }
-                            }
-                            NumberField(if (hryvniaToDollar) "Сума у гривнях" else "Сума у доларах", amount) { amount = it }
-                            // Secondary action, so an outline rather than a second filled
-                            // shape. The lime is spent on the one figure below.
-                            OutlinedButton(
-                                {
-                                    // Which way round the conversion runs is a
-                                    // switch, not a command: the figure below keeps
-                                    // its digits and changes its meaning, which is
-                                    // easy to miss on a glance and impossible to
-                                    // miss in the hand.
-                                    hryvniaToDollar = !hryvniaToDollar
-                                    touch.switched(hryvniaToDollar)
-                                },
-                                Modifier.fillMaxWidth().padding(top = Space.md),
-                                shape = Radius.sm,
-                                border = BorderStroke(1.dp, HairLine),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
-                            ) {
-                                Icon(Icons.Default.SwapVert, null)
-                                Text(if (hryvniaToDollar) " UAH → USD" else " USD → UAH")
-                            }
-                            Spacer(Modifier.height(Space.lg))
-                            HeroPanel(
-                                label = if (hryvniaToDollar) "У доларах" else "У гривнях",
-                                value = if (hryvniaToDollar) "${figure(converted, 2)} USD" else money(converted),
-                                muted = converted == 0.0,
-                                // A short number left the right half of the panel empty.
-                                // The rate it was converted at belongs there: it is the
-                                // one thing you would otherwise scroll up to check.
-                                trailing = if (exchangeRate > 0) {
-                                    {
-                                        Column(horizontalAlignment = Alignment.End) {
-                                            Text(
-                                                "за курсом",
-                                                color = AccentInk.copy(alpha = 0.65f),
-                                                fontSize = Type.captionSize
-                                            )
-                                            Text(
-                                                rateFigure(exchangeRate),
-                                                color = AccentInk,
-                                                fontSize = Type.sectionSize,
-                                                lineHeight = Type.sectionLine,
-                                                fontWeight = Type.strong,
-                                                style = Tabular
-                                            )
-                                        }
-                                    }
-                                } else {
-                                    null
-                                }
+                    // Both of the bank's figures side by side: what a dollar brings
+                    // when you sell it, and what one costs when you buy it. The NBU
+                    // has a single official figure and no two sides, so it gets one
+                    // tile — never the same number twice dressed as two.
+                    if (rate.sell > 0 && rate.source != SOURCE_NBU) {
+                        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                            RateTile(
+                                "Купівля",
+                                rate.buy,
+                                "стільки дадуть за $1, коли продаєте",
+                                "💰",
+                                TileMint,
+                                Modifier.weight(1f).fillMaxHeight()
+                            )
+                            RateTile(
+                                "Продаж",
+                                rate.sell,
+                                "стільки коштує $1, коли купуєте",
+                                "💵",
+                                TileSky,
+                                Modifier.weight(1f).fillMaxHeight()
                             )
                         }
+                    } else {
+                        RateTile(
+                            if (rate.sell > 0) "Офіційний курс" else "Курс",
+                            rate.sell,
+                            if (rate.sell > 0) {
+                                "₴ за $1. Купівлю й продаж покаже Monobank, щойно відповість"
+                            } else {
+                                "ще не завантажено"
+                            },
+                            "🏦",
+                            TileSand,
+                            Modifier.fillMaxWidth()
+                        )
+                    }
+                    // Never the figure without its source: the official rate and a
+                    // bank's differ by most of a hryvnia, and an unlabelled number
+                    // invites reading one as the other.
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = Space.sm),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            listOfNotNull(
+                                rateSourceLabel(rate).takeIf { it.isNotBlank() },
+                                if (fetchedAt > 0) "станом на ${timeLabel(fetchedAt)}" else null
+                            ).joinToString(" · ").takeIf { it.isNotBlank() }?.let {
+                                Text(it, color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
+                            }
+                            spreadLine(rate)?.let {
+                                Text(it, color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
+                            }
+                            if (rateError) {
+                                Text(
+                                    if (fetchedAt > 0) "Оновити не вдалося" else "Ні Monobank, ні НБУ не відповіли, спробуйте пізніше",
+                                    color = Negative,
+                                    fontSize = Type.captionSize,
+                                    lineHeight = Type.captionLine
+                                )
+                            }
+                        }
+                        IconButton({ refresh(asked = true) }) {
+                            if (loading) BusyMark()
+                            else Icon(Icons.Default.Refresh, "Оновити", tint = TextSecondary)
+                        }
+                    }
+                    Spacer(Modifier.height(Space.md))
+                    // The converter: which deal, how much, and what it comes to. The
+                    // deal picks the rate, so the figure cannot be worked out at the
+                    // wrong one of the two.
+                    BentoTile(SurfaceRaised, Modifier.fillMaxWidth()) {
+                        SegmentedControl(
+                            options = listOf("Купую $", "Продаю $"),
+                            selected = if (deal == Deal.BUY) 0 else 1
+                        ) {
+                            deal = if (it == 0) Deal.BUY else Deal.SELL
+                        }
+                        Spacer(Modifier.height(Space.md))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                NumberField(exchangeFieldLabel(amountInUah), amount) { amount = it }
+                            }
+                            Spacer(Modifier.width(Space.sm))
+                            // Which currency is typed is a switch, not a command: the
+                            // figure below keeps its digits and changes its meaning,
+                            // which is easy to miss on a glance and impossible to miss
+                            // in the hand.
+                            IconButton({
+                                amountInUah = !amountInUah
+                                touch.switched(amountInUah)
+                            }) {
+                                Icon(
+                                    Icons.Default.SwapVert,
+                                    if (amountInUah) "Вводити в доларах" else "Вводити в гривнях",
+                                    tint = TextPrimary
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(Space.lg))
+                        val worked = exchange(deal, amountInUah, parseAmount(amount), rate)
+                        HeroPanel(
+                            label = exchangeResultLabel(deal, amountInUah),
+                            value = if (worked.resultInUah) money(worked.result) else dollars(worked.result),
+                            muted = worked.result == 0.0,
+                            // The rate it was worked out at, where it would otherwise
+                            // be scrolled up to and checked.
+                            trailing = if (worked.rate > 0) {
+                                {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(
+                                            "за курсом",
+                                            color = AccentInk.copy(alpha = 0.65f),
+                                            fontSize = Type.captionSize
+                                        )
+                                        Text(
+                                            rateFigure(worked.rate),
+                                            color = AccentInk,
+                                            fontSize = Type.sectionSize,
+                                            lineHeight = Type.sectionLine,
+                                            fontWeight = Type.strong,
+                                            style = Tabular
+                                        )
+                                    }
+                                }
+                            } else {
+                                null
+                            }
+                        )
                     }
 
-                    Text(
-                        "Курс за місяць",
+                    Row(
                         Modifier.padding(top = Space.xxl, bottom = Space.md),
-                        fontSize = Type.sectionSize,
-                        lineHeight = Type.sectionLine,
-                        fontWeight = Type.medium
-                    )
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        EmojiGlyph("📈", 28.dp)
+                        Spacer(Modifier.width(Space.sm))
+                        Text(
+                            "Курс за місяць",
+                            fontSize = Type.sectionSize,
+                            lineHeight = Type.sectionLine,
+                            fontWeight = Type.medium
+                        )
+                    }
                     Card(
                         Modifier.litEdge(Radius.lg),
                         shape = Radius.lg,
@@ -5249,13 +5297,19 @@ fun CalculatorScreen(store: Store) {
 
                     // A section heading sits closer to its own content than to what came
                     // before it, so the gap above is larger than the gap below.
-                    Text(
-                        "Калькулятор сум",
+                    Row(
                         Modifier.padding(top = Space.xxl, bottom = Space.md),
-                        fontSize = Type.sectionSize,
-                        lineHeight = Type.sectionLine,
-                        fontWeight = Type.medium
-                    )
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        EmojiGlyph("🧮", 28.dp)
+                        Spacer(Modifier.width(Space.sm))
+                        Text(
+                            "Калькулятор сум",
+                            fontSize = Type.sectionSize,
+                            lineHeight = Type.sectionLine,
+                            fontWeight = Type.medium
+                        )
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
                         Box(Modifier.weight(1f)) { NumberField("Перша сума", first) { first = it } }
                         Box(Modifier.weight(1f)) { NumberField("Друга сума", second) { second = it } }
@@ -5338,6 +5392,35 @@ fun CalculatorScreen(store: Store) {
                 }
             }
         )
+    }
+}
+
+/** One of the bank's figures for a dollar, as a tile. */
+@Composable
+fun RateTile(
+    label: String,
+    value: Double,
+    caption: String,
+    emoji: String,
+    colour: Color,
+    modifier: Modifier = Modifier
+) {
+    BentoTile(colour, modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                Modifier.weight(1f),
+                color = softInkOn(colour),
+                fontSize = Type.captionSize,
+                fontWeight = Type.medium
+            )
+            EmojiGlyph(emoji, 28.dp)
+        }
+        Spacer(Modifier.height(Space.xs))
+        SplitFigure(if (value > 0) rateFigure(value) else "—", 30.sp)
+        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(Space.xs))
+        TileCaption(caption, colour)
     }
 }
 
@@ -5537,6 +5620,8 @@ fun PaymentsScreen(
     // Which half of the screen is showing. Not remembered: the schedule is what
     // the tab is opened for, and the history is a question asked on purpose.
     var view by remember { mutableIntStateOf(PAYMENTS_SCHEDULE) }
+    // The tiles rise in the first time this tab opens — see [Entrance].
+    val entrance = rememberEntrance()
     Box {
         LazyColumn(
             state = listState,
@@ -5577,7 +5662,12 @@ fun PaymentsScreen(
                 }
             } else {
                 item {
-                    Column(Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xl)) {
+                    Column(
+                        Modifier
+                            .revealOnEnter(0, entrance)
+                            .padding(horizontal = Space.screen)
+                            .padding(bottom = Space.xl)
+                    ) {
                         // The loudest figure should be one you can act on. A monthly total is
                         // read and forgotten; the next payment is prepared for, so it takes
                         // the panel and the total moves down into the summary rows.
@@ -5625,7 +5715,7 @@ fun PaymentsScreen(
                                         color = TileInkSoft,
                                         fontSize = Type.captionSize
                                     )
-                                    EmojiGlyph("✅", 24.dp)
+                                    EmojiGlyph("✅", 24.dp, Modifier.popOnRise(record.paidCount))
                                 }
                                 Spacer(Modifier.height(Space.xs))
                                 SplitFigure(totalLabel(record.paid), 22.sp)
@@ -5715,6 +5805,7 @@ fun PaymentsScreen(
                         Row(
                             Modifier
                                 .animateItem()
+                                .revealOnEnter(row + 1, entrance)
                                 .padding(horizontal = Space.screen)
                                 .padding(bottom = Space.md)
                                 .height(IntrinsicSize.Min),
@@ -5892,11 +5983,14 @@ fun PaymentTile(
     onToggle: () -> Unit,
     onOpen: () -> Unit
 ) {
-    // A paid tile steps back rather than vanishing: it is still this month's.
-    val faded by animateFloatAsState(if (done) 0.6f else 1f, Motion.effects(), label = "paid tile")
-    BentoTile(colour, modifier.graphicsLayer { alpha = faded }, onClick = onOpen, onClickLabel = "Змінити") {
+    // A paid tile goes quiet: the pastel gives way to the dark ground, so a row of
+    // tiles reads as what is still to pay (colour) and what is done (dark). Fading
+    // the pastel instead turned peach into mud.
+    val shown by animateColorAsState(if (done) SurfaceRaised else colour, Motion.effects(), label = "paid tile")
+    BentoTile(shown, modifier, onClick = onOpen, onClickLabel = "Змінити") {
         Row(verticalAlignment = Alignment.Top) {
-            EmojiGlyph(shownEmoji(pay), 36.dp)
+            // Jumps when the tick goes on — the tile's own answer to the tap.
+            EmojiGlyph(shownEmoji(pay), 36.dp, Modifier.popOnRise(if (done) 1 else 0))
             Spacer(Modifier.weight(1f))
             // One tap, on the tile you are already looking at — this is the
             // control used without looking, halfway through paying something on
@@ -5914,14 +6008,14 @@ fun PaymentTile(
                     Modifier.semantics {
                         contentDescription = if (done) "Скасувати позначку про оплату" else "Позначити оплаченим"
                     },
-                    ring = TileInk.copy(alpha = 0.4f),
-                    fill = TileInk,
-                    tick = colour
+                    ring = inkOn(shown).copy(alpha = 0.4f),
+                    fill = inkOn(shown),
+                    tick = shown
                 )
             }
         }
-        TileChip(if (date == today) "Сьогодні" else dayMonth(date), colour, strong = date == today)
-        dayNote?.let { TileCaption(it, colour, Modifier.padding(top = Space.xs), maxLines = 3) }
+        TileChip(if (date == today) "Сьогодні" else dayMonth(date), shown, strong = date == today)
+        dayNote?.let { TileCaption(it, shown, Modifier.padding(top = Space.xs), maxLines = 3) }
         Text(
             pay.name,
             Modifier.padding(top = Space.sm),
@@ -5933,7 +6027,7 @@ fun PaymentTile(
         )
         // The annual figure is the one that changes minds about a subscription;
         // an annual charge says both denominators. See [billingLine].
-        TileCaption(billingLine(pay), colour)
+        TileCaption(billingLine(pay), shown)
         // The date the free ride ends: the one fact about this expense that expires.
         trialLabel(pay, today)?.let { free ->
             Text(
@@ -5946,12 +6040,12 @@ fun PaymentTile(
             )
         }
         // What it used to cost: the whole defence against a quiet raise.
-        amountMoveLine(pay)?.let { TileCaption(it, colour) }
+        amountMoveLine(pay)?.let { TileCaption(it, shown) }
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.height(Space.sm))
         SplitFigure(amountLabel(pay.amount, pay.currency), 20.sp)
         if (pay.currency == USD && usdSell > 0) {
-            TileCaption("≈ ${approxMoney(pay.amount * usdSell)}", colour, maxLines = 1)
+            TileCaption("≈ ${approxMoney(pay.amount * usdSell)}", shown, maxLines = 1)
         }
     }
 }
@@ -6125,6 +6219,7 @@ fun OrdersScreen(
     // Shut unless opened, and remembered like every other fold. Finished purchases
     // are the record, not the errand, and they sat open under the parcels in flight.
     var archiveOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ORDER_ARCHIVE)) }
+    val entrance = rememberEntrance()
 
     fun checkAll() {
         scope.launch {
@@ -6226,7 +6321,10 @@ fun OrdersScreen(
                 item(key = "parcels-glance") {
                     ParcelsSummaryTile(
                         glance,
-                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md)
+                        Modifier
+                            .revealOnEnter(0, entrance)
+                            .padding(horizontal = Space.screen)
+                            .padding(bottom = Space.md)
                     )
                 }
             }
@@ -6242,7 +6340,7 @@ fun OrdersScreen(
                     today = today,
                     // Trouble is pink whatever the name would have given it.
                     colour = if (order.problem) TilePink else colours[index],
-                    modifier = Modifier.animateItem().padding(bottom = Space.md),
+                    modifier = Modifier.animateItem().revealOnEnter(index + 1, entrance).padding(bottom = Space.md),
                     onOpen = { setOpened(order.id) },
                     onClose = { closing = order }
                 )
@@ -6501,6 +6599,9 @@ fun OrderDetailScreen(
                         contentScale = ContentScale.Crop
                     )
                 }
+                Spacer(Modifier.height(Space.md))
+            } else {
+                EmojiHeader(shownEmoji(order), tileColours(listOf(order.id)).first())
                 Spacer(Modifier.height(Space.md))
             }
 
@@ -6866,130 +6967,141 @@ fun PaidMonths(
         }
         months.forEach { record ->
             val open = openMonth == record.month
-            Card(
-                Modifier.fillMaxWidth().padding(bottom = Space.sm).litEdge(Radius.md),
-                colors = CardDefaults.cardColors(containerColor = SurfaceBase),
-                shape = Radius.md
+            // The month's state is its colour, so a year scrolls as a row of
+            // answers: mint settled, pink ended with nothing marked, peach partly
+            // marked, sky still running, sand nothing was due.
+            val colour = when (record.state) {
+                MonthState.SETTLED -> TileMint
+                MonthState.UNRECORDED -> TilePink
+                MonthState.PARTIAL -> TilePeach
+                MonthState.NOTHING_DUE -> TileSand
+                MonthState.RUNNING -> TileSky
+            }
+            val ink = inkOn(colour)
+            val soft = softInkOn(colour)
+            BentoTile(
+                colour,
+                Modifier.fillMaxWidth().padding(bottom = Space.md),
+                onClick = { openMonth = if (open) null else record.month },
+                onClickLabel = if (open) "Згорнути місяць" else "Що сплачено цього місяця"
             ) {
-                Column(
-                    Modifier
-                        .clickable { openMonth = if (open) null else record.month }
-                        .padding(Space.lg)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            record.title,
-                            fontSize = Type.cardTitleSize,
-                            fontWeight = Type.medium,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Icon(
-                            if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                            if (open) "Згорнути місяць" else "Що сплачено цього місяця",
-                            tint = TextSecondary
-                        )
-                    }
-                    // The figure the screen is opened for, as the loudest thing on
-                    // the card. What it was meant to be follows in the line below.
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        totalLabel(record.paid),
-                        fontSize = Type.sectionSize,
-                        lineHeight = Type.sectionLine,
-                        fontWeight = Type.strong,
-                        color = if (record.paidCount > 0) TextPrimary else TextDisabled,
-                        style = Tabular,
-                        modifier = Modifier.padding(top = Space.xs)
+                        record.title,
+                        fontSize = Type.cardTitleSize,
+                        fontWeight = Type.medium,
+                        modifier = Modifier.weight(1f)
                     )
-                    Text(
-                        monthRecordLine(record),
-                        // A month that ended with nothing marked is not a month with
-                        // nothing to pay, and the difference is worth a colour.
-                        color = when (record.state) {
-                            MonthState.UNRECORDED -> Negative
-                            MonthState.NOTHING_DUE -> TextDisabled
-                            else -> TextSecondary
+                    EmojiGlyph(
+                        when (record.state) {
+                            MonthState.SETTLED -> "✅"
+                            MonthState.UNRECORDED -> "❗"
+                            MonthState.PARTIAL -> "⏳"
+                            MonthState.NOTHING_DUE -> "😴"
+                            MonthState.RUNNING -> "🗓️"
                         },
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine
+                        28.dp
                     )
-                    monthRecordDetail(record).takeIf { it.isNotBlank() }?.let {
-                        Text(
-                            it,
-                            color = TextDisabled,
-                            fontSize = Type.captionSize,
-                            lineHeight = Type.captionLine
-                        )
+                    Icon(
+                        if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        null,
+                        tint = soft
+                    )
+                }
+                // The figure the screen is opened for, as the loudest thing on
+                // the tile. What it was meant to be follows in the line below.
+                SplitFigure(
+                    totalLabel(record.paid),
+                    26.sp,
+                    Modifier.padding(top = Space.xs),
+                    colour = if (record.paidCount > 0) ink else soft
+                )
+                Text(
+                    monthRecordLine(record),
+                    // A month that ended with nothing marked is not a month with
+                    // nothing to pay, and the difference is worth a colour.
+                    color = if (record.state == MonthState.UNRECORDED) TileAlarm else soft,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    fontWeight = if (record.state == MonthState.UNRECORDED) Type.medium else null
+                )
+                monthRecordDetail(record).takeIf { it.isNotBlank() }?.let {
+                    TileCaption(it, colour, maxLines = 3)
+                }
+                if (open) {
+                    HorizontalDivider(
+                        color = ink.copy(alpha = 0.15f),
+                        modifier = Modifier.padding(vertical = Space.md)
+                    )
+                    val lines = monthLines(pays, marks, record.month)
+                    if (lines.isEmpty()) {
+                        Text("Цього місяця нічого не було до сплати", color = soft, fontSize = Type.captionSize)
                     }
-                    if (open) {
-                        HorizontalDivider(
-                            color = HairLine,
-                            modifier = Modifier.padding(vertical = Space.md)
-                        )
-                        val lines = monthLines(pays, marks, record.month)
-                        if (lines.isEmpty()) {
-                            Text(
-                                "Цього місяця нічого не було до сплати",
-                                color = TextDisabled,
-                                fontSize = Type.captionSize
-                            )
-                        }
-                        lines.forEach { line ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    // A month reported as unpaid with no way to
-                                    // correct it is an accusation you cannot
-                                    // answer. A tap here is how a forgotten
-                                    // payment gets marked after the fact.
-                                    .clickable { onToggle(line.pay, record.month) }
-                                    .padding(vertical = Space.xs),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                PaidCheck(
-                                    line.paid,
-                                    Modifier.semantics {
-                                        contentDescription = if (line.paid) {
-                                            "Скасувати позначку про оплату"
-                                        } else {
-                                            "Позначити оплаченим"
-                                        }
-                                    }
-                                )
-                                Spacer(Modifier.width(Space.md))
-                                Text(
-                                    line.pay.name,
-                                    Modifier.weight(1f).padding(end = Space.sm),
-                                    color = if (line.paid) TextPrimary else TextSecondary,
-                                    fontSize = Type.bodySize,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                                // A paid figure can be corrected to what the bank
-                                // actually took. Underlined, because nothing else in
-                                // a row of figures says it is a control.
-                                Text(
-                                    amountLabel(line.amount, line.currency),
-                                    color = if (line.paid) TextPrimary else TextDisabled,
-                                    fontSize = Type.bodySize,
-                                    fontWeight = Type.medium,
-                                    style = Tabular,
-                                    textDecoration = if (line.paid) TextDecoration.Underline else null,
-                                    modifier = if (line.paid) {
-                                        Modifier.clickable { correcting = line to record.month }
+                    lines.forEach { line ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(Radius.sm)
+                                // A month reported as unpaid with no way to
+                                // correct it is an accusation you cannot
+                                // answer. A tap here is how a forgotten
+                                // payment gets marked after the fact.
+                                .clickable { onToggle(line.pay, record.month) }
+                                .padding(vertical = Space.xs),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            PaidCheck(
+                                line.paid,
+                                Modifier.semantics {
+                                    contentDescription = if (line.paid) {
+                                        "Скасувати позначку про оплату"
                                     } else {
-                                        Modifier
+                                        "Позначити оплаченим"
                                     }
-                                )
-                            }
-                        }
-                        if (record.gap > 0.0 && record.state != MonthState.NOTHING_DUE) {
-                            Spacer(Modifier.height(Space.sm))
-                            LeaderRow(
-                                "Різниця з планом",
-                                money(record.gap),
-                                alarm = record.state != MonthState.RUNNING
+                                },
+                                ring = ink.copy(alpha = 0.4f),
+                                fill = ink,
+                                tick = colour
+                            )
+                            Spacer(Modifier.width(Space.md))
+                            EmojiGlyph(shownEmoji(line.pay), 24.dp, Modifier.popOnRise(if (line.paid) 1 else 0))
+                            Spacer(Modifier.width(Space.sm))
+                            Text(
+                                line.pay.name,
+                                Modifier.weight(1f).padding(end = Space.sm),
+                                color = if (line.paid) ink else soft,
+                                fontSize = Type.bodySize,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            // A paid figure can be corrected to what the bank
+                            // actually took. Underlined, because nothing else in
+                            // a row of figures says it is a control.
+                            Text(
+                                amountLabel(line.amount, line.currency),
+                                color = if (line.paid) ink else soft,
+                                fontSize = Type.bodySize,
+                                fontWeight = Type.medium,
+                                style = Tabular,
+                                textDecoration = if (line.paid) TextDecoration.Underline else null,
+                                modifier = if (line.paid) {
+                                    Modifier.clickable { correcting = line to record.month }
+                                } else {
+                                    Modifier
+                                }
                             )
                         }
+                    }
+                    if (record.gap > 0.0 && record.state != MonthState.NOTHING_DUE) {
+                        Spacer(Modifier.height(Space.sm))
+                        LeaderRow(
+                            "Різниця з планом",
+                            money(record.gap),
+                            alarm = record.state != MonthState.RUNNING,
+                            ink = ink,
+                            softInk = soft,
+                            alarmInk = TileAlarm
+                        )
                     }
                 }
             }
@@ -7216,11 +7328,17 @@ fun StageSegments(
 ) {
     Row(modifier, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
         repeat(PARCEL_STAGES.size) { index ->
+            // A status landing fills the next segment rather than snapping it on.
+            val tone by animateColorAsState(
+                if (index <= reached) filled else empty,
+                Motion.effects(),
+                label = "stage"
+            )
             Box(
                 Modifier
                     .width(12.dp)
                     .height(4.dp)
-                    .background(if (index <= reached) filled else empty, Radius.pill)
+                    .background(tone, Radius.pill)
             )
         }
     }
@@ -7552,6 +7670,7 @@ fun SettingsScreen(
         }
     }
     val listState = rememberLazyListState()
+    val entrance = rememberEntrance()
     Box {
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
             // Item zero is the header alone: that is the block the compact bar watches.
@@ -7612,7 +7731,10 @@ fun SettingsScreen(
                     // into that tab. Bento rather than a column of rows: the four
                     // answers sit where the eye can take them in one look.
                     Spacer(Modifier.height(Space.md))
-                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                    Row(
+                        Modifier.revealOnEnter(1, entrance).height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(Space.md)
+                    ) {
                         OverviewTile(
                             "Відкладено",
                             money(summary.savedTotal),
@@ -7643,7 +7765,10 @@ fun SettingsScreen(
                         ) { onOpenTab(TAB_ORDERS) }
                     }
                     Spacer(Modifier.height(Space.md))
-                    Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                    Row(
+                        Modifier.revealOnEnter(2, entrance).height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(Space.md)
+                    ) {
                         OverviewTile(
                             "Курс долара",
                             if (usdRate > 0) rateFigure(usdRate) else "—",

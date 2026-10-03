@@ -3,7 +3,10 @@ package com.flowpay.app.screens
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.performClick
 import com.flowpay.app.AppCommand
 import com.flowpay.app.FlowPayApp
 import com.flowpay.app.FxRate
@@ -13,7 +16,7 @@ import com.flowpay.app.Order
 import com.flowpay.app.PaidMark
 import com.flowpay.app.Pay
 import com.flowpay.app.PricePoint
-import com.flowpay.app.SOURCE_NBU
+import com.flowpay.app.SOURCE_MONOBANK
 import com.flowpay.app.Store
 import com.flowpay.app.TAB_ORDERS
 import com.flowpay.app.TAB_OVERVIEW
@@ -76,7 +79,7 @@ class ScreenShots {
             savePaidMarks(listOf(PaidMark("Мобільний", monthKey(today), 231.0)))
             saveIncome(40_000.0)
             // Fresh, so the rate screen does not go to the network.
-            saveFxRate(FxRate(41.2, 41.6, SOURCE_NBU), System.currentTimeMillis())
+            saveFxRate(FxRate(41.2, 41.6, SOURCE_MONOBANK), System.currentTimeMillis())
         }
     }
 
@@ -98,6 +101,48 @@ class ScreenShots {
 
     @Test @Config(qualifiers = "uk-rUA-w393dp-h2600dp-440dpi")
     fun overviewWhole() = shot(TAB_OVERVIEW, "5b-overview-whole")
+
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h1700dp-440dpi")
+    fun rateWhole() = shot(TAB_RATE, "2b-rate-whole")
+
+    /** One of the pages a tap leads to, drawn after that tap. */
+    private fun page(tab: Int, name: String, tap: String) {
+        rule.setContent { FlowPayApp(rule.activity, AppCommand.OpenTab(tab)) }
+        rule.waitForIdle()
+        rule.onAllNodesWithText(tap)[0].performClick()
+        rule.waitForIdle()
+        rule.onRoot().captureRoboImage("build/outputs/roborazzi/$name.png")
+    }
+
+    @Test fun byMonths() = page(TAB_PAYMENTS, "6-by-months", "По місяцях")
+    @Test fun wishPage() = page(TAB_WISHES, "7-wish-page", "Кросівки ASICS Gel-1130")
+    @Test fun parcelPage() = page(TAB_ORDERS, "8-parcel-page", "Чохол для телефона")
+    @Test fun recap() = page(TAB_OVERVIEW, "9-recap", "МІСЯЦЬ ГОТОВИЙ")
+
+    // ------------------------------------------------------------ motion, as frames
+
+    /**
+     * A run of frames with the app's motion switched on, for stitching into a GIF.
+     * The clock is driven by hand so every frame is a known moment.
+     */
+    private fun frames(tab: Int, name: String, count: Int, stepMs: Long, settleMs: Long, act: () -> Unit) {
+        val app = RuntimeEnvironment.getApplication()
+        Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
+        rule.mainClock.autoAdvance = false
+        rule.setContent { FlowPayApp(rule.activity, AppCommand.OpenTab(tab)) }
+        rule.mainClock.advanceTimeBy(settleMs)
+        act()
+        repeat(count) { at ->
+            rule.onRoot().captureRoboImage("build/outputs/roborazzi/clips/$name-%03d.png".format(at))
+            rule.mainClock.advanceTimeBy(stepMs)
+        }
+    }
+
+    @Test fun clipPaid() = frames(TAB_PAYMENTS, "paid", count = 40, stepMs = 33, settleMs = 3_000) {
+        rule.onAllNodesWithContentDescription("Позначити оплаченим")[0].performClick()
+    }
+
+    @Test fun clipOpen() = frames(TAB_OVERVIEW, "open", count = 30, stepMs = 40, settleMs = 0) {}
 
     // ------------------------------------------------------------ sample data
 

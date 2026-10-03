@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.compose.runtime.Composable
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
+import androidx.glance.Image
+import androidx.glance.ImageProvider
 import androidx.glance.action.actionStartActivity
 import androidx.glance.action.clickable
 import androidx.glance.appwidget.GlanceAppWidget
@@ -19,11 +21,13 @@ import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
 import androidx.glance.layout.padding
+import androidx.glance.layout.size
 import androidx.glance.layout.width
 import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextStyle
 import androidx.glance.unit.ColorProvider
+import androidx.compose.ui.unit.dp
 import java.time.LocalDate
 
 /**
@@ -49,7 +53,15 @@ class FlowPayWidget : GlanceAppWidget() {
             today = LocalDate.now(),
             marks = store.paidMarks()
         )
-        provideContent { WidgetBody(summary) }
+        // The next payment's emoji, from the imported pack when there is one —
+        // decoded here because a widget draws a bitmap, not a composable glyph.
+        val emoji = store.pays().firstOrNull { it.name == summary.paymentName }?.let { shownEmoji(it) } ?: "🗓️"
+        val picture = runCatching {
+            java.io.File(java.io.File(context.filesDir, "emoji"), "${emojiKey(emoji)}.png")
+                .takeIf { it.isFile }
+                ?.let { android.graphics.BitmapFactory.decodeFile(it.path) }
+        }.getOrNull()
+        provideContent { WidgetBody(summary, emoji, picture) }
     }
 }
 
@@ -58,31 +70,41 @@ class FlowPayWidgetReceiver : GlanceAppWidgetReceiver() {
 }
 
 @Composable
-private fun WidgetBody(summary: WidgetSummary) {
+private fun WidgetBody(summary: WidgetSummary, emoji: String, picture: android.graphics.Bitmap?) {
+    // A lime tile on the home screen, the app's hero panel in miniature: dark ink,
+    // and the next payment's emoji in the corner.
     Column(
         GlanceModifier
             .fillMaxSize()
-            .background(SurfaceLow)
+            .background(Accent)
             .appWidgetBackground()
             .cornerRadius(Radius.card)
             .padding(Space.lg)
             .clickable(actionStartActivity<MainActivity>())
     ) {
-        Text(
-            "FLOWPAY",
-            style = TextStyle(
-                color = ColorProvider(Accent),
-                fontSize = Type.overlineSize,
-                fontWeight = FontWeight.Bold
+        Row(GlanceModifier.fillMaxWidth()) {
+            Text(
+                "FLOWPAY",
+                GlanceModifier.defaultWeight(),
+                style = TextStyle(
+                    color = ColorProvider(AccentInk.copy(alpha = 0.65f)),
+                    fontSize = Type.overlineSize,
+                    fontWeight = FontWeight.Bold
+                )
             )
-        )
-        Spacer(GlanceModifier.height(Space.md))
+            if (picture != null) {
+                Image(ImageProvider(picture), null, GlanceModifier.size(28.dp))
+            } else {
+                Text(emoji, style = TextStyle(fontSize = Type.sectionSize))
+            }
+        }
+        Spacer(GlanceModifier.height(Space.sm))
 
         Text(
             summary.paymentName,
             maxLines = 1,
             style = TextStyle(
-                color = ColorProvider(TextPrimary),
+                color = ColorProvider(AccentInk),
                 fontSize = Type.cardTitleSize,
                 fontWeight = FontWeight.Bold
             )
@@ -94,16 +116,16 @@ private fun WidgetBody(summary: WidgetSummary) {
                     summary.paymentAmount,
                     maxLines = 1,
                     style = TextStyle(
-                        color = ColorProvider(Accent),
+                        color = ColorProvider(AccentInk),
                         fontSize = Type.bodySize,
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Bold
                     )
                 )
                 Spacer(GlanceModifier.width(Space.sm))
                 Text(
                     "${summary.paymentDate} · ${summary.paymentCountdown}",
                     maxLines = 1,
-                    style = TextStyle(color = ColorProvider(TextSecondary), fontSize = Type.captionSize)
+                    style = TextStyle(color = ColorProvider(AccentInk.copy(alpha = 0.7f)), fontSize = Type.captionSize)
                 )
             }
         }
@@ -114,13 +136,13 @@ private fun WidgetBody(summary: WidgetSummary) {
         Text(
             summary.freeCash,
             maxLines = 1,
-            style = TextStyle(color = ColorProvider(TextPrimary), fontSize = Type.bodySize)
+            style = TextStyle(color = ColorProvider(AccentInk), fontSize = Type.bodySize, fontWeight = FontWeight.Medium)
         )
         Spacer(GlanceModifier.height(Space.xs))
         Text(
             summary.parcels,
             maxLines = 1,
-            style = TextStyle(color = ColorProvider(TextSecondary), fontSize = Type.captionSize)
+            style = TextStyle(color = ColorProvider(AccentInk.copy(alpha = 0.7f)), fontSize = Type.captionSize)
         )
     }
 }

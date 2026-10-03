@@ -24,6 +24,7 @@ import androidx.compose.runtime.MutableIntState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,6 +47,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import coil.request.ImageRequest
+import kotlinx.coroutines.launch
 
 /**
  * The motion of the October redesign, in one place.
@@ -198,9 +200,9 @@ fun PaidCheck(
  * which also means a phone set to reduce motion gets everything at once, because
  * the springs snap there and there is no delay left to sit through.
  */
-fun Modifier.revealOnEnter(order: Int): Modifier = composed {
+fun Modifier.revealOnEnter(order: Int, entrance: Entrance): Modifier = composed {
     val reduced = LocalReducedMotion.current
-    val progress = remember { Animatable(if (reduced) 1f else 0f) }
+    val progress = remember { Animatable(if (reduced || !entrance.plays()) 1f else 0f) }
     val rise = with(LocalDensity.current) { 18.dp.toPx() }
     LaunchedEffect(Unit) {
         if (!reduced) {
@@ -216,6 +218,73 @@ fun Modifier.revealOnEnter(order: Int): Modifier = composed {
     graphicsLayer {
         alpha = progress.value
         translationY = (1f - progress.value) * rise
+    }
+}
+
+/**
+ * Whether a screen's tiles rise in: only the first time the tab is opened this
+ * session, and only for what is drawn in the first moments of that.
+ *
+ * The bento wave of October 2026 asked for the screens to arrive rather than
+ * appear. Once is an arrival; every tab switch would be a wait. The time window
+ * is what keeps a tile scrolled into view later — or scrolled back to after the
+ * list dropped it — from rising again in the middle of reading.
+ */
+class Entrance(private val first: Boolean, private val openedAt: Long) {
+    fun plays(): Boolean = first && android.os.SystemClock.uptimeMillis() - openedAt < ENTRANCE_WINDOW_MS
+}
+
+/** How long after a tab opens a tile may still rise in. */
+private const val ENTRANCE_WINDOW_MS = 700L
+
+/**
+ * The [Entrance] for the screen calling it. "Seen" is saveable, and every tab
+ * keeps its saveable state across switches (FlowPayApp), so coming back to a
+ * tab finds it already seen.
+ */
+@Composable
+fun rememberEntrance(): Entrance {
+    var seen by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
+    val entrance = remember { Entrance(!seen, android.os.SystemClock.uptimeMillis()) }
+    androidx.compose.runtime.SideEffect { seen = true }
+    return entrance
+}
+
+/**
+ * A small jump when [value] goes up: a payment ticked off, one more marked paid.
+ *
+ * Up to 135% and a twelfth of a turn on the fast spring, back on the slower one.
+ * It answers the person's own tap and nothing else, so it never plays when the
+ * value merely arrives with the screen, and never when it goes down — unticking
+ * is a correction, not an event.
+ */
+fun Modifier.popOnRise(value: Int): Modifier = composed {
+    val reduced = LocalReducedMotion.current
+    val up = Motion.fastSpatial<Float>()
+    val down = Motion.spatial<Float>()
+    val scale = remember { Animatable(1f) }
+    val turn = remember { Animatable(0f) }
+    val last = remember { mutableValue(value) }
+    LaunchedEffect(value) {
+        val rose = value > last.value
+        last.value = value
+        if (rose && !reduced) {
+            kotlinx.coroutines.coroutineScope {
+                launch {
+                    scale.animateTo(1.35f, up)
+                    scale.animateTo(1f, down)
+                }
+                launch {
+                    turn.animateTo(-12f, up)
+                    turn.animateTo(0f, down)
+                }
+            }
+        }
+    }
+    graphicsLayer {
+        scaleX = scale.value
+        scaleY = scale.value
+        rotationZ = turn.value
     }
 }
 

@@ -1,6 +1,12 @@
 package com.flowpay.app
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -34,7 +40,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 
 /**
@@ -168,37 +176,55 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                     Icon(Icons.Default.Close, "Закрити", tint = TextSecondary)
                 }
             }
-            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
-                Column {
-                    Text(
-                        card.overline,
-                        color = Accent,
-                        fontSize = Type.overlineSize,
-                        letterSpacing = Type.overlineTracking,
-                        fontWeight = Type.medium
-                    )
-                    Spacer(Modifier.height(Space.md))
-                    Text(
-                        card.headline,
-                        fontSize = Type.screenTitleSize,
-                        lineHeight = Type.screenTitleLine,
-                        letterSpacing = Type.screenTitleTracking,
-                        fontWeight = Type.strong,
-                        // Half of these headlines are a figure and the deck swaps
-                        // them under a timer, so a card whose digits are narrower
-                        // than the last one's would shift the line it sits on as
-                        // it arrives. On the headlines that are a product name
-                        // this does nothing at all, which is the right cost.
-                        style = Tabular
-                    )
-                    if (card.detail.isNotBlank()) {
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                // Each card a tile of its own colour with its own emoji, sliding in
+                // from the side it is read towards.
+                val slide = Motion.spatial<IntOffset>()
+                val fade = Motion.effects<Float>()
+                AnimatedContent(
+                    targetState = index,
+                    transitionSpec = {
+                        val forward = targetState > initialState
+                        (slideInHorizontally(slide) { if (forward) it / 3 else -it / 3 } + fadeIn(fade)) togetherWith
+                            (slideOutHorizontally(slide) { if (forward) -it / 3 else it / 3 } + fadeOut(fade))
+                    },
+                    label = "recap card"
+                ) { at ->
+                    val shown = recap.cards.getOrNull(at) ?: card
+                    val colour = TILE_COLOURS[at % TILE_COLOURS.size]
+                    BentoTile(colour, Modifier.fillMaxWidth()) {
+                        EmojiGlyph(recapEmoji(shown.kind), 56.dp)
+                        Spacer(Modifier.height(Space.lg))
+                        Text(
+                            shown.overline,
+                            color = softInkOn(colour),
+                            fontSize = Type.overlineSize,
+                            letterSpacing = Type.overlineTracking,
+                            fontWeight = Type.medium
+                        )
                         Spacer(Modifier.height(Space.md))
                         Text(
-                            card.detail,
-                            color = TextSecondary,
-                            fontSize = Type.bodySize,
-                            lineHeight = Type.bodyLine
+                            shown.headline,
+                            fontFamily = Display,
+                            fontSize = 26.sp,
+                            lineHeight = 32.sp,
+                            fontWeight = Type.strong,
+                            // Half of these headlines are a figure and the deck swaps
+                            // them under a timer, so a card whose digits are narrower
+                            // than the last one's would shift the line it sits on as
+                            // it arrives. On the headlines that are a product name
+                            // this does nothing at all, which is the right cost.
+                            style = Tabular
                         )
+                        if (shown.detail.isNotBlank()) {
+                            Spacer(Modifier.height(Space.md))
+                            Text(
+                                shown.detail,
+                                color = softInkOn(colour),
+                                fontSize = Type.bodySize,
+                                lineHeight = Type.bodyLine
+                            )
+                        }
                     }
                 }
             }

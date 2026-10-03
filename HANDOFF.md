@@ -804,3 +804,31 @@ them from `C:/Temp/flowpay-emoji` (or `-Dflowpay.emojiPack`) when present.
 `Pay.em`, `Order.em` — the hand-picked emoji; empty means "guess from the name".
 Both halves, round-trip tested (`EmojiTest`).
 
+### Later the same evening (owner away, asked for "all the remaining pages")
+- **Курс** (`Exchange.kt`): two tiles, «Купівля» (bank buys, what $1 brings) and
+  «Продаж» (bank sells, what $1 costs), the spread under them; the NBU's single
+  official figure gets one tile, never shown twice as two. The converter names
+  the deal — «Купую $ | Продаю $» — and the deal picks the rate; the arrows switch
+  the typed currency. Dollars are typed by default.
+- **По місяцях:** each month a tile whose colour is its state (mint settled,
+  pink ended unmarked, peach partial, sky running, sand nothing due), with the
+  payments' emoji on the lines. `LeaderRow` and `DottedLeader` take ink colours.
+- **Recap deck:** each card a pastel tile with its own emoji (`recapEmoji`),
+  sliding in from the side it is read towards.
+- **Wish and parcel pages:** an emoji band where there is no photo; the parcel
+  page has the emoji picker under the name.
+- **Widget:** a lime tile with the next payment's emoji, decoded from the pack.
+- **A paid payment tile turns dark** (`SurfaceRaised`) instead of fading — a
+  faded peach read as mud. Colour = still to pay, dark = done.
+- **Motion, second wave** (all on `Motion` springs, all off under reduced motion):
+  `popOnRise` (the emoji jumps when a tick goes on, ✅ when the paid count rises),
+  the hero sticker swaps with a scale when the next payment changes,
+  `revealOnEnter` + `rememberEntrance` (tiles rise in the first time a tab opens
+  in a session, within 700 ms of opening — never on later visits or on scroll),
+  stage segments fill by colour animation.
+- **Motion can now be seen without a phone:** `ScreenShots.clipPaid` /
+  `clipOpen` write frames to `build/outputs/roborazzi/clips/` with the clock
+  driven by hand; stitch them with PIL. The page renders (`6-by-months`,
+  `7-wish-page`, `8-parcel-page`, `9-recap`, `2b-rate-whole`) tap into the page
+  first.
+

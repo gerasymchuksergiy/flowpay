@@ -1,5 +1,6 @@
 package com.flowpay.app
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -7,6 +8,9 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -153,8 +157,22 @@ fun HeroPanel(
         shape = Radius.lg
     ) {
       Box {
-        emoji?.let {
-            EmojiSticker(it, HeroStickerSize, Modifier.align(Alignment.TopEnd).padding(top = Space.md, end = Space.lg))
+        emoji?.let { shown ->
+            // When the next payment changes — the one before it ticked off — the
+            // old sticker shrinks away and the new one drops in with a turn.
+            val drop = Motion.fastSpatial<Float>()
+            val fade = Motion.effects<Float>()
+            AnimatedContent(
+                targetState = shown,
+                modifier = Modifier.align(Alignment.TopEnd).padding(top = Space.md, end = Space.lg),
+                transitionSpec = {
+                    (scaleIn(drop, initialScale = 0.3f) + fadeIn(fade)) togetherWith
+                        (scaleOut(fade, targetScale = 0.3f) + fadeOut(fade))
+                },
+                label = "hero sticker"
+            ) { emojiNow ->
+                EmojiSticker(emojiNow, HeroStickerSize)
+            }
         }
         Row(
             // Generous at the sides, tighter top and bottom: the panel was carrying
@@ -1114,18 +1132,27 @@ fun ProgressRings(
  * which is how the reference lays out the numbers under its chart.
  */
 @Composable
-fun LeaderRow(label: String, value: String, modifier: Modifier = Modifier, alarm: Boolean = false) {
+fun LeaderRow(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    alarm: Boolean = false,
+    /** On a pastel tile: the tile's ink, see [inkOn]. */
+    ink: Color = TextPrimary,
+    softInk: Color = TextSecondary,
+    alarmInk: Color = Negative
+) {
     Row(
         modifier.fillMaxWidth().padding(vertical = Space.xs),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(label, color = TextSecondary, fontSize = Type.captionSize)
+        Text(label, color = softInk, fontSize = Type.captionSize)
         Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
-            DottedLeader(Modifier.fillMaxWidth())
+            DottedLeader(Modifier.fillMaxWidth(), if (ink == TextPrimary) HairLine else softInk.copy(alpha = 0.35f))
         }
         Text(
             value,
-            color = if (alarm) Negative else TextPrimary,
+            color = if (alarm) alarmInk else ink,
             fontSize = Type.captionSize,
             fontWeight = Type.strong,
             style = Tabular
@@ -1248,12 +1275,12 @@ private fun RailSegment(modifier: Modifier, drawn: Boolean, passed: Boolean) {
  * text, the way a table of contents does.
  */
 @Composable
-fun DottedLeader(modifier: Modifier = Modifier) {
+fun DottedLeader(modifier: Modifier = Modifier, colour: Color = HairLine) {
     Canvas(modifier.height(1.dp)) {
         var x = 0f
         while (x < size.width) {
             drawRoundRect(
-                color = HairLine,
+                color = colour,
                 topLeft = Offset(x, 0f),
                 size = Size(2f, 1.5f),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(1f)
