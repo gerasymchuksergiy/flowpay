@@ -83,7 +83,10 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                 }
             }
         }
-        store.saveWishes(fresh)
+        // Laid onto the list as it is now, not saved over it. A pass takes minutes,
+        // and a wish added, deleted or edited on the phone meanwhile used to be
+        // undone by this one line — see Merge.kt.
+        store.saveWishes(mergeById(store.wishes(), old, fresh) { it.id })
 
         // A hold that ran out while the app was closed has to announce itself, or
         // the pause quietly becomes a deletion: the card would sit at the foot of
@@ -93,11 +96,14 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         }
 
         val parcels = store.orders()
-        val trackable = parcels.filter { detectCarrier(it.tracking) == CARRIER_NOVA_POSHTA }
+        // A filed purchase is history and a download has no carrier, so neither is
+        // asked about. The filed ones used to be asked twice a day for ever.
+        fun followed(order: Order) = order.archivedDay == 0L && isAutoTracked(order)
+        val trackable = parcels.filter { followed(it) }
         var parcelsRead = 0
         val checkedAt = System.currentTimeMillis()
         val freshParcels = parcels.map { order ->
-            if (detectCarrier(order.tracking) != CARRIER_NOVA_POSHTA) return@map order
+            if (!followed(order)) return@map order
             val status = runCatching { parcelStatus(order.tracking) }.getOrNull() ?: return@map order
             parcelsRead++
             // A parcel changing stage is news, not an emergency: it goes into the
@@ -111,7 +117,9 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             }
             applyStatus(order, status, checkedAt)
         }
-        if (trackable.isNotEmpty()) store.saveOrders(freshParcels)
+        if (trackable.isNotEmpty()) {
+            store.saveOrders(mergeById(store.orders(), parcels, freshParcels) { it.id })
+        }
 
         // Once a year, and never in a way that can fail the pass. The payment
         // reminder shifts off weekends with or without this; the calendar only

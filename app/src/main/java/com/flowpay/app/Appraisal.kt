@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1123,6 +1124,9 @@ fun AppraisalSection(
     onChange: (Wish) -> Unit
 ) {
     val facts = appraisalFacts(wish, insight, freeCash, today)
+    // The wish as it is when the answer lands, ten to seventy seconds later. Only
+    // the appraisal is laid onto it: a target or a hold set while waiting stays.
+    val latest by rememberUpdatedState(wish)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var busy by remember(wish.id) { mutableStateOf(false) }
@@ -1361,7 +1365,7 @@ fun AppraisalSection(
                                     busy = false
                                     when (reading) {
                                         is AppraisalReading.Written ->
-                                            onChange(wish.copy(appraisal = reading.appraisal))
+                                            onChange(latest.copy(appraisal = reading.appraisal))
                                         // Nothing is cached for either of these, so
                                         // the button underneath is a real retry
                                         // rather than a second look at the same

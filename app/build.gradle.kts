@@ -80,6 +80,9 @@ dependencies {
  implementation(platform("androidx.compose:compose-bom:2026.05.00"))
  implementation("androidx.core:core-ktx:1.18.0")
  implementation("androidx.activity:activity-compose:1.13.0")
+ // Already on the classpath through Compose; named here because the app now calls
+ // LifecycleEventEffect directly to re-read the store when it comes back to the front.
+ implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.4")
  implementation("androidx.compose.material3:material3")
  // Arrives transitively through material3, but the shared element transition
  // between a wishlist card and its page depends on it directly.

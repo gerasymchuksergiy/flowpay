@@ -18,6 +18,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.net.toUri
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
 import androidx.glance.appwidget.updateAll
 import androidx.compose.animation.AnimatedContent
@@ -390,7 +392,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        command = commandOf(intent)
+        // Only on a real launch. A recreation — the phone turned, the theme changed —
+        // hands back the same intent, and the share or refresh it carried would run
+        // a second time.
+        if (savedInstanceState == null) command = commandOf(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
@@ -432,7 +437,8 @@ class MainActivity : ComponentActivity() {
 class Store(context: Context) {
     private val prefs = context.getSharedPreferences("flowpay", Context.MODE_PRIVATE)
 
-    fun wishes(): List<Wish> = jsonList("w", ::wishOf)
+    // Read without repeated ids, whatever is stored: see [withoutRepeatedIds].
+    fun wishes(): List<Wish> = withoutRepeatedIds(jsonList("w", ::wishOf)) { it.id }
 
     fun saveWishes(items: List<Wish>) = save("w", items.map(::wishJson))
 
@@ -440,7 +446,7 @@ class Store(context: Context) {
 
     fun savePays(items: List<Pay>) = save("pay", items.map(::payJson))
 
-    fun orders(): List<Order> = jsonList("orders", ::orderOf)
+    fun orders(): List<Order> = withoutRepeatedIds(jsonList("orders", ::orderOf)) { it.id }
 
     fun saveOrders(items: List<Order>) = save("orders", items.map(::orderJson))
 
@@ -515,9 +521,15 @@ class Store(context: Context) {
         runCatching {
             val json = JSONObject(entry.payload)
             when (entry.kind) {
-                BIN_WISH -> saveWishes(wishes() + wishOf(json))
+                // An item already back — the undo bar beat the bin to it — is not
+                // added a second time; the entry is simply cleared.
+                BIN_WISH -> wishOf(json).let { back ->
+                    if (wishes().none { it.id == back.id }) saveWishes(wishes() + back)
+                }
                 BIN_PAY -> savePays(pays() + payOf(json))
-                BIN_ORDER -> saveOrders(orders() + orderOf(json))
+                BIN_ORDER -> orderOf(json).let { back ->
+                    if (orders().none { it.id == back.id }) saveOrders(orders() + back)
+                }
                 // An entry of a kind this version does not know is left in the bin
                 // rather than dropped: a newer build may be able to restore it.
                 else -> return
@@ -1158,7 +1170,7 @@ fun orderOf(o: JSONObject): Order = Order(
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
 fun binEntryOf(wish: Wish, today: Long): BinEntry = BinEntry(
-    id = wish.id,
+    id = binEntryId(BIN_WISH, wish.id),
     kind = BIN_WISH,
     title = wish.name,
     // The history is the part that cannot be fetched back, so the row says how
@@ -1183,7 +1195,7 @@ fun binEntryOf(pay: Pay, today: Long): BinEntry = BinEntry(
 )
 
 fun binEntryOf(order: Order, today: Long): BinEntry = BinEntry(
-    id = order.id,
+    id = binEntryId(BIN_ORDER, order.id),
     kind = BIN_ORDER,
     title = order.name,
     detail = listOfNotNull(
@@ -1526,24 +1538,35 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
             tab = TAB_WISHES
             return@LaunchedEffect
         }
+        // Handled once, here, and the slow part moved out of this effect. The effect
+        // is keyed on the tab too, so a tap on Платежі while a shared page was still
+        // being read used to cancel the read and start it over — which found its own
+        // placeholder already in the list and left it without a name for good.
+        onCommandHandled()
         when (command) {
             is AppCommand.AddWish -> adding = true
-            is AppCommand.RefreshPrices -> {
+            is AppCommand.RefreshPrices -> noticeScope.launch {
                 if (wishes.isEmpty()) {
                     say(refreshMessage(0, 0))
                 } else {
                     say("Перевіряю ціни…")
                     val day = LocalDate.now().toEpochDay()
                     val rate = store.fxRate().first
-                    val fetched = wishes.map { refreshed(it, day, rate) }
-                    val result = applyFollowed(wishes, fetched)
-                    wishes = result.wishes
-                    store.saveWishes(result.wishes)
-                    say(refreshMessage(result.updated, result.wishes.size))
-                    staleMessage(staleCount(result.wishes))?.let { say(it) }
+                    // Readings are matched to the list they were taken from, then
+                    // folded by id into the list as it is when they arrive — see
+                    // Merge.kt. Matching by position after the fact brought deleted
+                    // wishes back and dropped the last one off the end.
+                    val before = wishes
+                    val fetched = before.map { refreshed(it, day, rate) }
+                    val result = applyFollowed(before, fetched)
+                    val merged = mergeById(wishes, before, result.wishes) { it.id }
+                    wishes = merged
+                    store.saveWishes(merged)
+                    say(refreshMessage(result.updated, merged.size))
+                    staleMessage(staleCount(merged))?.let { say(it) }
                 }
             }
-            is AppCommand.AddShared -> when (val link = sharedLink(command.text, wishes)) {
+            is AppCommand.AddShared -> noticeScope.launch { when (val link = sharedLink(command.text, wishes)) {
                 SharedLink.Missing -> say("У повідомленні немає посилання")
                 is SharedLink.Known -> say("«${link.wish.name}» вже у списку")
                 is SharedLink.New -> {
@@ -1592,9 +1615,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         }
                     }
                 }
-            }
+            } }
         }
-        onCommandHandled()
     }
 
     // System back closes the item page before it leaves the app.
@@ -1603,16 +1625,23 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         openedOrder = null
     }
 
-    // Read once, so the pill cannot change its mind about what is due partway
-    // through a session that happens to cross midnight, and so the budget and the
-    // pill cannot disagree about which trials have run out.
-    val today = remember { LocalDate.now() }
+    // How many times the app has come back to the front. Everything below that is
+    // read off the store once is read again on each of these: the activity lives
+    // for days on this phone, and "once" used to mean "since the day it was
+    // opened" — a pill saying «сьогодні» about yesterday, a recap that never came.
+    var returns by remember { mutableIntStateOf(0) }
 
-    // Recomputed whenever expenses change, so the wishlist plan and the expenses
-    // screen never disagree about what is free this month.
-    val usdSell = remember { store.fxRate().first }.sell
+    // Read once per return, so the pill cannot change its mind about what is due
+    // partway through a visit that happens to cross midnight, and so the budget
+    // and the pill cannot disagree about which trials have run out.
+    val today = remember(returns) { LocalDate.now() }
+
+    // Re-read on every tab change as well: the Курс tab fetches the rate and the
+    // Платежі tab edits the income, and both used to stay stale everywhere else
+    // until the app was killed.
+    val usdSell = remember(returns, tab) { store.fxRate().first }.sell
     val monthBudget =
-        budget(remember(pays) { store.income() }, monthlyTotal(pays, usdSell, today))
+        budget(remember(pays, returns, tab) { store.income() }, monthlyTotal(pays, usdSell, today))
 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
@@ -1668,9 +1697,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         // Appended on the way back rather than slotted into its old index: the
         // grid's order is the user's sort, not a property of the wish.
         recycle(binEntryOf(wish, today.toEpochDay())) {
-            val back = wishes + wish
-            wishes = back
-            store.saveWishes(back)
+            if (wishes.none { it.id == wish.id }) {
+                val back = wishes + wish
+                wishes = back
+                store.saveWishes(back)
+            }
         }
     }
 
@@ -1692,9 +1723,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         orders = next
         store.saveOrders(next)
         recycle(binEntryOf(order, today.toEpochDay())) {
-            val back = orders + order
-            orders = back
-            store.saveOrders(back)
+            if (orders.none { it.id == order.id }) {
+                val back = orders + order
+                orders = back
+                store.saveOrders(back)
+            }
         }
     }
 
@@ -1705,6 +1738,15 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         orders = store.orders()
         paid = store.paidMarks()
         bin = store.bin()
+    }
+
+    // The background pass writes prices, histories and parcel statuses straight
+    // into the store. The lists here were read at launch and never again, so the
+    // first edit after a pass saved the launch-time list over everything the pass
+    // had learned — and the next pass announced the same target hit a second time.
+    LifecycleEventEffect(Lifecycle.Event.ON_START) {
+        returns++
+        reload()
     }
 
     // Read afresh every time the overview is opened rather than once per session:
@@ -1916,6 +1958,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         TAB_WISHES -> WishlistScreen(
                             items = wishes,
                             save = { wishes = it; store.saveWishes(it) },
+                            update = { change ->
+                                val next = change(wishes)
+                                wishes = next
+                                store.saveWishes(next)
+                            },
                             store = store,
                             context = context,
                             adding = adding,
@@ -1960,6 +2007,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         TAB_ORDERS -> OrdersScreen(
                             items = orders,
                             save = { orders = it; store.saveOrders(it) },
+                            update = { change ->
+                                val next = change(orders)
+                                orders = next
+                                store.saveOrders(next)
+                            },
                             context = context,
                             adding = adding,
                             setAdding = { adding = it },
@@ -2088,6 +2140,12 @@ fun ScreenHeader(
 fun WishlistScreen(
     items: List<Wish>,
     save: (List<Wish>) -> Unit,
+    /**
+     * A change computed from the list as it is when it lands, not as it was when
+     * the work began. Every path that waits on the network goes through this —
+     * see Merge.kt for what saving the starting list used to do.
+     */
+    update: ((List<Wish>) -> List<Wish>) -> Unit,
     store: Store,
     context: Context,
     adding: Boolean,
@@ -2132,14 +2190,21 @@ fun WishlistScreen(
                     visibility = this@AnimatedContent,
                     context = context,
                     onBack = { setOpened(null) },
-                    onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
+                    onChange = { changed ->
+                        update { now -> now.map { if (it.id == changed.id) changed else it } }
+                    },
                     onEdit = { editing = shown },
                     onDelete = { onDelete(shown); setOpened(null) },
                     freeCash = freeCash,
                     onBought = { trackingNumber, paid ->
                         onBought(
                             Order(
-                                id = shown.id,
+                                // Its own id, not the wish's. The wish goes to the bin
+                                // under its id, and the same thing bought twice — the
+                                // wish restored and bought again — would otherwise be
+                                // two parcels under one key, which the purchases list
+                                // cannot draw.
+                                id = "o-${shown.id}-${System.currentTimeMillis()}",
                                 name = shown.name,
                                 url = shown.url,
                                 status = ORDERED,
@@ -2186,8 +2251,9 @@ fun WishlistScreen(
                                 val day = LocalDate.now().toEpochDay()
                                 val rate = store.fxRate().first
                                 val before = items.count { targetHit(it, day) }
-                                val fetched = items.map { refreshed(it, day, rate) }
-                                val result = applyFollowed(items, fetched)
+                                val started = items
+                                val fetched = started.map { refreshed(it, day, rate) }
+                                val result = applyFollowed(started, fetched)
                                 // One tick if this pass brought something to the
                                 // price you named — not one per wish. The count is
                                 // compared rather than the list, because what is
@@ -2197,10 +2263,10 @@ fun WishlistScreen(
                                 if (result.wishes.count { targetHit(it, day) } > before) {
                                     touch.landed()
                                 }
-                                save(result.wishes)
+                                update { now -> mergeById(now, started, result.wishes) { it.id } }
                                 refreshing = false
                                 message = listOfNotNull(
-                                    refreshMessage(result.updated, items.size),
+                                    refreshMessage(result.updated, started.size),
                                     staleMessage(staleCount(result.wishes))
                                 ).joinToString(" · ")
                             }
@@ -2439,13 +2505,13 @@ fun WishlistScreen(
     }
     if (adding) {
         AddWishSheet({ setAdding(false) }, store.fxRate().first, knownCategories(items)) { wish ->
-            save(items + wish)
+            update { now -> now + wish }
             setAdding(false)
         }
     }
     editing?.let { selected ->
         EditWishSheet(selected, knownCategories(items), { editing = null }) { changed ->
-            save(items.map { if (it.id == changed.id) changed else it })
+            update { now -> now.map { if (it.id == changed.id) changed else it } }
             editing = null
         }
     }
@@ -3529,6 +3595,10 @@ fun SharedTransitionScope.WishDetailScreen(
     freeCash: Double,
     onBought: (tracking: String, paid: Double) -> Unit
 ) {
+    // The wish as it is now, for the work that lands seconds after it began. The
+    // parameter seen inside a coroutine is the one from the frame it started in,
+    // and building the saved wish from that reverted whatever was typed meanwhile.
+    val latest by rememberUpdatedState(wish)
     // Keyed on the item, so opening a different one does not inherit these boxes.
     var savedText by remember(wish.id) { mutableStateOf(amountText(wish.saved)) }
     var monthlyText by remember(wish.id) { mutableStateOf(amountText(wish.monthlyPlan)) }
@@ -4320,10 +4390,18 @@ fun SharedTransitionScope.WishDetailScreen(
                             scope.launch {
                                 refreshing = true
                                 message = null
-                                when (
-                                    val reading =
-                                        refreshed(wish, today.toEpochDay(), store.fxRate().first)
-                                ) {
+                                val started = wish
+                                val reading =
+                                    refreshed(started, today.toEpochDay(), store.fxRate().first)
+                                // Edited while the page was being read: the edit wins,
+                                // and the reading is not laid over it. Asking again
+                                // is one tap; retyping a figure is not.
+                                if (latest != started && reading !is Reading.Failed) {
+                                    refreshing = false
+                                    message = "Бажання змінилось, поки читалась сторінка — оновіть ще раз"
+                                    return@launch
+                                }
+                                when (reading) {
                                     is Reading.Priced -> {
                                         // The one moment on this screen worth a
                                         // haptic: you asked, and the price you were
@@ -4395,7 +4473,7 @@ fun SharedTransitionScope.WishDetailScreen(
     if (addingSource) {
         AddSourceSheet(wish, store.fxRate().first, { addingSource = false }) { source ->
             addingSource = false
-            onChange(withSource(wish, source))
+            onChange(withSource(latest, source))
         }
     }
 
@@ -5751,6 +5829,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
 fun OrdersScreen(
     items: List<Order>,
     save: (List<Order>) -> Unit,
+    /** As on the wishlist: the list as it is when a carrier's answer lands. */
+    update: ((List<Order>) -> List<Order>) -> Unit,
     context: Context,
     adding: Boolean,
     setAdding: (Boolean) -> Unit,
@@ -5787,15 +5867,19 @@ fun OrdersScreen(
             message = null
             var moved = 0
             val now = System.currentTimeMillis()
-            val fresh = items.map { order ->
-                if (order.archivedDay > 0L) return@map order
-                if (!isAutoTracked(order)) return@map order
-                val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
-                    ?: return@map order
-                if (status.stage.isNotBlank() && status.stage != order.status) moved++
-                applyStatus(order, status, now)
-            }
-            save(fresh)
+            // Answers are collected by id and laid onto the list as it is when they
+            // are all in, so a parcel added, edited or deleted during the check
+            // stays the way it was left — see Merge.kt.
+            val answers = items
+                .filter { it.archivedDay == 0L && isAutoTracked(it) }
+                .mapNotNull { order ->
+                    val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                        ?: return@mapNotNull null
+                    if (status.stage.isNotBlank() && status.stage != order.status) moved++
+                    order.id to status
+                }
+                .toMap()
+            update { list -> list.map { order -> answers[order.id]?.let { applyStatus(order, it, now) } ?: order } }
             checking = false
             message = when {
                 trackable == 0 -> "Немає номерів Нової Пошти для перевірки"
@@ -5828,7 +5912,8 @@ fun OrdersScreen(
             store = store,
             context = context,
             onBack = { setOpened(null) },
-            onChange = { changed -> save(items.map { if (it.id == changed.id) changed else it }) },
+            onChange = { changed -> update { now -> now.map { if (it.id == changed.id) changed else it } } },
+            onApply = { change -> update { now -> now.map { if (it.id == openedOrder.id) change(it) else it } } },
             onEditTracking = { tracking = openedOrder },
             onDelete = { onDelete(openedOrder); setOpened(null) },
             onClose = { closing = openedOrder }
@@ -6040,7 +6125,7 @@ fun OrdersScreen(
                             modifier = Modifier.padding(horizontal = Space.lg),
                             label = { stageLabel(it, order.statusCode) }
                         ) { status ->
-                            save(items.map { if (it.id == order.id) it.copy(status = status) else it })
+                            update { now -> now.map { if (it.id == order.id) it.copy(status = status) else it } }
                         }
                     }
                     // Offered at every stage, not only once the rail reaches its last
@@ -6077,15 +6162,15 @@ fun OrdersScreen(
                                     message = if (status == null) {
                                         "Не вдалося отримати статус"
                                     } else {
-                                        save(
-                                            items.map {
+                                        update { now ->
+                                            now.map {
                                                 if (it.id == order.id) {
                                                     applyStatus(it, status, System.currentTimeMillis())
                                                 } else {
                                                     it
                                                 }
                                             }
-                                        )
+                                        }
                                         status.text
                                     }
                                 }
@@ -6140,20 +6225,22 @@ fun OrdersScreen(
     // by the page closing underneath it.
     closing?.let { selected ->
         CloseOrderSheet(selected, { closing = null }) { closed ->
-            save(items.map { if (it.id == closed.id) closed else it })
+            update { now -> now.map { if (it.id == closed.id) closed else it } }
             closing = null
             // A closed purchase is history and leaves the list of things in
             // flight, so the page about where it is has nothing left to say.
             setOpened(null)
         }
     }
-    if (adding) AddOrderSheet({ setAdding(false) }) {
-        save(items + it)
+    if (adding) AddOrderSheet({ setAdding(false) }) { added ->
+        update { now -> now + added }
         setAdding(false)
     }
     tracking?.let { selected ->
         TrackingDialog(selected, { tracking = null }) { number, digital ->
-            save(items.map { if (it.id == selected.id) it.copy(tracking = number, digital = digital) else it })
+            update { now ->
+                now.map { if (it.id == selected.id) it.copy(tracking = number, digital = digital) else it }
+            }
             tracking = null
         }
     }
@@ -6236,6 +6323,8 @@ fun OrderDetailScreen(
     context: Context,
     onBack: () -> Unit,
     onChange: (Order) -> Unit,
+    /** A change applied to this parcel as it is when an answer lands. */
+    onApply: ((Order) -> Order) -> Unit,
     onEditTracking: () -> Unit,
     onDelete: () -> Unit,
     onClose: () -> Unit
@@ -6267,7 +6356,7 @@ fun OrderDetailScreen(
                 message = "Не вдалося отримати статус"
             } else {
                 message = null
-                onChange(applyStatus(order, status, System.currentTimeMillis()))
+                onApply { current -> applyStatus(current, status, System.currentTimeMillis()) }
             }
         }
     }
