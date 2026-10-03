@@ -826,6 +826,19 @@ Both halves, round-trip tested (`EmojiTest`).
   `revealOnEnter` + `rememberEntrance` (tiles rise in the first time a tab opens
   in a session, within 700 ms of opening — never on later visits or on scroll),
   stage segments fill by colour animation.
+- **Motion, third wave — arrivals (4 October 2026).** The owner asked for tabs
+  and tiles to *appear* like the code-made motion videos he had shown (kinetic
+  type, staggered physics, things drawing on). Every time a tab opens
+  (`LocalEntrance`, provided once around each tab in FlowPayApp; 700 ms window,
+  so nothing replays while scrolling): the page drifts in from the side of the
+  tapped tab; the title rises out of a mask and its tracking closes up; tiles fall
+  in on an underdamped spring with a tilt, a scale and a blur clearing (blur on
+  API 31+), 55 ms apart, capped at seven; figures roll their digits up into place
+  (`rollIn`, the real number — still never a count from nought); bars and the
+  days strip grow (`entranceFraction`); every emoji pops in last, top to bottom by
+  its position on screen (`popInOnEnter`, inside `EmojiGlyph`). Reduced motion
+  turns all of it off. This reverses the old "nothing slides sideways" note on
+  the tab switch, at the owner's request.
 - **Motion can now be seen without a phone:** `ScreenShots.clipPaid` /
   `clipOpen` write frames to `build/outputs/roborazzi/clips/` with the clock
   driven by hand; stitch them with PIL. The page renders (`6-by-months`,

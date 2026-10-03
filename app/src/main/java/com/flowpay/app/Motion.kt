@@ -36,6 +36,8 @@ import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -90,6 +92,11 @@ fun RollingText(
     // these are what make the roll snap under reduced motion.
     val move = Motion.spatial<IntOffset>()
     val fade = Motion.effects<Float>()
+    // When the tab is opening, the figure's own digits roll up into place one
+    // after another, left to right — the real number arriving, not a count from
+    // nought (which on money reads as a magic trick).
+    val entrance = LocalEntrance.current
+    val introduce = remember { entrance.plays() }
     Row(modifier.clearAndSetSemantics { contentDescription = text }, verticalAlignment = Alignment.Bottom) {
         // Indexed from the right, so "999" → "1 000" shifts the new digit in at
         // the front instead of every digit changing place.
@@ -97,6 +104,7 @@ fun RollingText(
         for (index in padded.indices.reversed()) {
             val char = padded[index]
             AnimatedContent(
+                modifier = if (introduce) Modifier.rollIn(padded.lastIndex - index) else Modifier,
                 targetState = char,
                 transitionSpec = {
                     if (!targetState.isDigit() || !initialState.isDigit()) {
@@ -118,6 +126,19 @@ fun RollingText(
                 )
             }
         }
+    }
+}
+
+/** One character of a figure rolling up into its slot, [slot] places from the left. */
+private fun Modifier.rollIn(slot: Int): Modifier = composed {
+    val progress = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(120L + slot * 38L)
+        progress.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = 420f))
+    }
+    graphicsLayer {
+        alpha = progress.value.coerceIn(0f, 1f)
+        translationY = (1f - progress.value) * size.height
     }
 }
 
@@ -191,63 +212,147 @@ fun PaidCheck(
 
 // ------------------------------------------------------------ entrances
 
-/**
- * Rises into place the first time it is composed, a little later the further down
- * it is.
+/*
+ * The third wave (4 October 2026). The owner pointed at motion-graphics videos made
+ * with code — kinetic type, staggered physics, things that draw themselves on — and
+ * asked for tabs and tiles to *appear* like that. A tab is an arrival now: every
+ * time one opens, its title slides up out of a mask and tightens, the tiles fall
+ * into place on an underdamped spring with a tilt and a blur clearing, the figures
+ * roll their digits in, bars grow, and the emoji pop in last, top to bottom.
  *
- * Staggered by stiffness rather than by delay: a later block is on a softer
- * spring, so it arrives after the ones above without anything waiting on a timer —
- * which also means a phone set to reduce motion gets everything at once, because
- * the springs snap there and there is no delay left to sit through.
+ * All of it lasts well under a second, none of it repeats while you read (see
+ * [Entrance]), and a phone told to reduce motion sees none of it.
  */
-fun Modifier.revealOnEnter(order: Int, entrance: Entrance): Modifier = composed {
-    val reduced = LocalReducedMotion.current
-    val progress = remember { Animatable(if (reduced || !entrance.plays()) 1f else 0f) }
-    val rise = with(LocalDensity.current) { 18.dp.toPx() }
-    LaunchedEffect(Unit) {
-        if (!reduced) {
-            progress.animateTo(
-                1f,
-                spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = (Spring.StiffnessMediumLow / (1f + order * 0.45f)).coerceAtLeast(Spring.StiffnessVeryLow)
-                )
-            )
-        }
-    }
-    graphicsLayer {
-        alpha = progress.value
-        translationY = (1f - progress.value) * rise
-    }
-}
 
 /**
- * Whether a screen's tiles rise in: only the first time the tab is opened this
- * session, and only for what is drawn in the first moments of that.
+ * Whether what is being drawn should arrive rather than appear: true for the
+ * first moments after a tab opens.
  *
- * The bento wave of October 2026 asked for the screens to arrive rather than
- * appear. Once is an arrival; every tab switch would be a wait. The time window
- * is what keeps a tile scrolled into view later — or scrolled back to after the
- * list dropped it — from rising again in the middle of reading.
+ * The time window is what keeps a tile scrolled into view later — or scrolled
+ * back to after the list dropped it — from flying in again in the middle of
+ * reading.
  */
-class Entrance(private val first: Boolean, private val openedAt: Long) {
-    fun plays(): Boolean = first && android.os.SystemClock.uptimeMillis() - openedAt < ENTRANCE_WINDOW_MS
+class Entrance(private val active: Boolean, private val openedAt: Long) {
+    fun plays(): Boolean = active && android.os.SystemClock.uptimeMillis() - openedAt < ENTRANCE_WINDOW_MS
 }
 
-/** How long after a tab opens a tile may still rise in. */
+/** How long after a tab opens something may still arrive. */
 private const val ENTRANCE_WINDOW_MS = 700L
 
-/**
- * The [Entrance] for the screen calling it. "Seen" is saveable, and every tab
- * keeps its saveable state across switches (FlowPayApp), so coming back to a
- * tab finds it already seen.
- */
+/** The entrance of the tab being drawn. Provided once, around each tab, in FlowPayApp. */
+val LocalEntrance = staticCompositionLocalOf { Entrance(false, 0L) }
+
+/** A fresh entrance: one per opening of a tab. Inactive under reduced motion. */
 @Composable
 fun rememberEntrance(): Entrance {
-    var seen by androidx.compose.runtime.saveable.rememberSaveable { androidx.compose.runtime.mutableStateOf(false) }
-    val entrance = remember { Entrance(!seen, android.os.SystemClock.uptimeMillis()) }
-    androidx.compose.runtime.SideEffect { seen = true }
-    return entrance
+    val reduced = LocalReducedMotion.current
+    return remember { Entrance(!reduced, android.os.SystemClock.uptimeMillis()) }
+}
+
+/** The gap between one tile's arrival and the next. */
+private const val STAGGER_MS = 55L
+
+/** Rows after this one arrive together: a cascade longer than the screen is a wait. */
+private const val STAGGER_CAP = 7
+
+/**
+ * A tile falling into place: up from below, tilted back, slightly small and
+ * blurred, on a spring that overshoots once and settles — the "real physics" of
+ * the reference videos. [order] staggers it behind the tiles above.
+ *
+ * The blur needs Android 12; older phones get the rest.
+ */
+fun Modifier.revealOnEnter(order: Int, entrance: Entrance): Modifier = composed {
+    val play = remember { entrance.plays() }
+    if (!play) return@composed Modifier
+    val progress = remember { Animatable(0f) }
+    val density = LocalDensity.current
+    val rise = with(density) { 40.dp.toPx() }
+    val blur = with(density) { 14.dp.toPx() }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(order.coerceIn(0, STAGGER_CAP) * STAGGER_MS)
+        progress.animateTo(1f, spring(dampingRatio = 0.62f, stiffness = 320f))
+    }
+    graphicsLayer {
+        val p = progress.value
+        val left = 1f - p
+        alpha = p.coerceIn(0f, 1f)
+        translationY = left * rise
+        val scale = 0.9f + 0.1f * p
+        scaleX = scale
+        scaleY = scale
+        rotationX = left * 16f
+        cameraDistance = 14f * density.density
+        transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+        renderEffect = if (android.os.Build.VERSION.SDK_INT >= 31 && left > 0.02f) {
+            androidx.compose.ui.graphics.BlurEffect(blur * left, blur * left)
+        } else {
+            null
+        }
+    }
+}
+
+/** [revealOnEnter] with the entrance of the tab it is in. */
+fun Modifier.revealOnEnter(order: Int): Modifier = composed {
+    revealOnEnter(order, LocalEntrance.current)
+}
+
+/** When the emoji start popping, after the first tiles have begun to land. */
+private const val POP_DELAY_MS = 180L
+
+/** How much later the lowest emoji on the screen pops than the highest. */
+private const val POP_SPREAD_MS = 420f
+
+/**
+ * An emoji popping in: from nothing, a third of a turn back, on a bouncy spring —
+ * after the tile it sits on, and later the further down the screen it is, so the
+ * emoji arrive top to bottom without anything having to number them.
+ */
+fun Modifier.popInOnEnter(): Modifier = composed {
+    val entrance = LocalEntrance.current
+    val play = remember { entrance.plays() }
+    if (!play) return@composed Modifier
+    val progress = remember { Animatable(0f) }
+    var top by remember { androidx.compose.runtime.mutableFloatStateOf(-1f) }
+    val screen = androidx.compose.ui.platform.LocalWindowInfo.current.containerSize.height.toFloat()
+    LaunchedEffect(top >= 0f) {
+        if (top < 0f) return@LaunchedEffect
+        val share = if (screen > 0f) (top / screen).coerceIn(0f, 1f) else 0f
+        kotlinx.coroutines.delay(POP_DELAY_MS + (share * POP_SPREAD_MS).toLong())
+        progress.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = 360f))
+    }
+    onGloballyPositioned { if (top < 0f) top = it.positionInRoot().y }
+        .graphicsLayer {
+            val p = progress.value
+            scaleX = p
+            scaleY = p
+            alpha = p.coerceIn(0f, 1f)
+            rotationZ = (1f - p) * -40f
+        }
+}
+
+/**
+ * A fraction that grows from nought when the tab opens — a bar filling, a strip of
+ * days drawing itself on — and follows [target] on a spring after that.
+ */
+@Composable
+fun entranceFraction(target: Float, delayMs: Long = 150L, stiffness: Float = 140f): Float {
+    val entrance = LocalEntrance.current
+    val play = remember { entrance.plays() }
+    val value = remember { Animatable(if (play) 0f else target) }
+    val follow = Motion.spatial<Float>()
+    val first = remember { mutableValue(true) }
+    LaunchedEffect(target) {
+        if (first.value && play) {
+            first.value = false
+            kotlinx.coroutines.delay(delayMs)
+            value.animateTo(target, spring(dampingRatio = 0.75f, stiffness = stiffness))
+        } else {
+            first.value = false
+            value.animateTo(target, follow)
+        }
+    }
+    return value.value
 }
 
 /**

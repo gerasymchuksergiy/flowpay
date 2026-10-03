@@ -94,6 +94,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -2077,20 +2081,24 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         }
                         .blur((10 * sheetDepth).dp)
                 ) {
-                    // Each tab keeps where it was scrolled to, and switching is a
-                    // short fade-through rather than a hard cut. Nothing slides
-                    // sideways: the tabs are peers, not steps in a sequence.
+                    // Each tab keeps where it was scrolled to. Switching drifts the
+                    // page a tenth of the way in from the side of the tab you
+                    // tapped, and the tab then plays its own arrival — the title,
+                    // the tiles, the figures, the emoji. See [Entrance].
                     val tabStates = rememberSaveableStateHolder()
                     val fade = Motion.effects<Float>()
-                    val settle = Motion.spatial<Float>()
+                    val drift = Motion.spatial<IntOffset>()
                     AnimatedContent(
                         targetState = tab,
                         transitionSpec = {
-                            (fadeIn(fade) + scaleIn(settle, initialScale = 0.985f)) togetherWith fadeOut(fade)
+                            val towards = if (targetState > initialState) 1 else -1
+                            (fadeIn(fade) + slideInHorizontally(drift) { towards * it / 10 })
+                                .togetherWith(fadeOut(fade) + slideOutHorizontally(drift) { -towards * it / 10 })
                         },
                         label = "tab"
                     ) { shown ->
                     tabStates.SaveableStateProvider(shown) {
+                    CompositionLocalProvider(LocalEntrance provides rememberEntrance()) {
                     when (shown) {
                         TAB_WISHES -> WishlistScreen(
                             items = wishes,
@@ -2198,6 +2206,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     }
                     }
                     }
+                    }
                 }
             }
             // Marked seen on opening rather than on being shown. A deck that
@@ -2250,15 +2259,20 @@ fun ScreenHeader(
             .padding(start = inset, end = inset, top = Space.lg, bottom = Space.lg),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            title,
-            Modifier.weight(1f),
-            fontFamily = Display,
-            fontSize = Type.screenTitleBentoSize,
-            lineHeight = Type.screenTitleLine,
-            letterSpacing = Type.screenTitleTracking,
-            fontWeight = Type.strong
-        )
+        // Kinetic type on a tab's arrival: the title rises out of a mask while its
+        // letters close up from wide to their set tracking.
+        val rise = entranceFraction(1f, delayMs = 0L, stiffness = 260f)
+        Box(Modifier.weight(1f).clipToBounds()) {
+            Text(
+                title,
+                Modifier.graphicsLayer { translationY = (1f - rise) * size.height },
+                fontFamily = Display,
+                fontSize = Type.screenTitleBentoSize,
+                lineHeight = Type.screenTitleLine,
+                letterSpacing = androidx.compose.ui.unit.lerp(8.sp, Type.screenTitleTracking, rise.coerceIn(0f, 1f)),
+                fontWeight = Type.strong
+            )
+        }
         trailing?.invoke()
     }
 }
@@ -2603,10 +2617,16 @@ fun WishlistScreen(
                         // back to the thing, and something you cannot find again was
                         // deleted rather than postponed.
                         val (watched, held) = partitionByHold(shown, today.toEpochDay())
-                        items(sortWishes(watched, sort), key = { it.id }) { wish ->
+                        itemsIndexed(sortWishes(watched, sort), key = { _, wish -> wish.id }) { index, wish ->
                             // Sorting, searching, holding and deleting move the cards
-                            // rather than teleport them.
-                            WishCard(wish, this@AnimatedContent, today.toEpochDay(), Modifier.animateItem()) {
+                            // rather than teleport them; opening the tab drops them in
+                            // a row at a time.
+                            WishCard(
+                                wish,
+                                this@AnimatedContent,
+                                today.toEpochDay(),
+                                Modifier.animateItem().revealOnEnter(index / 2 + 1)
+                            ) {
                                 setOpened(wish.id)
                             }
                         }
@@ -2693,7 +2713,7 @@ fun WishSearchField(query: String, onQuery: (String) -> Unit, onClose: () -> Uni
  */
 @Composable
 fun WishlistTotalPanel(sum: WishlistTotal, label: String) {
-    BentoTile(TileLavender, Modifier.fillMaxWidth().padding(bottom = Space.lg)) {
+    BentoTile(TileLavender, Modifier.revealOnEnter(0).fillMaxWidth().padding(bottom = Space.lg)) {
         Box(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(end = HeroStickerSize)) {
                 Text(
@@ -5093,7 +5113,7 @@ fun CalculatorScreen(store: Store) {
                                 "стільки дадуть за $1, коли продаєте",
                                 "💰",
                                 TileMint,
-                                Modifier.weight(1f).fillMaxHeight()
+                                Modifier.revealOnEnter(0).weight(1f).fillMaxHeight()
                             )
                             RateTile(
                                 "Продаж",
@@ -5101,7 +5121,7 @@ fun CalculatorScreen(store: Store) {
                                 "стільки коштує $1, коли купуєте",
                                 "💵",
                                 TileSky,
-                                Modifier.weight(1f).fillMaxHeight()
+                                Modifier.revealOnEnter(1).weight(1f).fillMaxHeight()
                             )
                         }
                     } else {
@@ -5115,7 +5135,7 @@ fun CalculatorScreen(store: Store) {
                             },
                             "🏦",
                             TileSand,
-                            Modifier.fillMaxWidth()
+                            Modifier.revealOnEnter(0).fillMaxWidth()
                         )
                     }
                     // Never the figure without its source: the official rate and a
@@ -5153,7 +5173,7 @@ fun CalculatorScreen(store: Store) {
                     // The converter: which deal, how much, and what it comes to. The
                     // deal picks the rate, so the figure cannot be worked out at the
                     // wrong one of the two.
-                    BentoTile(SurfaceRaised, Modifier.fillMaxWidth()) {
+                    BentoTile(SurfaceRaised, Modifier.revealOnEnter(2).fillMaxWidth()) {
                         SegmentedControl(
                             options = listOf("Купую $", "Продаю $"),
                             selected = if (deal == Deal.BUY) 0 else 1
@@ -5621,7 +5641,7 @@ fun PaymentsScreen(
     // the tab is opened for, and the history is a question asked on purpose.
     var view by remember { mutableIntStateOf(PAYMENTS_SCHEDULE) }
     // The tiles rise in the first time this tab opens — see [Entrance].
-    val entrance = rememberEntrance()
+    val entrance = LocalEntrance.current
     Box {
         LazyColumn(
             state = listState,
@@ -5664,7 +5684,6 @@ fun PaymentsScreen(
                 item {
                     Column(
                         Modifier
-                            .revealOnEnter(0, entrance)
                             .padding(horizontal = Space.screen)
                             .padding(bottom = Space.xl)
                     ) {
@@ -5675,6 +5694,7 @@ fun PaymentsScreen(
                         // bill already ticked off is not the next thing to prepare for.
                         val next = nextPayment(stillOwing(items, paid, today), today, rate.sell)
                         HeroPanel(
+                            modifier = Modifier.revealOnEnter(0, entrance),
                             label = if (next != null) {
                                 "Найближчий платіж · ${dueLabel(next.daysAway)}"
                             } else {
@@ -5705,7 +5725,10 @@ fun PaymentsScreen(
                         // subscriptions" but "here is what survives them", beside
                         // what has already gone — until the second existed the
                         // screen could only ever state the plan.
-                        Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                        Row(
+                            Modifier.revealOnEnter(1, entrance).height(IntrinsicSize.Min),
+                            horizontalArrangement = Arrangement.spacedBy(Space.md)
+                        ) {
                             MonthLeftTile(committedOf(month), Modifier.weight(1f).fillMaxHeight()) { editingIncome = true }
                             BentoTile(TileSand, Modifier.weight(1f).fillMaxHeight()) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -5734,7 +5757,7 @@ fun PaymentsScreen(
                         if (items.isNotEmpty()) {
                             Spacer(Modifier.height(Space.md))
                             Card(
-                                modifier = Modifier.fillMaxWidth().litEdge(Radius.md),
+                                modifier = Modifier.revealOnEnter(2, entrance).fillMaxWidth().litEdge(Radius.md),
                                 colors = CardDefaults.cardColors(containerColor = SurfaceBase),
                                 shape = Radius.md
                             ) {
@@ -5805,7 +5828,7 @@ fun PaymentsScreen(
                         Row(
                             Modifier
                                 .animateItem()
-                                .revealOnEnter(row + 1, entrance)
+                                .revealOnEnter(row + 3, entrance)
                                 .padding(horizontal = Space.screen)
                                 .padding(bottom = Space.md)
                                 .height(IntrinsicSize.Min),
@@ -6082,7 +6105,7 @@ fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: (
             Box(Modifier.fillMaxWidth().height(6.dp).background(HairLine, Radius.pill)) {
                 Box(
                     Modifier
-                        .fillMaxWidth(bar.share.coerceIn(0f, 1f))
+                        .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 300L).coerceIn(0f, 1f))
                         .height(6.dp)
                         .background(if (bar.state == CommittedState.OVERSPENT) Negative else Accent, Radius.pill)
                 )
@@ -6219,7 +6242,7 @@ fun OrdersScreen(
     // Shut unless opened, and remembered like every other fold. Finished purchases
     // are the record, not the errand, and they sat open under the parcels in flight.
     var archiveOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ORDER_ARCHIVE)) }
-    val entrance = rememberEntrance()
+    val entrance = LocalEntrance.current
 
     fun checkAll() {
         scope.launch {
@@ -6965,7 +6988,7 @@ fun PaidMonths(
                 modifier = Modifier.padding(bottom = Space.md)
             )
         }
-        months.forEach { record ->
+        months.forEachIndexed { at, record ->
             val open = openMonth == record.month
             // The month's state is its colour, so a year scrolls as a row of
             // answers: mint settled, pink ended with nothing marked, peach partly
@@ -6981,7 +7004,7 @@ fun PaidMonths(
             val soft = softInkOn(colour)
             BentoTile(
                 colour,
-                Modifier.fillMaxWidth().padding(bottom = Space.md),
+                Modifier.revealOnEnter(at).fillMaxWidth().padding(bottom = Space.md),
                 onClick = { openMonth = if (open) null else record.month },
                 onClickLabel = if (open) "Згорнути місяць" else "Що сплачено цього місяця"
             ) {
@@ -7670,7 +7693,7 @@ fun SettingsScreen(
         }
     }
     val listState = rememberLazyListState()
-    val entrance = rememberEntrance()
+    val entrance = LocalEntrance.current
     Box {
         LazyColumn(state = listState, contentPadding = PaddingValues(bottom = navClearance())) {
             // Item zero is the header alone: that is the block the compact bar watches.
@@ -7682,6 +7705,7 @@ fun SettingsScreen(
                     RecapInvite(
                         deck,
                         Modifier
+                            .revealOnEnter(0, entrance)
                             .padding(horizontal = Space.screen)
                             .padding(bottom = Space.lg),
                         onOpen = onOpenRecap
@@ -7699,6 +7723,7 @@ fun SettingsScreen(
                         Budget(summary.income, summary.monthlyExpenses, summary.freeCash, summary.overspent, summary.budgetUnknown)
                     )
                     HeroPanel(
+                        modifier = Modifier.revealOnEnter(1, entrance),
                         label = when {
                             summary.budgetUnknown -> "Вкажіть дохід на Платежах"
                             summary.overspent -> "Не сходиться цього місяця"
@@ -7718,7 +7743,7 @@ fun SettingsScreen(
                                 ) {
                                     Box(
                                         Modifier
-                                            .fillMaxWidth(bar.share.coerceIn(0f, 1f))
+                                            .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 350L).coerceIn(0f, 1f))
                                             .height(8.dp)
                                             .background(AccentInk, Radius.pill)
                                     )
@@ -7732,7 +7757,7 @@ fun SettingsScreen(
                     // answers sit where the eye can take them in one look.
                     Spacer(Modifier.height(Space.md))
                     Row(
-                        Modifier.revealOnEnter(1, entrance).height(IntrinsicSize.Min),
+                        Modifier.revealOnEnter(2, entrance).height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(Space.md)
                     ) {
                         OverviewTile(
@@ -7766,7 +7791,7 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(Space.md))
                     Row(
-                        Modifier.revealOnEnter(2, entrance).height(IntrinsicSize.Min),
+                        Modifier.revealOnEnter(3, entrance).height(IntrinsicSize.Min),
                         horizontalArrangement = Arrangement.spacedBy(Space.md)
                     ) {
                         OverviewTile(

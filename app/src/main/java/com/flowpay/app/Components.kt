@@ -1306,11 +1306,15 @@ fun DaysStrip(
     /** Drawn in ink on the hero panel rather than in colour on the page. */
     onLime: Boolean = false
 ) {
+    // On a tab's arrival the ticks grow up from the baseline in a wave, left to
+    // right — the strip drawing itself on.
+    val drawn = entranceFraction(1f, delayMs = 260L, stiffness = 70f)
     Row(
         modifier.fillMaxWidth().height(26.dp),
         verticalAlignment = Alignment.Bottom
     ) {
         (0 until days).forEach { offset ->
+            val grown = ((drawn * (days + WAVE_WIDTH) - offset) / WAVE_WIDTH).coerceIn(0f, 1f)
             Box(
                 Modifier
                     .weight(1f)
@@ -1320,7 +1324,7 @@ fun DaysStrip(
                             offset == 0 -> 26.dp
                             offset in marked -> 16.dp
                             else -> 6.dp
-                        }
+                        } * grown
                     )
                     .background(
                         when {
@@ -1338,6 +1342,9 @@ fun DaysStrip(
         }
     }
 }
+
+/** How many ticks of the days strip are growing at once as it draws on. */
+private const val WAVE_WIDTH = 8f
 
 /**
  * What a screen with nothing on it shows.

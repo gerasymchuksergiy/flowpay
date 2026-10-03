@@ -333,7 +333,7 @@ fun EmojiGlyph(emoji: String, size: Dp, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val version = EmojiPack.version
     val image = remember(emoji, version) { EmojiPack.image(context, emoji) }
-    Box(modifier.size(size).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
+    Box(modifier.popInOnEnter().size(size).clearAndSetSemantics {}, contentAlignment = Alignment.Center) {
         if (image != null) {
             Image(image, null, Modifier.fillMaxSize(), filterQuality = FilterQuality.High)
         } else {

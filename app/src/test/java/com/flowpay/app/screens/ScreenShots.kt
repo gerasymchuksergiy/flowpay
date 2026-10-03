@@ -5,6 +5,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onLast
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import com.flowpay.app.AppCommand
@@ -129,7 +130,10 @@ class ScreenShots {
         val app = RuntimeEnvironment.getApplication()
         Settings.Global.putFloat(app.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f)
         rule.mainClock.autoAdvance = false
-        rule.setContent { FlowPayApp(rule.activity, AppCommand.OpenTab(tab)) }
+        // Cleared once handled, as MainActivity does: a command left standing is
+        // re-applied on every tab change and would snap the app back to [tab].
+        val command = androidx.compose.runtime.mutableStateOf<AppCommand?>(AppCommand.OpenTab(tab))
+        rule.setContent { FlowPayApp(rule.activity, command.value) { command.value = null } }
         rule.mainClock.advanceTimeBy(settleMs)
         act()
         repeat(count) { at ->
@@ -142,7 +146,15 @@ class ScreenShots {
         rule.onAllNodesWithContentDescription("Позначити оплаченим")[0].performClick()
     }
 
-    @Test fun clipOpen() = frames(TAB_OVERVIEW, "open", count = 30, stepMs = 40, settleMs = 0) {}
+    @Test fun clipOpen() = frames(TAB_OVERVIEW, "open", count = 36, stepMs = 33, settleMs = 0) {}
+
+    @Test fun clipTab() = frames(TAB_PAYMENTS, "tab", count = 40, stepMs = 33, settleMs = 3_000) {
+        // A tap is delivered on a frame, so the clock runs for the tap itself and
+        // is taken back by hand for the frames that follow it.
+        rule.mainClock.autoAdvance = true
+        rule.onAllNodesWithText("Покупки").onLast().performClick()
+        rule.mainClock.autoAdvance = false
+    }
 
     // ------------------------------------------------------------ sample data
 
