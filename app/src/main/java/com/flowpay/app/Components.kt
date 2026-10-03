@@ -167,21 +167,28 @@ fun HeroPanel(
                 // Whole units at display size, the rest at half: «433» then «,47 ₴».
                 val (whole, rest) = heroParts(value)
                 val ink = if (muted) AccentInk.copy(alpha = 0.45f) else AccentInk
-                Text(
-                    buildAnnotatedString {
-                        append(whole)
-                        withStyle(SpanStyle(fontSize = Type.displayMinorSize, color = ink.copy(alpha = ink.alpha * 0.6f))) {
-                            append(rest)
-                        }
-                    },
-                    color = ink,
-                    fontSize = Type.displaySize,
-                    lineHeight = Type.displayLine,
-                    letterSpacing = Type.displayTracking,
-                    fontWeight = Type.strong,
-                    style = Tabular,
-                    maxLines = 1
-                )
+                // The digits roll when the figure changes — a payment ticked off,
+                // the income edited — and stand still when the screen merely opens.
+                Row(verticalAlignment = Alignment.Bottom) {
+                    RollingText(
+                        whole,
+                        color = ink,
+                        fontSize = Type.displaySize,
+                        letterSpacing = Type.displayTracking,
+                        fontWeight = Type.strong
+                    )
+                    if (rest.isNotEmpty()) {
+                        RollingText(
+                            rest,
+                            // Lifted to sit on the big figure's baseline: bottoms of
+                            // two sizes align their descents, not their baselines.
+                            Modifier.padding(bottom = 7.dp),
+                            color = ink.copy(alpha = ink.alpha * 0.6f),
+                            fontSize = Type.displayMinorSize,
+                            fontWeight = Type.strong
+                        )
+                    }
+                }
                 caption?.let {
                     Spacer(Modifier.height(Space.xs))
                     Text(
@@ -1988,11 +1995,15 @@ fun FormSheet(
     onDismiss: () -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    // The app behind steps back while this is up — see LocalSheetsOpen.
+    SheetPresence()
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         // Half height would put the confirm button below the fold on every one of
         // these forms, so there is only one useful size.
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        // Lighter than the default, so the app receding behind it is seen to.
+        scrimColor = Color.Black.copy(alpha = 0.45f),
         containerColor = SurfaceLow,
         contentColor = TextPrimary,
         dragHandle = { BottomSheetDefaults.DragHandle(color = HairLine) }

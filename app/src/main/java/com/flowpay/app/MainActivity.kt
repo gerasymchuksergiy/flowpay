@@ -51,6 +51,17 @@ import androidx.compose.ui.unit.IntOffset
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
@@ -1971,6 +1982,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         // leave the chrome where it is.
         val barGone = barDown.value && !LocalReducedMotion.current
         val glass = remember { HazeState() }
+        // How many form sheets are up. The local's default is one counter for the
+        // whole app, which is what a single-activity app needs; the sheets count
+        // themselves into it wherever they are composed. See LocalSheetsOpen.
+        val sheetsOpen = LocalSheetsOpen.current
         val barHidden by animateFloatAsState(
             if (barGone) barTravel else 0f,
             Motion.spatial(),
@@ -2026,8 +2041,40 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         store.saveDismissedNote(mark)
                     }
                 ) { target -> tab = target }
-                Box(Modifier.weight(1f)) {
-                    when (tab) {
+                // The app steps back while a form sheet is up: a little smaller and
+                // softly blurred, so the sheet reads as in front of it rather than
+                // as a grey cloth over it. Blur needs Android 12, which the owner's
+                // phone has; older phones get the scale alone.
+                val sheetDepth by animateFloatAsState(
+                    if (sheetsOpen.intValue > 0) 1f else 0f,
+                    Motion.spatial(),
+                    label = "sheet depth"
+                )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .graphicsLayer {
+                            val scale = 1f - 0.04f * sheetDepth
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                        .blur((10 * sheetDepth).dp)
+                ) {
+                    // Each tab keeps where it was scrolled to, and switching is a
+                    // short fade-through rather than a hard cut. Nothing slides
+                    // sideways: the tabs are peers, not steps in a sequence.
+                    val tabStates = rememberSaveableStateHolder()
+                    val fade = Motion.effects<Float>()
+                    val settle = Motion.spatial<Float>()
+                    AnimatedContent(
+                        targetState = tab,
+                        transitionSpec = {
+                            (fadeIn(fade) + scaleIn(settle, initialScale = 0.985f)) togetherWith fadeOut(fade)
+                        },
+                        label = "tab"
+                    ) { shown ->
+                    tabStates.SaveableStateProvider(shown) {
+                    when (shown) {
                         TAB_WISHES -> WishlistScreen(
                             items = wishes,
                             save = { wishes = it; store.saveWishes(it) },
@@ -2131,6 +2178,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                 )
                             }
                         }
+                    }
+                    }
                     }
                 }
             }
@@ -2537,7 +2586,9 @@ fun WishlistScreen(
                         // deleted rather than postponed.
                         val (watched, held) = partitionByHold(shown, today.toEpochDay())
                         items(sortWishes(watched, sort), key = { it.id }) { wish ->
-                            WishCard(wish, this@AnimatedContent, today.toEpochDay()) {
+                            // Sorting, searching, holding and deleting move the cards
+                            // rather than teleport them.
+                            WishCard(wish, this@AnimatedContent, today.toEpochDay(), Modifier.animateItem()) {
                                 setOpened(wish.id)
                             }
                         }
@@ -4755,6 +4806,7 @@ fun SharedTransitionScope.WishCard(
     wish: Wish,
     visibility: AnimatedVisibilityScope,
     today: Long,
+    modifier: Modifier = Modifier,
     onOpen: () -> Unit
 ) {
     val change = priceChangePercent(wish)
@@ -4781,16 +4833,18 @@ fun SharedTransitionScope.WishCard(
     // across the opened corners and hanging off them, which is exactly the failure
     // litEdge was shaped to avoid.
     val cardShape = wishCardShape(reached)
+    val press = remember { MutableInteractionSource() }
     Card(
         onClick = onOpen,
-        modifier = Modifier.fillMaxWidth().litEdge(cardShape),
+        interactionSource = press,
+        modifier = modifier.pressScale(press).fillMaxWidth().litEdge(cardShape),
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
         shape = cardShape
     ) {
         Box {
             if (wish.image.isNotBlank()) {
                 AsyncImage(
-                    wish.image,
+                    crossfadeImage(wish.image),
                     wish.name,
                     Modifier
                         .fillMaxWidth()
@@ -5633,6 +5687,7 @@ fun PaymentsScreen(
                 // falling on it, instead of "1 числа щомісяця" repeated under every row.
                 paymentGroups(items, today).forEach { group ->
                     item(key = group.date.toString()) {
+                      Column(Modifier.animateItem()) {
                         val isToday = group.date == today
                         // The date is the group's label, above it, the way a calendar
                         // writes a day over its entries — not lime text inside a box.
@@ -5796,24 +5851,23 @@ fun PaymentsScreen(
                                             touch.switched(!done)
                                             setPaid(togglePaid(paid, pay, markMonth))
                                         }) {
-                                            Icon(
-                                                if (done) {
-                                                    Icons.Default.CheckCircle
-                                                } else {
-                                                    Icons.Default.RadioButtonUnchecked
-                                                },
-                                                if (done) {
-                                                    "Скасувати позначку про оплату"
-                                                } else {
-                                                    "Позначити оплаченим"
-                                                },
-                                                tint = if (done) Accent else TextDisabled
+                                            // Fills and draws its tick — see PaidCheck.
+                                            PaidCheck(
+                                                done,
+                                                Modifier.semantics {
+                                                    contentDescription = if (done) {
+                                                        "Скасувати позначку про оплату"
+                                                    } else {
+                                                        "Позначити оплаченим"
+                                                    }
+                                                }
                                             )
                                         }
                                     }
                                 }
                             }
                         }
+                      }
                     }
                 }
                 // The annual blind spot, given a place to be visible from.
@@ -6170,6 +6224,7 @@ fun OrdersScreen(
                 ParcelRow(
                     order = order,
                     today = today,
+                    modifier = Modifier.animateItem(),
                     first = index == 0,
                     last = index == open.lastIndex,
                     onOpen = { setOpened(order.id) },
@@ -6869,18 +6924,15 @@ fun PaidMonths(
                                     .padding(vertical = Space.xs),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    if (line.paid) {
-                                        Icons.Default.CheckCircle
-                                    } else {
-                                        Icons.Default.RadioButtonUnchecked
-                                    },
-                                    if (line.paid) {
-                                        "Скасувати позначку про оплату"
-                                    } else {
-                                        "Позначити оплаченим"
-                                    },
-                                    tint = if (line.paid) Accent else TextDisabled
+                                PaidCheck(
+                                    line.paid,
+                                    Modifier.semantics {
+                                        contentDescription = if (line.paid) {
+                                            "Скасувати позначку про оплату"
+                                        } else {
+                                            "Позначити оплаченим"
+                                        }
+                                    }
                                 )
                                 Spacer(Modifier.width(Space.md))
                                 Text(
@@ -6984,24 +7036,22 @@ fun OverviewTile(
     alarm: Boolean = false,
     onClick: () -> Unit
 ) {
+    val press = remember { MutableInteractionSource() }
     Column(
         modifier
+            .pressScale(press)
             .clip(Radius.md)
             .background(SurfaceBase)
-            .clickable(onClick = onClick)
+            .clickable(interactionSource = press, indication = LocalIndication.current, onClick = onClick)
             .padding(Space.lg)
     ) {
         Text(label, color = TextSecondary, fontSize = Type.captionSize, maxLines = 1)
-        Text(
+        RollingText(
             value,
+            Modifier.padding(top = Space.xs),
             color = if (alarm) Negative else TextPrimary,
             fontSize = 22.sp,
-            lineHeight = 28.sp,
-            fontWeight = Type.strong,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            style = Tabular,
-            modifier = Modifier.padding(top = Space.xs)
+            fontWeight = Type.strong
         )
         Text(
             detail,
@@ -7026,6 +7076,7 @@ fun OverviewTile(
 fun ParcelRow(
     order: Order,
     today: LocalDate,
+    modifier: Modifier = Modifier,
     first: Boolean,
     last: Boolean,
     onOpen: () -> Unit,
@@ -7038,8 +7089,9 @@ fun ParcelRow(
         bottomStart = if (last) corner else 0.dp,
         bottomEnd = if (last) corner else 0.dp
     )
+    val press = remember { MutableInteractionSource() }
     Column(
-        Modifier
+        modifier
             .padding(horizontal = Space.screen)
             .fillMaxWidth()
             .clip(shape)
@@ -7049,7 +7101,8 @@ fun ParcelRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onOpen)
+                .pressScale(press)
+                .clickable(interactionSource = press, indication = LocalIndication.current, onClick = onOpen)
                 .padding(horizontal = Space.lg, vertical = Space.md),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -7058,7 +7111,7 @@ fun ParcelRow(
                 contentAlignment = Alignment.Center
             ) {
                 if (order.image.isNotBlank()) {
-                    AsyncImage(order.image, order.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                    AsyncImage(crossfadeImage(order.image), order.name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 } else {
                     Icon(
                         if (order.digital) Icons.Default.SportsEsports else Icons.Default.Inventory2,
