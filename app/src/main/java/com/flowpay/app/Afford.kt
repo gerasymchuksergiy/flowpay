@@ -279,8 +279,12 @@ fun affordability(
         perDay = "${daysLabel(days)}: ≈${bareAmount(perDayFigure(before))} → ${money(perDayFigure(after))} на день"
         basis = null
     } else {
-        val free = projectedFree(inputs, plan.funds, date)
-        val planned = plan.planned
+        // Money already put aside this month is spent as far as this month is
+        // concerned; only what the plans still ask can give way.
+        val thisMonth = monthKey(date) == monthKey(today)
+        val putAside = if (thisMonth) plan.asks.sumOf { it.put } else 0.0
+        val free = projectedFree(inputs, plan.funds, date) - putAside
+        val planned = if (thisMonth) plan.pending.sumOf { it.left } else plan.planned
         when {
             free + inputs.life.amount - price < 0.0 -> {
                 verdict = AffordVerdict.SHORT_PAYMENTS

@@ -143,6 +143,23 @@ class PlanShots {
         shoot("p1-overview-whole")
     }
 
+    /** Life high enough that the plans no longer fit: the card with «Пропустити». */
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h3400dp-440dpi")
+    fun overviewConflict() {
+        PlanStore(RuntimeEnvironment.getApplication()).saveLife(LifeCost(true, 20_000.0))
+        open(TAB_OVERVIEW)
+        shoot("p7-overview-conflict")
+    }
+
+    /** «Я відклав» pressed: the ritual says what was written and offers «Скасувати». */
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h1600dp-440dpi")
+    fun ritualDone() {
+        open(TAB_OVERVIEW)
+        rule.onAllNodesWithText("Я відклав")[0].performClick()
+        rule.waitForIdle()
+        shoot("p8-ritual-done")
+    }
+
     @Test @Config(qualifiers = "uk-rUA-w393dp-h2600dp-440dpi")
     fun paymentsWhole() {
         open(TAB_PAYMENTS)

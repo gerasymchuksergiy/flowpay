@@ -8447,7 +8447,13 @@ fun SettingsScreen(
                                 // plan this month — its price said before it is done.
                                 moneyHost?.let { skipCandidate(it.plan) }?.let { ask ->
                                     TextButton({ skipping = ask }, Modifier.padding(top = Space.xs)) {
-                                        Text("💤 Пропустити цього місяця: «${ask.name}»", maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                        // White, not lime: the lime on this screen is the hero's.
+                                        Text(
+                                            "💤 Пропустити цього місяця: «${ask.name}»",
+                                            color = TextPrimary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }

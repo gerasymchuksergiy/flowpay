@@ -186,6 +186,18 @@ class AffordTest {
     }
 
     @Test
+    fun `money already put aside this month cannot give way again`() {
+        val fund = putInto(Fund("f", "Відпустка", monthly = 5_000.0), 5_000.0, today)
+        val input = inputs(funds = listOf(fund))
+        // 27 901 free, 5 000 of it already in the fund: 22 901 to spend or plan with.
+        val moves = check(input, 21_500.0, null)
+        assertEquals(AffordVerdict.PLANS_MOVE, moves.verdict)
+        assertEquals(listOf("a" to 599.0), moves.moves.map { it.ask.id to it.taken })
+        val short = check(input, 23_500.0, null)
+        assertEquals("Цього місяця не влазить: бракує 599 ₴ на платежі", plain(short.headline))
+    }
+
+    @Test
     fun `a purchase after payday is weighed against the plan for its month`() {
         val after = check(inputs(), 1_000.0, 18_400.0, date = LocalDate.of(2026, 10, 26))
         assertFalse(after.byBalance)
