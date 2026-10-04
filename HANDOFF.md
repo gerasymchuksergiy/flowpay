@@ -1048,3 +1048,96 @@ the Android developer verification account before it reaches Ukraine (both
 §14). Optionally untick the dollar and euro cards if no payment is made from
 them — each card adds about three minutes to a first load and a request to
 every pass.
+
+---
+
+## 20. Parcels and purchases, second round (4 October 2026, v3.17.0)
+
+The owner looked at «Що взяти в інших» and said «додай все»; five builders took a
+share each in worktrees (§8). This is the parcels-and-purchases share: research
+№3, №9, №10, the «Поділитися» and «Гарантія до» quick wins, Klarna's
+«Автопідхоплення посилок» **step 1 only** (reading the phone's notifications needs
+the owner's explicit consent and was not built), «Повернення до копійки», «Як тобі
+покупка?», Nova Poshta's five, and «Відкрити в Новій пошті» / «Як на фото? Ні».
+Logic in `ParcelsMore.kt` (tested in `ParcelsMoreTest`), Android bits in
+`ParcelsNet.kt`, composables in `PurchasesUi.kt`, JVM renders in
+`screens/ParcelScreens.kt`. **Not seen on the phone.**
+
+### New files
+| File | Holds |
+|---|---|
+| `ParcelsMore.kt` | `sharedParcelNumber`, `knownParcel`; `normalizedPhone`, `maskedPhone`, `phoneFor`; `codDues`, `codLine`, `weatherWithParcels`, `codChips`; `PickupPoint` with `pointHours`, `hoursChip`, `pickupChips`, `pickupUntilLine`, `familiarPoint`; `Refund` and its lifecycle (`startReturn`, `shopReceived`, `moneyBack`, `undoMoneyBack`, `cancelReturn`, `applyReturnStatus`, `refundStatusLine`, `owed`); warranty (`warrantyStart`, `warrantyEnd`, `onWarranty`); `Delight`, `categoryJoy`, `delightedIn`; `purchaseOnceLines`; `NOVA_POSHTA_APPS` |
+| `ParcelsNet.kt` | `ParcelPrefs` (phone, point cache, said-once memory), `fetchPickupPoint`, `refreshPickupPoints`, `openNovaPoshta` |
+| `PurchasesUi.kt` | `PointChipsRow`, `CodChipsRow`, `ParcelsToPayLine`, `ReturnRow`, `ReturnBlock`, `ReturnSheet`, `WarrantyPicker`, `DelightQuestion`, `DelightAnswerView`, `CategoryJoyLine`, `NovaPhoneDialog`, `RecipientPhoneField` |
+
+### What changed on screen
+- **Share:** a 14-digit waybill in a shared text goes to Покупки even beside a
+  link (it used to become a wish). Digits inside a product link do not count. A
+  waybill already on the list opens its parcel.
+- **Phone:** Налаштування → «Мій номер для Нової пошти» (masked on the row);
+  «Номер одержувача» on a parcel's edit dialog. Sent as `Phone`. «Оплата» shows
+  «Післяплата за товар», «Вартість доставки», «Платне зберігання» when they arrive;
+  «Сама посилка» shows «Відправник».
+- **Cash on delivery (`AmountToPay`):** on the tile; on Огляд «📦 ще N посилки до
+  оплати: …» under the hero; the forecast adds it to its day (today at a branch,
+  else the promised day; with no day it is left out of the forecast) and judges
+  it by the same `moneySky`, with a chip; the treat subtracts it; the digest's
+  waiting line adds «, до сплати …».
+- **Pickup point:** `Address.getWarehouses` by Ref, once a week. Chips for hours,
+  generator, terminal, fitting room; peach «скоро зачиняється» in the last hour;
+  «відкриється завтра о 08:00» after closing. At a familiar point only the warning
+  shows. The digest adds «забрати можна до …» (only when every waiting parcel is
+  at one point).
+- **Returns:** «↩️ Повертаю» from the archive or the filing sheet («Не таке, як на
+  фото? Повертаю») turns the purchase into a «Повернення» tile (Відправив → Магазин
+  отримав → Гроші повернулись). «Магазин отримав» from the return waybill or a tap.
+  Then «чекаю гроші: N з 30 днів», a weekly digest line once late, and «💸 Мені
+  винні» on Огляд (shown from the start, pink when late). Undo: «Гроші ще не
+  прийшли».
+- **Warranty:** chips «немає · 12 · 24 · 36 міс · своя дата» on the filing and
+  archive sheets, counted from `RecipientDateTime`, else the first «received»
+  status seen, else the filing day; 🛡️ chip and «На гарантії» filter in the
+  archive; one digest line 30 days before the end. No receipt photos.
+- **«Як тобі …?»:** days 21–27 after filing, 😍🙂😐😞 and «Купити таке ще раз?»;
+  `why` and `category` now come over from the wish at «Я купив це»; «Гаджети: 3 з 4
+  — 😍» under a new wish's category; recap card «Що справді порадувало».
+
+### Nova Poshta, checked live 4 October 2026
+- An empty `Phone` gives the warning «Please enter a valid phone number from the
+  express invoice to show full information»; a well-formed dummy number removes
+  it and the same 128 fields come back. What the owner's real number fills in on a
+  real parcel is **unverified**.
+- `getWarehouses` needs no key; by Ref it returns one record (~3 KB).
+- **The pickup hours are `Schedule`.** `Delivery` is "-" on all 200 Kyiv lockers
+  asked and `Reception` on 162; on 279 of 300 branches `Delivery` ends an hour
+  before `Schedule`/`Reception` on weekdays — a same-day dispatch cut-off, by
+  reading, not by documentation (the NP developer docs answer 403 to scripts).
+- `curl -d` on Windows mangles Cyrillic; send the body from a UTF-8 file.
+
+### New JSON fields (both halves, round-trip tested)
+- `Order`: `pkPh` (recipient's phone — **travels in the JSON backup and the bin**),
+  `pkRet`, `pkWu`, `pkJoy`, `pkAgain`, `pkJoyDay`, `pkWhy`, `pkCat`. `pkRet` is an
+  object: `pkS`, `pkA`, `pkT`, `pkR`, `pkD`, `pkG`, `pkB`, and `pkC`/`pkX`/`pkK`
+  for the return waybill's own status.
+- `ParcelDetails`: `pkWr`, `pkDc`, `pkGp`, `pkSc`, `pkSn`, `pkRa`.
+
+### New preference keys (not in any backup)
+`pk_np_phone`, `pk_points` (dropped after 30 days), `pk_said` (last 200 keys).
+
+### Rules added — do not undo
+- The waybill branch runs first in the share router.
+- `refund != null` means not counted as bought (`countsAsBought`): out of the
+  «Куплено вчасно» tally, the verdict, cost per use, the recap and «Снайпер». The
+  spreadsheet records paid minus refunded.
+- The return waybill's status lives in `Refund`, never in the delivery's
+  `statusCode`/`sightings`; the worker follows it separately (`followsReturn`).
+- Said-once digest lines use keys in `pk_said`, saved from `Digest.onceKeys`.
+- The recap always ends on its label (`body.take(MAX - 1) + label`).
+- No gendered verb next to a shop or product name.
+
+### Open with the owner
+- Enter «Мій номер для Нової пошти»? Without it Nova Poshta most likely does not
+  give the cash-on-delivery sum. One real COD parcel is needed to confirm.
+- The recipient's number is stored with the parcel and so is in the backup; the
+  owner's own is not. Keep it so?
+- «Мені винні» right after «Повертаю» (now) or only once late? 30 days default?
