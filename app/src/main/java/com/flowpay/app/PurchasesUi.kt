@@ -117,7 +117,8 @@ fun CodChipsRow(chips: List<CodChip>, colour: Color, modifier: Modifier = Modifi
                 EmojiGlyph(chip.emoji, 16.dp)
                 Spacer(Modifier.width(Space.xs))
                 Text(
-                    chip.text,
+                    // Cash on delivery is the owner's money: the eye on Огляд hides it (Privacy.kt).
+                    personal(chip.text),
                     color = ink,
                     fontSize = Type.captionSize,
                     fontWeight = Type.medium,
@@ -136,7 +137,7 @@ fun ParcelsToPayLine(text: String, modifier: Modifier = Modifier) {
     Row(modifier.fillMaxWidth().padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
         EmojiGlyph("📦", 18.dp)
         Spacer(Modifier.width(Space.sm))
-        Text(text, color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
+        Text(personal(text), color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
     }
 }
 
@@ -230,7 +231,7 @@ fun ReturnRow(
                 )
                 // The waybill is on the page; on the tile it wrapped the sum in two.
                 Text(
-                    "до повернення ${money(refund.amount)}",
+                    personal("до повернення ${money(refund.amount)}"),
                     color = softInkOn(colour),
                     fontSize = Type.captionSize,
                     maxLines = 1,
@@ -293,7 +294,7 @@ fun ReturnBlock(
             fontWeight = Type.medium
         )
         Spacer(Modifier.height(Space.sm))
-        LeaderRow("До повернення", money(refund.amount))
+        LeaderRow("До повернення", personalFigure(money(refund.amount)))
         if (refund.tracking.isNotBlank()) LeaderRow("Зворотна накладна", refund.tracking)
         if (refund.statusText.isNotBlank() && refund.shopGotDay == 0L) {
             LeaderRow("Що каже пошта", refund.statusText)

@@ -342,6 +342,89 @@ class QuickActionsTest {
         assertEquals(card, digestCardOf(org.json.JSONObject(digestCardJson(card).toString())))
     }
 
+    // ------------------------------------------------------------ «Як скасувати» beside them
+
+    private val netflixHelp = DigestAction("Як скасувати Netflix", "https://www.netflix.com/cancelplan")
+    private val megogoHelp = DigestAction("Як скасувати Megogo", "https://megogo.net/ua/account?view_type=subscriptions")
+    private val spotifyHelp = DigestAction("Як скасувати Spotify", "https://www.spotify.com/account/overview/")
+
+    private fun shown(card: DigestCard) = digestButtons(card).size + digestLinks(card).size
+
+    @Test
+    fun `a link takes one of the three slots when there are payments to mark`() {
+        val card = morning.copy(
+            offers = listOf(QuickMark("Оренда", nov), QuickMark("Інтернет", nov), QuickMark("Netflix", nov)),
+            links = listOf(netflixHelp, megogoHelp)
+        )
+
+        assertEquals(listOf(netflixHelp), digestLinks(card))
+        assertEquals(listOf("Сплачено · Оренда", "Сплачено · Інтернет"), digestButtons(card).map(::digestButtonLabel))
+        assertEquals(3, shown(card))
+    }
+
+    @Test
+    fun `with nothing to mark, two links and no payment buttons`() {
+        val card = morning.copy(offers = emptyList(), links = listOf(netflixHelp, megogoHelp, spotifyHelp))
+
+        assertEquals(listOf(netflixHelp, megogoHelp), digestLinks(card))
+        assertTrue(digestButtons(card).isEmpty())
+    }
+
+    @Test
+    fun `the link survives a press and an undo`() {
+        val card = morning.copy(links = listOf(netflixHelp))
+
+        val pressed = digestPressed(card, QuickMark("Оренда", nov), added = true)
+        assertEquals(listOf(netflixHelp), digestLinks(pressed))
+        // «Скасувати» first, then the one payment still unmarked, then the link.
+        assertEquals(listOf("Скасувати", "Сплачено · Інтернет"), digestButtons(pressed).map(::digestButtonLabel))
+        assertEquals(3, shown(pressed))
+
+        val undone = digestUndone(pressed, QuickMark("Оренда", nov))
+        assertEquals(card, undone)
+        assertEquals(listOf(netflixHelp), digestLinks(undone))
+
+        assertEquals(listOf(netflixHelp), digestLinks(digestGone(card, QuickMark("Оренда", nov))))
+    }
+
+    @Test
+    fun `never more than three buttons in all`() {
+        val marks = listOf("Оренда", "Інтернет", "Netflix", "Megogo", "Газ").map { QuickMark(it, nov) }
+        val helps = listOf(netflixHelp, megogoHelp, spotifyHelp)
+        for (offers in 0..marks.size) {
+            for (links in 0..helps.size) {
+                val card = DigestCard("Зведення за день", "", marks.take(offers), links = helps.take(links))
+                val states = listOf(card) + marks.take(offers).flatMap { mark ->
+                    listOf(digestPressed(card, mark, added = true), digestPressed(card, mark, added = false))
+                }
+                states.forEach { state ->
+                    assertTrue("$offers offers, $links links: ${shown(state)}", shown(state) <= DIGEST_BUTTONS)
+                    // A link given is always shown: the deadline it is about is real.
+                    if (links > 0) assertTrue(digestLinks(state).isNotEmpty())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the links come back from storage, and one that is not a web page does not`() {
+        val card = digestPressed(morning.copy(links = listOf(netflixHelp, megogoHelp)), QuickMark("Оренда", nov), added = true)
+        assertEquals(card, digestCardOf(org.json.JSONObject(digestCardJson(card).toString())))
+
+        val o = digestCardJson(morning)
+        o.getJSONArray("tcl")
+            .put(org.json.JSONObject().put("tcll", "Як скасувати Щось").put("tclu", "javascript:alert(1)"))
+            .put(org.json.JSONObject().put("tcll", "").put("tclu", "https://example.com"))
+        assertTrue(digestCardOf(o).links.isEmpty())
+    }
+
+    @Test
+    fun `a card stored before links existed still reads`() {
+        val old = digestCardJson(morning).apply { remove("tcl") }
+
+        assertEquals(morning, digestCardOf(old))
+    }
+
     @Test
     fun `a stored mark without a month is dropped rather than trusted`() {
         val o = digestCardJson(morning)

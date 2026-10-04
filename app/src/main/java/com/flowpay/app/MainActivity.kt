@@ -6665,7 +6665,8 @@ fun PaymentTile(
         // The date the free ride ends: the one fact about this expense that expires.
         trialLabel(pay, today)?.let { free ->
             Text(
-                free,
+                // «150 ₴ до 1 лютого» is the owner's price; «безкоштовно до …» has none.
+                personal(free),
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine,
                 fontWeight = Type.strong,
@@ -7706,11 +7707,11 @@ fun OrderDetailScreen(
                     )
                     // The next three arrive only when the request carries the
                     // recipient's phone; without it they are blank and not drawn.
-                    Fact("Післяплата за товар", money(details.goodsToPay).takeIf { details.goodsToPay > 0 }.orEmpty())
-                    Fact("Вартість доставки", money(details.deliveryCost).takeIf { details.deliveryCost > 0 }.orEmpty())
+                    Fact("Післяплата за товар", personalFigure(money(details.goodsToPay)).takeIf { details.goodsToPay > 0 }.orEmpty())
+                    Fact("Вартість доставки", personalFigure(money(details.deliveryCost)).takeIf { details.deliveryCost > 0 }.orEmpty())
                     Fact(
                         "Платне зберігання",
-                        money(details.storageCharged).takeIf { details.storageCharged > 0 }.orEmpty(),
+                        personalFigure(money(details.storageCharged)).takeIf { details.storageCharged > 0 }.orEmpty(),
                         alarm = true
                     )
                     Fact("Доставку оплачує", payerLabel(details.payerType))
@@ -8145,7 +8146,7 @@ fun ParcelRow(
                 // What the carrier will still take at the counter — ParcelsMore.kt.
                 if (order.amountToPay > 0.0 && order.status != RECEIVED) {
                     Text(
-                        "До сплати при отриманні ${money(order.amountToPay)}",
+                        personal("До сплати при отриманні ${money(order.amountToPay)}"),
                         color = softInkOn(colour),
                         fontSize = Type.captionSize,
                         fontWeight = Type.medium,
@@ -8771,7 +8772,7 @@ fun SettingsScreen(
                         Spacer(Modifier.height(Space.md))
                         OverviewTile(
                             "Мені винні",
-                            money(back.total),
+                            personalFigure(money(back.total)),
                             owedCaption(back),
                             emoji = "💸",
                             colour = if (back.overdue > 0) TilePink else TileMint,

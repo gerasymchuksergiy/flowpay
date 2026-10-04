@@ -485,7 +485,8 @@ fun LifeTile(pay: Pay, line: String, action: String, modifier: Modifier = Modifi
             Spacer(Modifier.width(Space.md))
             Column(Modifier.weight(1f)) {
                 Text(pay.name, fontSize = Type.bodySize, fontWeight = Type.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TileCaption("$line · ${amountLabel(pay.amount, pay.currency)}", SurfaceRaised)
+                // The eye on Огляд hides the payment's sum, not its state (Privacy.kt).
+                TileCaption(personal("$line · ${amountLabel(pay.amount, pay.currency)}"), SurfaceRaised)
             }
             TextButton(onAction) { Text(action, color = TextPrimary) }
         }
@@ -543,7 +544,7 @@ fun DoubleChargeTile(
                 Spacer(Modifier.width(Space.md))
                 Column(Modifier.weight(1f)) {
                     Text(item.pay.name, fontSize = Type.bodySize, fontWeight = Type.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    TileCaption(doubleChargeLine(item, accountCurrency).substringAfter("${item.pay.name} "), TilePink, maxLines = 3)
+                    TileCaption(personal(doubleChargeLine(item, accountCurrency).substringAfter("${item.pay.name} ")), TilePink, maxLines = 3)
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -574,11 +575,13 @@ fun AfterCancelTile(
                 Column(Modifier.weight(1f)) {
                     Text(item.name, fontSize = Type.bodySize, fontWeight = Type.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     TileCaption(
-                        listOf(
-                            amountLabel(item.charged, item.currency),
-                            dayMonth(txDay(item.tx, ZoneId.systemDefault())),
-                            item.tx.description
-                        ).joinToString(" · "),
+                        personal(
+                            listOf(
+                                amountLabel(item.charged, item.currency),
+                                dayMonth(txDay(item.tx, ZoneId.systemDefault())),
+                                item.tx.description
+                            ).joinToString(" · ")
+                        ),
                         TilePink,
                         maxLines = 3
                     )

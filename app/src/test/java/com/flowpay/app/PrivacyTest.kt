@@ -164,6 +164,49 @@ class PrivacyTest {
         assertEquals(recap.title, hidden.title)
     }
 
+    @Test
+    fun `the payments' and the parcels' recap cards keep their words and lose their sums`() {
+        val month = "2026-09"
+        val today = LocalDate.of(2026, 10, 3)
+        val promoEnd = LocalDate.of(2026, 9, 15).toEpochDay()
+        // A promo that ran out on the 15th, written into its history the way the
+        // morning pass writes it («150 → 300»).
+        val internet = withPromoEnded(
+            Pay("Інтернет", 300.0, day = 15, promoPrice = 150.0, trialEnd = promoEnd),
+            today
+        )
+        // A purchase answered 😍, in the owner's own words.
+        val headphones = Order(
+            "o1", "Навушники JBL", "https://shop.example/jbl", RECEIVED,
+            price = 1_599.0, paid = 1_499.0, archivedDay = LocalDate.of(2026, 8, 20).toEpochDay(),
+            delight = 4, delightDay = LocalDate.of(2026, 9, 12).toEpochDay(), why = "щоб бігати з музикою"
+        )
+        val recap = monthlyRecap(emptyList(), listOf(internet), listOf(headphones), emptyList(), month, today, 40_000.0, 41.6)
+        val promo = recap.cards.first { it.kind == RecapKind.SUB_PRICE_MOVED }
+        assertEquals("Акція скінчилась", promo.overline)
+        assertTrue("the sample's promo card has to carry sums", sumLeft.containsMatchIn(promo.detail))
+        val delight = recap.cards.first { it.kind == RecapKind.DELIGHTED }
+
+        val hidden = recapWithoutSums(recap)
+
+        val hiddenPromo = hidden.cards.first { it.kind == RecapKind.SUB_PRICE_MOVED }
+        assertEquals("Інтернет", hiddenPromo.headline)
+        assertEquals("було $SUM_MASK → стало $SUM_MASK ₴, +100% · з 15 вересня", hiddenPromo.detail)
+        // Nothing in it was a sum: it is shown exactly as it was.
+        assertEquals(delight, hidden.cards.first { it.kind == RecapKind.DELIGHTED })
+        hidden.cards.forEach { card -> assertNoSums(card.headline + " " + card.detail) }
+    }
+
+    @Test
+    fun `a promo that ended without a recorded move keeps its card, not its prices`() {
+        val card = RecapCard(
+            RecapKind.TRIAL_ENDED, "Акція скінчилась", "Megogo",
+            "Тепер ${amountLabel(199.0, UAH)} замість ${amountLabel(99.0, UAH)}"
+        )
+
+        assertEquals(card.copy(detail = "Тепер $SUM_MASK ₴ замість $SUM_MASK ₴"), recapCardWithoutSums(card))
+    }
+
     // ------------------------------------------------------------ outside the app
 
     private val pays = listOf(Pay("Інтернет", 300.0, day = 21))

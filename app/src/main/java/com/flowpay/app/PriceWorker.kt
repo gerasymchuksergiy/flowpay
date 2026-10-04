@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
-import androidx.glance.appwidget.updateAll
 import androidx.work.*
 import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.TimeUnit
@@ -182,7 +181,9 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
 
         // The widget reads the same store, so it is stale the moment this pass
         // writes to it, and nothing else would wake it before its half-hourly turn.
-        FlowPayWidget().updateAll(applicationContext)
+        // Through refreshWidget: a bare updateAll is ignored by a widget session that
+        // is still running (Widget.kt).
+        refreshWidget(applicationContext)
         FlowPayTileService.refresh(applicationContext)
 
         // Retry only when there was something to fetch and none of it arrived,

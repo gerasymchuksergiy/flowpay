@@ -5,6 +5,7 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.os.Looper
 import com.flowpay.app.DIGEST_ID
+import com.flowpay.app.DigestAction
 import com.flowpay.app.DigestCard
 import com.flowpay.app.Pay
 import com.flowpay.app.PaidMark
@@ -68,13 +69,18 @@ class QuickButtonsCheck {
         val card = DigestCard(
             "Зведення за день",
             "Інтернет 300 ₴ — сьогодні\nОренда 8 000 ₴ — сьогодні\nВільно 12 000 ₴",
-            listOf(QuickMark("Інтернет", month), QuickMark("Оренда", month))
+            listOf(QuickMark("Інтернет", month), QuickMark("Оренда", month)),
+            // «Як скасувати» rides along and takes the third slot (QuickActions.kt).
+            links = listOf(DigestAction("Як скасувати Netflix", "https://www.netflix.com/cancelplan"))
         )
         TouchPrefs(app).saveDigestCard(card)
         postDigest(app, card)
 
         val morning = shown()
-        assertEquals(listOf("Сплачено · Інтернет", "Сплачено · Оренда"), morning.actions.map { it.title.toString() })
+        assertEquals(
+            listOf("Сплачено · Інтернет", "Сплачено · Оренда", "Як скасувати Netflix"),
+            morning.actions.map { it.title.toString() }
+        )
 
         press(morning, "Сплачено · Інтернет")
 
@@ -83,7 +89,7 @@ class QuickButtonsCheck {
         assertTrue(isPaid(store.paidMarks(), "Мобільний", month))
         val marked = shown()
         assertEquals("Позначено: Інтернет", marked.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
-        assertEquals(listOf("Скасувати", "Сплачено · Оренда"), marked.actions.map { it.title.toString() })
+        assertEquals(listOf("Скасувати", "Сплачено · Оренда", "Як скасувати Netflix"), marked.actions.map { it.title.toString() })
 
         press(marked, "Скасувати")
 
@@ -91,6 +97,9 @@ class QuickButtonsCheck {
         assertTrue(isPaid(store.paidMarks(), "Мобільний", month))
         val back = shown()
         assertEquals("Зведення за день", back.extras.getCharSequence(Notification.EXTRA_TITLE).toString())
-        assertEquals(listOf("Сплачено · Інтернет", "Сплачено · Оренда"), back.actions.map { it.title.toString() })
+        assertEquals(
+            listOf("Сплачено · Інтернет", "Сплачено · Оренда", "Як скасувати Netflix"),
+            back.actions.map { it.title.toString() }
+        )
     }
 }

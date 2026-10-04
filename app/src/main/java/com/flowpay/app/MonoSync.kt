@@ -344,6 +344,8 @@ object MonoSync {
                         // The rest in a minute, in a new pass; what was read is kept.
                         continueSoon(context)
                         apply(context)
+                        // A tick the bank made is not left showing as unpaid on the home screen.
+                        refreshWidget(context)
                         return
                     }
                     val part = parseMonoStatement(call(mono, "/personal/statement/${step.account}/${step.from}/$to", token), step.account)
@@ -358,6 +360,7 @@ object MonoSync {
             }
             mono.saveLoadingLeft(0)
             apply(context)
+            refreshWidget(context)
             mono.saveSync(System.currentTimeMillis(), "")
         } catch (stopped: CancellationException) {
             // The phone stopped the worker. Not a fault, and what was read is saved.
@@ -426,13 +429,15 @@ object MonoSync {
         val running = bankResumed(pays, mono.txs(), accountCurrencies(client), store.fxRate().first.sell, today)
         if (running != pays) store.savePays(running)
         if (mono.auto()) {
-            val marks = store.paidMarks(today)
-            val learned = monoMatches(
-                store.pays(), mono.txs(), marks, mono.rejected(), accountCurrencies(client),
-                today, store.fxRate().first.sell
-            ).filter { it.kind == MonoMatchKind.LEARNED }
-            if (learned.isNotEmpty()) {
-                store.savePaidMarks(learned.fold(marks) { all, match -> withMonoMark(all, match) }, today)
+            // Under the one lock every writer of the marks takes, on the marks as they
+            // are inside it (QuickReceiver.kt): a tick from the widget, the morning
+            // message or the open app landing meanwhile is not saved over.
+            store.updatePaidMarks(today) { marks ->
+                monoMatches(
+                    store.pays(), mono.txs(), marks, mono.rejected(), accountCurrencies(client),
+                    today, store.fxRate().first.sell
+                ).filter { it.kind == MonoMatchKind.LEARNED }
+                    .fold(marks) { all, match -> withMonoMark(all, match) }
             }
         }
         val jars = client.jars.associateBy { it.id }

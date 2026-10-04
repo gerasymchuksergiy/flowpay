@@ -59,8 +59,10 @@ fun Store.updatePaidMarks(
     today: LocalDate = LocalDate.now(),
     change: (List<PaidMark>) -> List<PaidMark>
 ): List<PaidMark> = synchronized(paidLock) {
-    val next = prunePaidMarks(change(paidMarks(today)), today)
-    savePaidMarks(next, today)
+    val now = paidMarks(today)
+    val next = prunePaidMarks(change(now), today)
+    // A pass that changed nothing writes nothing.
+    if (next != now) savePaidMarks(next, today)
     next
 }
 
