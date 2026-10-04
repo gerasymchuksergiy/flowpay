@@ -81,6 +81,9 @@ fun recentChange(
     return change.takeIf { it != 0.0 }
 }
 
+/** A button under the morning message: a web address to open, such as «Як скасувати». */
+data class DigestAction(val label: String, val url: String)
+
 data class Digest(
     val title: String,
     val lines: List<String>,
@@ -89,7 +92,15 @@ data class Digest(
      * threshold as said on exactly this, so it cannot be stamped as said on a
      * morning whose message did not carry it.
      */
-    val rateTargetSaid: Boolean = false
+    val rateTargetSaid: Boolean = false,
+    /**
+     * The keys of the say-once lines this message carries ([OnceLine]). The worker
+     * remembers exactly these — asked of the message, like [rateTargetSaid], so a
+     * line is never stamped as said on a morning that did not say it.
+     */
+    val said: List<String> = emptyList(),
+    /** Buttons under the message: «Як скасувати» for a trial about to charge. */
+    val actions: List<DigestAction> = emptyList()
 ) {
     /** Nothing happened. The caller sends no notification at all. */
     val empty: Boolean get() = title.isBlank()
@@ -144,7 +155,18 @@ fun digest(
      */
     paid: List<PaidMark> = emptyList(),
     /** Each wish's price as the previous message saw it, by id. See [recentChange]. */
-    lastSaid: Map<String, Double> = emptyMap()
+    lastSaid: Map<String, Double> = emptyMap(),
+    /**
+     * Said before everything else: tomorrow's charges the card cannot cover (see
+     * [shortTomorrowLine]). Money that will not be there tomorrow is the one thing
+     * in the message that has to be acted on today.
+     */
+    lead: List<String> = emptyList(),
+    /**
+     * Lines said once, already filtered against what was said before — a payment's
+     * life ([lifeLines]) and what the bank statement shows (Mono.kt).
+     */
+    once: List<OnceLine> = emptyList()
 ): Digest {
     // The rate and its source arrive apart, as the rest of the message needs only
     // the figure; the threshold needs both, so they are put back together for it.
@@ -155,6 +177,7 @@ fun digest(
         today.toEpochDay()
     )
     val news = buildList {
+        addAll(lead)
         // Leads, because it is the only line here the user asked for by name. The
         // rest is the app deciding something was worth saying.
         //
@@ -172,6 +195,10 @@ fun digest(
         problemLine(orders)?.let { add(it) }
         parcelLine(orders, today)?.let { add(it) }
         addAll(paymentLines(pays, today, holidays, paid))
+        // What happened to a payment rather than what is due on it: a cancellation
+        // whose charge should not have come, a promo about to end, the bank seeing
+        // a paused payment charge again, a charge missed or taken twice.
+        addAll(once.map { it.text })
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
         // Last: a window closing is worth a line, never the headline.
@@ -183,16 +210,28 @@ fun digest(
     // figure every one of the lines above is spent against, and it is never news.
     val trailer = freeCashLine(budget(income, monthlyTotal(pays, usdSellRate, today)))
 
+    // A trial about to charge is the line that most needs a way out under it: the
+    // service's own cancel page, one tap from the notification. Two at most, so
+    // the buttons still fit beside each other.
+    val actions = remindersDue(pays, today, holidays, paid)
+        .filter { it.cancelBy != null }
+        .take(2)
+        .map { DigestAction("Як скасувати ${it.pay.name}".take(ACTION_LABEL_MAX), cancelLink(it.pay).url) }
+    val said = once.map { it.key }
+
     // A single piece of news is its own headline. Hiding one sentence behind a
     // generic title would make the digest worse than the notification it replaced;
     // it is only when there are several that a name for the collection earns the
     // line it takes.
     return if (news.size == 1) {
-        Digest(news.first(), listOf(trailer), rateTargetSaid = rateLine != null)
+        Digest(news.first(), listOf(trailer), rateTargetSaid = rateLine != null, said = said, actions = actions)
     } else {
-        Digest("Зведення за день", news + trailer, rateTargetSaid = rateLine != null)
+        Digest("Зведення за день", news + trailer, rateTargetSaid = rateLine != null, said = said, actions = actions)
     }
 }
+
+/** A notification button holds a few words; a long name is cut rather than wrapped. */
+private const val ACTION_LABEL_MAX = 28
 
 /**
  * Parcels the carrier has reported a refusal, a return or an unknown number for.
@@ -254,7 +293,8 @@ private fun paymentLines(
     holidays: Set<Long>,
     marks: List<PaidMark>
 ): List<String> = remindersDue(pays, today, holidays, marks).map { reminder ->
-    val amount = amountLabel(reminder.pay.amount, reminder.pay.currency)
+    // What this charge takes, a promo price included — see [priceOn].
+    val amount = amountLabel(reminder.amount, reminder.pay.currency)
     val moved = reminder.movedFrom?.let { " (перенесено з ${dayMonth(it)})" }.orEmpty()
     // The last reminder before a free trial turns into a charge says until when it
     // can still be cancelled. Written here because this, not [reminderText], is

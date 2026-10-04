@@ -372,7 +372,30 @@ data class Pay(
      * the description he said «так» to. Empty until then. With it, the next charge
      * from that merchant ticks this payment by itself; see Mono.kt.
      */
-    val monoMerchant: String = ""
+    val monoMerchant: String = "",
+    /**
+     * The last day this payment takes money, as an epoch day; nought while it runs
+     * on. «Скасував ✓» sets it to the end of the paid period («діє до»),
+     * «Погасив достроково» to this month's payment, «Повернув» to yesterday. Every
+     * count asks [runsOn], so nothing after this day is counted anywhere.
+     */
+    val stopsAfter: Long = 0L,
+    /** Why [stopsAfter] is set: [STOP_CANCELLED], [STOP_PAID_OFF] or [STOP_RETURNED]. */
+    val stopReason: String = "",
+    /** The epoch day a pause began. Nought when the payment is not paused. */
+    val pausedFrom: Long = 0L,
+    /** Pauses already over, so the months they covered stay unasked. See PaymentsLife.kt. */
+    val pauses: List<PauseSpan> = emptyList(),
+    /**
+     * What a charge takes before [trialEnd]. Nought is a free trial, which is what
+     * every trial saved before this was: «150 ₴ до 1 лютого, далі 300 ₴» is a promo
+     * of 150 with 300 as [amount]. Read through [priceOn].
+     */
+    val promoPrice: Double = 0.0,
+    /** The owner's own «Як скасувати» address. Empty means the built-in one or a search. */
+    val cancelUrl: String = "",
+    /** The purchase a plan «частинами» pays for, by [Order.id]. Empty when none. */
+    val order: String = ""
 )
 data class Order(
     val id: String,
@@ -455,7 +478,12 @@ data class Order(
      */
     val returnBy: Long = 0L,
     /** The emoji picked by hand. Empty means "guess from the name" — see Emoji.kt. */
-    val emoji: String = ""
+    val emoji: String = "",
+    /**
+     * The epoch day this purchase went back and the plan «частинами» paying for it
+     * was closed («Повернув» on the plan — see PaymentsLife.kt). Nought otherwise.
+     */
+    val planReturned: Long = 0L
 )
 
 class MainActivity : ComponentActivity() {
@@ -1218,6 +1246,12 @@ fun payJson(pay: Pay): JSONObject = JSONObject()
     .put("ic", pay.instalments).put("is", pay.instalmentStart)
     // The owner's own «так», so a restore does not ask him again.
     .put("mm", pay.monoMerchant)
+    // A payment's life after it starts — PaymentsLife.kt. A stop or a pause lost
+    // here would come back from the bin or a backup charging again, and a promo
+    // price lost would read the discount as the full price.
+    .put("plsa", pay.stopsAfter).put("plsr", pay.stopReason)
+    .put("plpf", pay.pausedFrom).put("plps", pausesJson(pay.pauses))
+    .put("plpp", pay.promoPrice).put("plcu", pay.cancelUrl).put("plo", pay.order)
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
@@ -1246,7 +1280,16 @@ fun payOf(o: JSONObject): Pay = Pay(
     instalments = o.optInt("ic", 0).coerceAtLeast(0),
     instalmentStart = o.optLong("is", 0L).coerceAtLeast(0L),
     // Absent until a monobank charge was confirmed for it.
-    monoMerchant = o.optString("mm")
+    monoMerchant = o.optString("mm"),
+    // Absent on everything saved before a payment could stop, pause or run at a
+    // promo price: it runs, as everything did.
+    stopsAfter = o.optLong("plsa", 0L).coerceAtLeast(0L),
+    stopReason = o.optString("plsr"),
+    pausedFrom = o.optLong("plpf", 0L).coerceAtLeast(0L),
+    pauses = pausesOf(o.optJSONArray("plps")),
+    promoPrice = o.optDouble("plpp", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+    cancelUrl = o.optString("plcu"),
+    order = o.optString("plo")
 )
 
 fun orderJson(order: Order): JSONObject = JSONObject()
@@ -1270,6 +1313,8 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("dg", order.digital)
     .put("rb", order.returnBy)
     .put("em", order.emoji)
+    // The plan that paid for it was closed because it went back — PaymentsLife.kt.
+    .put("plr", order.planReturned)
 
 /**
  * A parcel read back off the phone.
@@ -1324,7 +1369,9 @@ fun orderOf(o: JSONObject): Order = Order(
     // Absent on everything filed before return windows were kept: none tracked.
     returnBy = o.optLong("rb", 0L),
     // Absent on everything saved before emoji existed: guessed from the name.
-    emoji = o.optString("em")
+    emoji = o.optString("em"),
+    // Absent on every purchase no plan «частинами» was closed for.
+    planReturned = o.optLong("plr", 0L).coerceAtLeast(0L)
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */

@@ -170,6 +170,41 @@ class MonoStore(context: Context) {
 
     fun saveFetchedUntil(map: Map<String, Long>) = prefs.edit { putString("until", JSONObject(map).toString()) }
 
+    // What the owner answered to the statement's questions (PaymentsLife.kt,
+    // Mono.kt). Kept here with the statement they are about, so «Відключити»
+    // forgets them together.
+
+    /** Cancelled payments' merchants watched for three months after they went. */
+    fun gone(): List<GoneMerchant> = goneOf(prefs.getString("pl_gone", "[]"))
+
+    fun saveGone(items: List<GoneMerchant>) = prefs.edit { putString("pl_gone", goneJson(items).toString()) }
+
+    /** «Ще чекаю»: payment name to the epoch day the «Мовчать» question may come back. */
+    fun waiting(): Map<String, Long> = runCatching {
+        val o = JSONObject(prefs.getString("pl_wait", "{}") ?: "{}")
+        o.keys().asSequence().associateWith { o.optLong(it) }
+    }.getOrDefault(emptyMap())
+
+    fun saveWaiting(name: String, until: Long) = prefs.edit {
+        val next = waiting().filterValues { it > java.time.LocalDate.now().toEpochDay() } + (name to until)
+        putString("pl_wait", JSONObject(next).toString())
+    }
+
+    /** Double charges the owner said «Усе гаразд» about, by [DoubleCharge.key]. */
+    fun doublesOk(): Set<String> = prefs.getStringSet("pl_dup", emptySet())?.toSet() ?: emptySet()
+
+    fun doubleOk(key: String) = prefs.edit { putStringSet("pl_dup", doublesOk() + key) }
+
+    /** Charges after a cancellation the owner said «Це не воно» about, by operation id. */
+    fun afterOk(): Set<String> = prefs.getStringSet("pl_after", emptySet())?.toSet() ?: emptySet()
+
+    fun afterIsOk(id: String) = prefs.edit { putStringSet("pl_after", afterOk() + id) }
+
+    /** Jar alerts already sent, by [JarAlert.key]. */
+    fun jarSaid(): Set<String> = prefs.getStringSet("pl_jar", emptySet())?.toSet() ?: emptySet()
+
+    fun saveJarSaid(keys: Set<String>) = prefs.edit { putStringSet("pl_jar", keys.toList().takeLast(200).toSet()) }
+
     /** Everything, and the key the token was sealed with. */
     fun forget() {
         prefs.edit { clear() }
@@ -383,8 +418,14 @@ object MonoSync {
         val mono = MonoStore(context)
         val client = mono.client() ?: return
         val store = Store(context)
+        val today = LocalDate.now()
+        // A paused payment whose confirmed merchant charged again runs again —
+        // before the matching below, so the charge that ended the pause is ticked
+        // in this same pass.
+        val pays = store.pays()
+        val running = bankResumed(pays, mono.txs(), accountCurrencies(client), store.fxRate().first.sell, today)
+        if (running != pays) store.savePays(running)
         if (mono.auto()) {
-            val today = LocalDate.now()
             val marks = store.paidMarks(today)
             val learned = monoMatches(
                 store.pays(), mono.txs(), marks, mono.rejected(), accountCurrencies(client),
@@ -398,7 +439,43 @@ object MonoSync {
         val wishes = store.wishes()
         val updated = wishes.map { wish -> jars[wish.jar]?.let(::jarUah)?.let { wish.copy(saved = it) } ?: wish }
         if (updated != wishes) store.saveWishes(updated)
+        // The one interruption monobank earns: a jar that now holds a wish's whole
+        // live price. Once per price level, like the target-price alert.
+        val said = mono.jarSaid()
+        val alerts = jarAlerts(updated, client.jars, said, today.toEpochDay())
+        if (alerts.isNotEmpty()) {
+            alerts.forEach { notifyJar(context, it) }
+            mono.saveJarSaid(said + alerts.map { it.key })
+        }
     }
+
+    /** «На банці 4 200 ₴, а ціна вже 3 999 ₴ — можна купувати», on the price alerts' channel. */
+    private fun notifyJar(context: Context, alert: JarAlert) {
+        val manager = context.getSystemService(android.app.NotificationManager::class.java)
+        manager.createNotificationChannel(
+            android.app.NotificationChannel(CHANNEL_PRICES, "Зміни цін", android.app.NotificationManager.IMPORTANCE_DEFAULT)
+        )
+        val allowed = android.os.Build.VERSION.SDK_INT < 33 ||
+            context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!allowed) return
+        val text = jarAlertText(alert)
+        androidx.core.app.NotificationManagerCompat.from(context).notify(
+            ("jar" + alert.key).hashCode(),
+            androidx.core.app.NotificationCompat.Builder(context, CHANNEL_PRICES)
+                .setSmallIcon(R.drawable.ic_tile)
+                .setContentTitle(alert.wish.name)
+                .setContentText(text)
+                .setStyle(androidx.core.app.NotificationCompat.BigTextStyle().bigText(text))
+                .setContentIntent(openTabIntent(context, TAB_WISHES))
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+                .build()
+        )
+    }
+
+    /** The channel the price alerts already use, so a person silences both in one place. */
+    private const val CHANNEL_PRICES = "price_changes"
 
     fun schedule(context: Context) {
         val request = PeriodicWorkRequestBuilder<MonoWorker>(6, TimeUnit.HOURS)

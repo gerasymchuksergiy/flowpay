@@ -144,7 +144,13 @@ fun expenseRows(
     marks: List<PaidMark>,
     orders: List<Order>,
     year: Int,
-    usdSellRate: Double
+    usdSellRate: Double,
+    /**
+     * What day the projection is made on, for the one check of whether a payment
+     * still charges ([isLive]). Defaulted because the rows are a projection "as
+     * things stand today" by definition, and every caller means the real today.
+     */
+    today: LocalDate = LocalDate.now()
 ): List<List<String>> = buildList {
     // What actually left the account, oldest first, which is the order a person
     // reads a year in.
@@ -168,7 +174,11 @@ fun expenseRows(
     // by year: nothing on the phone records what the list looked like in March, and
     // the note says what the yearly figure is twelve of so the reader can see that
     // this row is a projection rather than a record.
-    pays.forEach { pay ->
+    //
+    // Only payments that will charge again. A cancelled subscription past what was
+    // paid for, a paused one and a finished plan project nothing; what they did
+    // cost is in the «Сплачено» rows above, which is where it belongs.
+    pays.filter { isLive(it, today) }.forEach { pay ->
         add(
             listOf(
                 SECTION_SUBSCRIPTION,
@@ -221,9 +231,10 @@ fun expenseCsv(
     marks: List<PaidMark>,
     orders: List<Order>,
     year: Int,
-    usdSellRate: Double
+    usdSellRate: Double,
+    today: LocalDate = LocalDate.now()
 ): String {
-    val rows = listOf(CSV_HEADER) + expenseRows(pays, marks, orders, year, usdSellRate)
+    val rows = listOf(CSV_HEADER) + expenseRows(pays, marks, orders, year, usdSellRate, today)
     return CSV_BOM + rows.joinToString(CSV_EOL) { csvRow(it) } + CSV_EOL
 }
 
