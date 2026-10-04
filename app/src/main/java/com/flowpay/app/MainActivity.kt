@@ -80,6 +80,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -455,7 +456,28 @@ data class Order(
      */
     val returnBy: Long = 0L,
     /** The emoji picked by hand. Empty means "guess from the name" — see Emoji.kt. */
-    val emoji: String = ""
+    val emoji: String = "",
+    // ---- Parcels and purchases, second round (ParcelsMore.kt). JSON keys start "pk".
+    /**
+     * «Номер одержувача» — a parcel for somebody else is asked about with their
+     * number, which is the only way Nova Poshta answers it in full. Empty means the
+     * owner's own number from the settings, or none.
+     */
+    val recipientPhone: String = "",
+    /** «Повертаю»: a return under way or done. Null when none was started. See [Refund]. */
+    val refund: Refund? = null,
+    /** The last day of the warranty, as an epoch day. Zero means none recorded. */
+    val warrantyUntil: Long = 0L,
+    /** «Як тобі …?»: 4 😍, 3 🙂, 2 😐, 1 😞; nought unanswered. See [Delight]. */
+    val delight: Int = 0,
+    /** «Купити таке ще раз?»: 1 yes, -1 no, nought unanswered. */
+    val again: Int = 0,
+    /** Epoch day [delight] was answered. Zero when it was not. */
+    val delightDay: Long = 0L,
+    /** The wish's «Чому хочу», carried over at «Я купив це» so the answer has its reason beside it. */
+    val why: String = "",
+    /** The wish's category, carried over with it. Empty for a purchase that was never a wish. */
+    val category: String = ""
 )
 
 class MainActivity : ComponentActivity() {
@@ -1270,6 +1292,14 @@ fun orderJson(order: Order): JSONObject = JSONObject()
     .put("dg", order.digital)
     .put("rb", order.returnBy)
     .put("em", order.emoji)
+    // Parcels and purchases, second round: the other half is in orderOf, both
+    // round-trip tested in ParcelsMoreTest. The recipient's number travels with its
+    // parcel; the owner's own number is a preference and is in no backup at all.
+    .put("pkPh", order.recipientPhone)
+    .apply { order.refund?.let { put("pkRet", refundJson(it)) } }
+    .put("pkWu", order.warrantyUntil)
+    .put("pkJoy", order.delight).put("pkAgain", order.again).put("pkJoyDay", order.delightDay)
+    .put("pkWhy", order.why).put("pkCat", order.category)
 
 /**
  * A parcel read back off the phone.
@@ -1324,7 +1354,17 @@ fun orderOf(o: JSONObject): Order = Order(
     // Absent on everything filed before return windows were kept: none tracked.
     returnBy = o.optLong("rb", 0L),
     // Absent on everything saved before emoji existed: guessed from the name.
-    emoji = o.optString("em")
+    emoji = o.optString("em"),
+    // Absent on everything saved before 4 October 2026: no number of its own, no
+    // return, no warranty, no answer — which is exactly what those purchases have.
+    recipientPhone = o.optString("pkPh"),
+    refund = refundOf(o.optJSONObject("pkRet")),
+    warrantyUntil = o.optLong("pkWu", 0L),
+    delight = o.optInt("pkJoy", 0).takeIf { it in 0..4 } ?: 0,
+    again = o.optInt("pkAgain", 0).coerceIn(-1, 1),
+    delightDay = o.optLong("pkJoyDay", 0L),
+    why = o.optString("pkWhy"),
+    category = o.optString("pkCat")
 )
 
 /** A wish on its way to the bin, with enough on the row to recognise it by. */
@@ -1622,22 +1662,16 @@ suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
  * registration and no secret in the APK. Returns null when the number is not
  * theirs or the call failed, which is deliberately different from a parcel that
  * simply has not moved.
+ *
+ * [phone] is the recipient's or the sender's number, 380XXXXXXXXX, or empty. With
+ * it Nova Poshta fills in the cash on delivery, the delivery cost, paid storage and
+ * the sender; without it, it warns and leaves them out. It goes into this request
+ * body and nowhere else — never into a log, a URL or anything stored with it.
  */
-suspend fun parcelStatus(number: String): ParcelStatus? = withContext(Dispatchers.IO) {
+suspend fun parcelStatus(number: String, phone: String = ""): ParcelStatus? = withContext(Dispatchers.IO) {
     val clean = number.filter { !it.isWhitespace() }
     if (detectCarrier(clean) != CARRIER_NOVA_POSHTA) return@withContext null
-    val body = JSONObject()
-        .put("apiKey", "")
-        .put("modelName", "TrackingDocument")
-        .put("calledMethod", "getStatusDocuments")
-        .put(
-            "methodProperties",
-            JSONObject().put(
-                "Documents",
-                JSONArray().put(JSONObject().put("DocumentNumber", clean).put("Phone", ""))
-            )
-        )
-        .toString()
+    val body = trackingRequest(clean, phone).toString()
     val connection = URL("https://api.novaposhta.ua/v2.0/json/").openConnection() as HttpURLConnection
     connection.requestMethod = "POST"
     connection.doOutput = true
@@ -1786,7 +1820,15 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     staleMessage(staleCount(merged))?.let { say(it) }
                 }
             }
-            is AppCommand.AddShared -> noticeScope.launch { when (val link = sharedLink(command.text, wishes)) {
+            // A Nova Poshta waybill anywhere in the words of the message makes it a
+            // parcel, link or no link: an SMS from a shop carries the order's link
+            // beside the number, and the link used to win. Its own early branch, so
+            // whatever else the router learns to do with links comes after it. See
+            // [sharedParcelNumber]; a waybill already on the list opens its parcel.
+            is AppCommand.AddShared -> sharedParcelNumber(command.text)?.let { number ->
+                sharedTracking = number
+                tab = TAB_ORDERS
+            } ?: noticeScope.launch { when (val link = sharedLink(command.text, wishes)) {
                 // No link, but a parcel number — an SMS or a Viber message from the
                 // carrier. That is a purchase on its way, so it goes to Покупки
                 // with the number already typed.
@@ -2266,13 +2308,24 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                     usdSell,
                                     today
                                 )
+                                // Parcels that will still take money at the counter —
+                                // ParcelsMore.kt. They rain on their day, they are a
+                                // line under the free money, and the treat leaves
+                                // them room; the big figure itself is untouched.
+                                val cod = codDues(orders, today)
                                 SettingsScreen(
                                     recap = recap,
                                     onOpenRecap = { recapOpen = true },
                                     summary = summary,
-                                    weather = moneyWeather(pays, paid, today, usdSell, monthBudget.income, summary.freeCash),
+                                    weather = weatherWithParcels(
+                                        moneyWeather(pays, paid, today, usdSell, monthBudget.income, summary.freeCash),
+                                        cod, monthBudget.income, summary.freeCash
+                                    ),
                                     balance = monoBalance,
-                                    treat = monthTreat(wishes, summary.freeCash - summary.plannedMonthly, today.toEpochDay()),
+                                    treat = monthTreat(wishes, summary.freeCash - summary.plannedMonthly - codTotal(cod), today.toEpochDay()),
+                                    parcelsToPay = codLine(cod),
+                                    weatherParcels = codChips(cod, today),
+                                    owed = owed(orders, today.toEpochDay()),
                                     onOpenWish = { id ->
                                         tab = TAB_WISHES
                                         openedWish = id
@@ -2449,7 +2502,12 @@ fun WishlistScreen(
                                 // one number the verdict needs has to be carried
                                 // across now or it is gone for good.
                                 lowestSeen = lowestTracked(shown),
-                                digital = isDigitalStore(shown.url)
+                                digital = isDigitalStore(shown.url),
+                                // Gone with the wish otherwise: the reason it was
+                                // wanted, for «Як тобі …?» three weeks on, and the
+                                // category, for «Гаджети: 3 з 4 — 😍».
+                                why = shown.why,
+                                category = shown.category
                             ),
                             shown
                         )
@@ -2760,7 +2818,14 @@ fun WishlistScreen(
         )
     }
     if (adding) {
-        AddWishSheet({ setAdding(false) }, store.fxRate().first, knownCategories(items)) { wish ->
+        // What past purchases in a category were like, for the line under it.
+        val bought = remember { store.orders() }
+        AddWishSheet(
+            { setAdding(false) },
+            store.fxRate().first,
+            knownCategories(items),
+            categoryNote = { typed -> categoryJoy(bought, typed) }
+        ) { wish ->
             update { now -> now + wish }
             setAdding(false)
         }
@@ -2992,6 +3057,8 @@ fun AddWishSheet(
     rate: FxRate = FxRate(),
     /** The spellings already in use, so a new wish joins a category instead of forking it. */
     known: List<String> = emptyList(),
+    /** «Гаджети: 3 з 4 — 😍» for the category being typed — see ParcelsMore.kt. */
+    categoryNote: (String) -> CategoryJoy? = { null },
     add: (Wish) -> Unit
 ) {
     var link by remember { mutableStateOf("") }
@@ -3113,6 +3180,7 @@ fun AddWishSheet(
                 label = { Text("Категорія") }
             )
             CategorySuggestions(known, category) { category = it }
+            categoryNote(category)?.let { CategoryJoyLine(it) }
         } else if (offers.size > 1) {
             Text(
                 "На сторінці кілька цін. Оберіть ту, за якою стежити — " +
@@ -3174,6 +3242,7 @@ fun AddWishSheet(
             NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
             OutlinedTextField(category, { category = it }, Modifier.fillMaxWidth().padding(top = Space.md), label = { Text("Категорія") })
             CategorySuggestions(known, category) { category = it }
+            categoryNote(category)?.let { CategoryJoyLine(it) }
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = Space.sm)) }
         }
     }
@@ -6504,21 +6573,40 @@ fun OrdersScreen(
 ) {
     var tracking by remember { mutableStateOf<Order?>(null) }
     var closing by remember { mutableStateOf<Order?>(null) }
+    // The purchase whose «Повертаю» sheet is up.
+    var returning by remember { mutableStateOf<Order?>(null) }
     var checking by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     // Read once, so a session that crosses midnight cannot change its mind partway
     // down the list about which scans count as "сьогодні".
     val today = remember { LocalDate.now() }
+    val day = today.toEpochDay()
     // A closed purchase is history, not a parcel: it is not asked about again, and
     // it does not sit in the list of things still on their way.
     val open = items.filter { it.archivedDay == 0L }
-    val archived = items.filter { it.archivedDay > 0L }.sortedByDescending { it.archivedDay }
-    val trackable = open.count { isAutoTracked(it) }
+    // A purchase being sent back is filed, but it is an errand again until the money
+    // is back, so it stands with the parcels rather than in the archive.
+    val goingBack = items.filter { isReturning(it) }.sortedBy { it.refund?.startedDay ?: 0L }
+    val archived = items.filter { it.archivedDay > 0L && !isReturning(it) }.sortedByDescending { it.archivedDay }
+    val trackable = open.count { isAutoTracked(it) } + goingBack.count { followsReturn(it) }
     // Shut unless opened, and remembered like every other fold. Finished purchases
     // are the record, not the errand, and they sat open under the parcels in flight.
     var archiveOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ORDER_ARCHIVE)) }
+    // «На гарантії»: the archive narrowed to what is still covered. Not remembered —
+    // it is a question asked now, not a way of looking at the archive.
+    var warrantyOnly by remember { mutableStateOf(false) }
     val entrance = LocalEntrance.current
+
+    // A waybill shared in that is already a parcel here opens that parcel, rather
+    // than starting a second copy of it in the add form.
+    LaunchedEffect(sharedTracking) {
+        val number = sharedTracking ?: return@LaunchedEffect
+        knownParcel(items, number)?.let { known ->
+            onSharedTrackingUsed()
+            setOpened(known.id)
+        }
+    }
 
     fun checkAll() {
         scope.launch {
@@ -6526,19 +6614,38 @@ fun OrdersScreen(
             message = null
             var moved = 0
             val now = System.currentTimeMillis()
+            val myPhone = ParcelPrefs(context).phone()
             // Answers are collected by id and laid onto the list as it is when they
             // are all in, so a parcel added, edited or deleted during the check
             // stays the way it was left — see Merge.kt.
             val answers = items
                 .filter { it.archivedDay == 0L && isAutoTracked(it) }
                 .mapNotNull { order ->
-                    val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+                    val status = runCatching { parcelStatus(order.tracking, phoneFor(order, myPhone)) }.getOrNull()
                         ?: return@mapNotNull null
                     if (status.stage.isNotBlank() && status.stage != order.status) moved++
                     order.id to status
                 }
                 .toMap()
-            update { list -> list.map { order -> answers[order.id]?.let { applyStatus(order, it, now) } ?: order } }
+            // The waybills going back, each into its own return record.
+            val backAnswers = items
+                .filter { followsReturn(it) }
+                .mapNotNull { order ->
+                    val number = order.refund?.tracking ?: return@mapNotNull null
+                    val status = runCatching { parcelStatus(number, myPhone) }.getOrNull()
+                        ?: return@mapNotNull null
+                    if (status.stage == RECEIVED) moved++
+                    order.id to status
+                }
+                .toMap()
+            update { list ->
+                list.map { order ->
+                    answers[order.id]?.let { applyStatus(order, it, now) }
+                        ?: backAnswers[order.id]?.let { applyReturnStatus(order, it, now, LocalDate.now().toEpochDay()) }
+                        ?: order
+                }
+            }
+            runCatching { refreshPickupPoints(context, store.orders()) }
             checking = false
             message = when {
                 trackable == 0 -> "Немає номерів Нової Пошти для перевірки"
@@ -6575,7 +6682,9 @@ fun OrdersScreen(
             onApply = { change -> update { now -> now.map { if (it.id == openedOrder.id) change(it) else it } } },
             onEditTracking = { tracking = openedOrder },
             onDelete = { onDelete(openedOrder); setOpened(null) },
-            onClose = { closing = openedOrder }
+            onClose = { closing = openedOrder },
+            onEditReturn = { returning = openedOrder },
+            familiar = familiarPoint(items, openedOrder)
         )
     } else {
     Box {
@@ -6605,7 +6714,7 @@ fun OrdersScreen(
                     )
                 }
             }
-            if (open.isEmpty() && archived.isEmpty()) {
+            if (open.isEmpty() && archived.isEmpty() && goingBack.isEmpty()) {
                 item {
                     Column(Modifier.padding(horizontal = Space.screen)) {
                         EmptyInvite(
@@ -6644,6 +6753,20 @@ fun OrdersScreen(
                     onClose = { closing = order }
                 )
             }
+            // Things on their way back, after the things on their way here. Each is
+            // an errand until its money is back — see ParcelsMore.kt.
+            val backColours = tileColours(goingBack.map { "back-${it.id}" })
+            itemsIndexed(goingBack, key = { _, order -> "back-${order.id}" }) { index, order ->
+                ReturnRow(
+                    order = order,
+                    today = day,
+                    colour = if (order.refund?.let { refundOverdueDays(it, day) } != null) TilePink else backColours[index],
+                    modifier = Modifier.animateItem().revealOnEnter(open.size + index + 1, entrance).padding(bottom = Space.md),
+                    onOpen = { setOpened(order.id) },
+                    onShopGot = { update { now -> now.map { if (it.id == order.id) shopReceived(it, day) else it } } },
+                    onMoneyBack = { update { now -> now.map { if (it.id == order.id) moneyBack(it, day) else it } } }
+                )
+            }
             if (archived.isNotEmpty()) {
                 item {
                     // Folded, with the tally on the shut heading: the one line in the
@@ -6654,7 +6777,10 @@ fun OrdersScreen(
                         title = "Архів покупок",
                         summary = purchasesLabel(archived.size) + " · " + purchaseTallyLine(
                             purchaseTally(
-                                archived.map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
+                                // A purchase given back was not kept, so it is not
+                                // a purchase made on time or in a hurry.
+                                archived.filter { countsAsBought(it) }
+                                    .map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
                             )
                         ),
                         open = archiveOpen,
@@ -6666,8 +6792,26 @@ fun OrdersScreen(
                     ) {}
                 }
             }
+            val covered = archived.count { onWarranty(it, day) }
+            if (archived.isNotEmpty() && archiveOpen && covered > 0) {
+                item(key = "archive-filter") {
+                    Row(
+                        Modifier.padding(horizontal = Space.screen).padding(bottom = Space.xs),
+                        horizontalArrangement = Arrangement.spacedBy(Space.sm)
+                    ) {
+                        FilterChip(selected = !warrantyOnly, onClick = { warrantyOnly = false }, label = { Text("Усі") })
+                        FilterChip(
+                            selected = warrantyOnly,
+                            onClick = { warrantyOnly = true },
+                            label = { Text("На гарантії · $covered") },
+                            leadingIcon = { EmojiGlyph("🛡️", 16.dp) }
+                        )
+                    }
+                }
+            }
             if (archived.isNotEmpty() && archiveOpen) {
-                items(archived, key = { "archived-${it.id}" }) { order ->
+                val shownArchive = if (warrantyOnly && covered > 0) archived.filter { onWarranty(it, day) } else archived
+                items(shownArchive, key = { "archived-${it.id}" }) { order ->
                     ArchivedPurchase(
                         order = order,
                         onEdit = { closing = order },
@@ -6678,6 +6822,13 @@ fun OrdersScreen(
                         onDelete = { onDelete(order) },
                         onKeep = {
                             update { now -> now.map { if (it.id == order.id) it.copy(returnBy = 0L) else it } }
+                        },
+                        onReturn = { returning = order },
+                        onDelight = { answer ->
+                            update { now -> now.map { if (it.id == order.id) answerDelight(it, answer, day) else it } }
+                        },
+                        onAgain = { yes ->
+                            update { now -> now.map { if (it.id == order.id) answerAgain(it, yes) else it } }
                         }
                     )
                 }
@@ -6699,7 +6850,17 @@ fun OrdersScreen(
     // Outside the swap, so a sheet opened from the parcel page is not torn down
     // by the page closing underneath it.
     closing?.let { selected ->
-        CloseOrderSheet(selected, { closing = null }) { closed ->
+        CloseOrderSheet(
+            selected,
+            { closing = null },
+            // «Як на фото? Ні»: filed, and straight into «Повертаю».
+            onReturn = { filed ->
+                update { now -> now.map { if (it.id == filed.id) filed else it } }
+                closing = null
+                setOpened(null)
+                returning = filed
+            }
+        ) { closed ->
             update { now -> now.map { if (it.id == closed.id) closed else it } }
             closing = null
             // A closed purchase is history and leaves the list of things in
@@ -6707,10 +6868,21 @@ fun OrdersScreen(
             setOpened(null)
         }
     }
-    if (adding || sharedTracking != null) {
+    returning?.let { selected ->
+        // The purchase as it is now, so a sheet opened before a refresh landed
+        // does not save the stale copy back over it.
+        val current = items.firstOrNull { it.id == selected.id } ?: selected
+        ReturnSheet(current, day, { returning = null }) { changed ->
+            update { now -> now.map { if (it.id == changed.id) changed else it } }
+            returning = null
+        }
+    }
+    // A shared waybill that is already a parcel opens it instead — see above.
+    val sharedNew = sharedTracking?.takeIf { knownParcel(items, it) == null }
+    if (adding || sharedNew != null) {
         AddOrderSheet(
             close = { setAdding(false); onSharedTrackingUsed() },
-            initialTracking = sharedTracking.orEmpty()
+            initialTracking = sharedNew.orEmpty()
         ) { added ->
             update { now -> now + added }
             setAdding(false)
@@ -6718,10 +6890,14 @@ fun OrdersScreen(
         }
     }
     tracking?.let { selected ->
-        TrackingDialog(selected, { tracking = null }) { number, digital, name ->
+        TrackingDialog(selected, { tracking = null }) { number, digital, name, phone ->
             update { now ->
                 now.map {
-                    if (it.id == selected.id) it.copy(tracking = number, digital = digital, name = name) else it
+                    if (it.id == selected.id) {
+                        it.copy(tracking = number, digital = digital, name = name, recipientPhone = phone)
+                    } else {
+                        it
+                    }
                 }
             }
             tracking = null
@@ -6810,7 +6986,11 @@ fun OrderDetailScreen(
     onApply: ((Order) -> Order) -> Unit,
     onEditTracking: () -> Unit,
     onDelete: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    /** «Змінити повернення»: the return sheet for this purchase. */
+    onEditReturn: () -> Unit = {},
+    /** The owner has collected from this pickup point before — see [familiarPoint]. */
+    familiar: Boolean = false
 ) {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
@@ -6819,6 +6999,8 @@ fun OrderDetailScreen(
     var payOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_PAY)) }
     var optionsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_PARCEL_OPTIONS)) }
     val trackable = isAutoTracked(order)
+    // A purchase on its way back: the page leads with the return, not the delivery.
+    val goingBack = isReturning(order)
     // Everything below the rail is one carrier's answer. On anything that carrier
     // never answered for it would be a page of blanks — see [carrierSectionsApply].
     val carrier = carrierSectionsApply(order)
@@ -6829,26 +7011,54 @@ fun OrderDetailScreen(
     val today = remember { now.toLocalDate() }
     val zone = remember { java.time.ZoneId.systemDefault() }
     val details = order.details
+    val parcelPrefs = remember { ParcelPrefs(context) }
+    // The directory's word on the pickup point, a week old at most.
+    var point by remember(details.warehouseRef) { mutableStateOf(parcelPrefs.point(details.warehouseRef)) }
+    val myPhone = remember { parcelPrefs.phone() }
 
     fun refresh() {
         scope.launch {
             busy = true
-            val status = runCatching { parcelStatus(order.tracking) }.getOrNull()
+            val phone = phoneFor(order, parcelPrefs.phone())
+            val status = if (trackable && !goingBack) {
+                runCatching { parcelStatus(order.tracking, phone) }.getOrNull()
+            } else {
+                null
+            }
+            // The waybill going back, into the return's own record.
+            val back = order.refund?.takeIf { followsReturn(order) }?.let { refund ->
+                runCatching { parcelStatus(refund.tracking, parcelPrefs.phone()) }.getOrNull()
+            }
             busy = false
-            if (status == null) {
+            if (status == null && back == null) {
                 message = "Не вдалося отримати статус"
             } else {
                 message = null
-                onApply { current -> applyStatus(current, status, System.currentTimeMillis()) }
+                val at = System.currentTimeMillis()
+                onApply { current ->
+                    val delivered = status?.let { applyStatus(current, it, at) } ?: current
+                    back?.let { applyReturnStatus(delivered, it, at, LocalDate.now().toEpochDay()) } ?: delivered
+                }
             }
         }
     }
 
     // A parcel added before this page existed has none of these fields stored, and
     // opening it to a page of blanks would read as a carrier that knows nothing.
-    // One fetch fills it in; afterwards the button above does.
+    // One fetch fills it in; afterwards the button above does. A parcel waiting at
+    // a point stored before the point's id was kept is asked once for it as well.
     LaunchedEffect(order.id) {
-        if (trackable && details.isEmpty) refresh()
+        val noPointId = order.status == AT_BRANCH && order.archivedDay == 0L && details.warehouseRef.isBlank()
+        if (trackable && !goingBack && (details.isEmpty || noPointId)) refresh()
+    }
+    // The pickup point's hours, asked once a week per point.
+    LaunchedEffect(details.warehouseRef, order.status) {
+        val ref = pointToAsk(order) ?: return@LaunchedEffect
+        if (pointFresh(point, System.currentTimeMillis())) return@LaunchedEffect
+        fetchPickupPoint(ref)?.let { fresh ->
+            parcelPrefs.savePoint(fresh)
+            point = fresh
+        }
     }
 
     LazyColumn(contentPadding = PaddingValues(bottom = navClearance() + Space.huge)) {
@@ -6861,14 +7071,18 @@ fun OrderDetailScreen(
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Назад", tint = TextPrimary)
                 }
                 Text(
-                    if (order.digital) "ПОКУПКА" else "ПОСИЛКА",
+                    when {
+                        goingBack -> "ПОВЕРНЕННЯ"
+                        order.digital -> "ПОКУПКА"
+                        else -> "ПОСИЛКА"
+                    },
                     color = Accent,
                     fontSize = Type.overlineSize,
                     fontWeight = Type.strong,
                     letterSpacing = Type.overlineTracking
                 )
                 Spacer(Modifier.weight(1f))
-                if (trackable) {
+                if ((trackable && !goingBack) || followsReturn(order)) {
                     IconButton(onClick = { refresh() }, enabled = !busy) {
                         if (busy) BusyMark() else Icon(Icons.Default.Sync, "Оновити", tint = TextSecondary)
                     }
@@ -6952,7 +7166,9 @@ fun OrderDetailScreen(
                         modifier = Modifier.padding(top = Space.xs)
                     )
                 }
-                untrackedNote(order)?.let { note ->
+                // About following the delivery; on a return it would read as about
+                // the waybill going back, which the return block speaks for.
+                untrackedNote(order)?.takeIf { !goingBack }?.let { note ->
                     Text(
                         note,
                         color = TextDisabled,
@@ -6969,23 +7185,37 @@ fun OrderDetailScreen(
             // one of the four dots, so the dot below stays where the parcel really
             // was. Saying that is the difference between a parcel visibly stuck and
             // a parcel that looks like it is still fine where it is.
-            if (order.problem) {
+            if (order.problem && !goingBack) {
                 FactNote(STAGE_HELD_NOTE, TextSecondary)
             }
-            if (!order.digital) {
-                StageRail(
-                    stages = PARCEL_STAGES,
-                    current = order.status,
-                    modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md),
-                    label = { stageLabel(it, order.statusCode) }
-                ) { picked -> onChange(order.copy(status = picked)) }
+            if (goingBack) {
+                // The return leads: its own three stops, what is owed, the waybill
+                // going back. The delivery's own story stays below, unchanged.
+                val day = today.toEpochDay()
+                ReturnBlock(
+                    order,
+                    day,
+                    Modifier.padding(horizontal = Space.screen).padding(top = Space.md),
+                    onShopGot = { onApply { shopReceived(it, day) } },
+                    onMoneyBack = { onApply { moneyBack(it, day) } },
+                    onEdit = onEditReturn
+                )
+            } else {
+                if (!order.digital) {
+                    StageRail(
+                        stages = PARCEL_STAGES,
+                        current = order.status,
+                        modifier = Modifier.padding(horizontal = Space.lg, vertical = Space.md),
+                        label = { stageLabel(it, order.statusCode) }
+                    ) { picked -> onChange(order.copy(status = picked)) }
+                }
+                // Up here rather than at the foot of the page: on a parcel the app does
+                // not follow, and on a download, it is most of what the page is for.
+                CloseOrderButton(
+                    order,
+                    Modifier.padding(horizontal = Space.screen).padding(top = Space.sm)
+                ) { onClose() }
             }
-            // Up here rather than at the foot of the page: on a parcel the app does
-            // not follow, and on a download, it is most of what the page is for.
-            CloseOrderButton(
-                order,
-                Modifier.padding(horizontal = Space.screen).padding(top = Space.sm)
-            ) { onClose() }
             trackingPage?.let { site ->
                 TextButton(
                     { openLink(context, site.url) },
@@ -7061,6 +7291,14 @@ fun OrderDetailScreen(
                     details.cityRecipient
                 )
             )
+            // The point's hours and what it has, while a parcel waits there. At a
+            // point collected from before, only «скоро зачиняється» — see ParcelsMore.kt.
+            point?.takeIf { pointToAsk(order) != null }?.let { known ->
+                PointChipsRow(
+                    pickupChips(known, LocalDateTime.now(), familiar),
+                    Modifier.padding(horizontal = Space.screen).padding(vertical = Space.xs)
+                )
+            }
             Fact(
                 "Тип точки",
                 warehouseCategoryLabel(details.warehouseCategory)
@@ -7127,6 +7365,8 @@ fun OrderDetailScreen(
                     Fact("Об'ємна вага", weightLabel(details.volumeWeight).takeIf { details.volumeWeight > 0 }.orEmpty())
                     Fact("Місць", seatsLabel(details.seats).takeIf { details.seats > 0 }.orEmpty())
                     Fact("Тип відправлення", cargoTypeLabel(details.cargoType))
+                    // Only with a phone number on the request — see [parcelStatus].
+                    FactBlock("Відправник", details.sender)
                 }
             }
         }
@@ -7145,8 +7385,20 @@ fun OrderDetailScreen(
                         "До сплати при отриманні",
                         money(order.amountToPay).takeIf { order.amountToPay > 0 }.orEmpty()
                     )
+                    // The next three arrive only when the request carries the
+                    // recipient's phone; without it they are blank and not drawn.
+                    Fact("Післяплата за товар", money(details.goodsToPay).takeIf { details.goodsToPay > 0 }.orEmpty())
+                    Fact("Вартість доставки", money(details.deliveryCost).takeIf { details.deliveryCost > 0 }.orEmpty())
+                    Fact(
+                        "Платне зберігання",
+                        money(details.storageCharged).takeIf { details.storageCharged > 0 }.orEmpty(),
+                        alarm = true
+                    )
                     Fact("Доставку оплачує", payerLabel(details.payerType))
                     Fact("Спосіб оплати", paymentMethodLabel(details.paymentMethod))
+                    if (trackable && phoneFor(order, myPhone).isEmpty()) {
+                        FactNote(PHONE_HINT)
+                    }
                 }
             }
         }
@@ -7156,11 +7408,13 @@ fun OrderDetailScreen(
         // where the parcel is, and this is the part of it nobody came for. The
         // summary names them, so a shut fold still says what is inside it.
         val options = parcelOptions(details)
-        if (carrier && options.isNotEmpty()) {
+        // Shown for every Nova Poshta parcel now, because the one thing everything
+        // in it leads to — Nova Poshta's own app — is a button here.
+        if (carrier && (options.isNotEmpty() || trackable)) {
             item {
                 CollapsibleSection(
                     "Що з нею ще можна зробити",
-                    parcelOptionsSummary(details),
+                    parcelOptionsSummary(details).ifBlank { "відкрити в Новій пошті" },
                     optionsOpen,
                     {
                         optionsOpen = it
@@ -7170,7 +7424,14 @@ fun OrderDetailScreen(
                 ) {
                     Column {
                         for (option in options) FactNote(option, TextSecondary)
-                        FactNote("Робиться це в застосунку або на сайті Нової Пошти.")
+                        if (options.isNotEmpty()) {
+                            FactNote("Робиться це в застосунку або на сайті Нової Пошти.")
+                        }
+                        // The new app, else the old one, else the tracking page.
+                        TextButton(
+                            { openNovaPoshta(context, order.tracking) },
+                            Modifier.padding(horizontal = Space.sm)
+                        ) { Text("Відкрити в Новій пошті ↗") }
                     }
                 }
             }
@@ -7560,6 +7821,16 @@ fun ParcelRow(
                 if (tail.isNotBlank()) {
                     Text(tail, color = softInkOn(colour), fontSize = Type.captionSize, style = Tabular)
                 }
+                // What the carrier will still take at the counter — ParcelsMore.kt.
+                if (order.amountToPay > 0.0 && order.status != RECEIVED) {
+                    Text(
+                        "До сплати при отриманні ${money(order.amountToPay)}",
+                        color = softInkOn(colour),
+                        fontSize = Type.captionSize,
+                        fontWeight = Type.medium,
+                        style = Tabular
+                    )
+                }
                 // The one fact in the list that costs money to miss.
                 if (order.paidStorageFrom > 0) {
                     val left = freeStorageDaysLeft(LocalDate.ofEpochDay(order.paidStorageFrom), today) ?: 0
@@ -7678,10 +7949,17 @@ fun ArchivedPurchase(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     /** «Залишаю»: the window is no longer worth a reminder. */
-    onKeep: () -> Unit = {}
+    onKeep: () -> Unit = {},
+    /** «↩️ Повертаю», beside «Залишаю» while the window is open. */
+    onReturn: () -> Unit = {},
+    /** «Як тобі …?» answered. */
+    onDelight: (Delight) -> Unit = {},
+    /** «Купити таке ще раз?» answered. */
+    onAgain: (Boolean) -> Unit = {}
 ) {
     val review = purchaseReview(order.paid, order.lowestSeen, order.uses)
     val today = remember { LocalDate.now().toEpochDay() }
+    val givenBack = isRefunded(order)
     Card(
         Modifier.padding(horizontal = Space.screen, vertical = Space.xs).fillMaxWidth().litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceLow),
@@ -7699,21 +7977,41 @@ fun ArchivedPurchase(
                     overflow = TextOverflow.Ellipsis
                 )
                 Spacer(Modifier.width(Space.md))
-                VerdictChip(
-                    purchaseVerdictLabel(review.verdict),
-                    icon = Icons.Default.TaskAlt,
-                    tint = verdictInk(review.verdict),
-                    corners = purchaseVerdictCorners(review.verdict)
-                )
+                if (givenBack) {
+                    // Not a verdict: a purchase given back was not kept, so it is
+                    // neither on time nor in a hurry.
+                    VerdictChip("Повернено", icon = Icons.AutoMirrored.Filled.Undo, tint = TextSecondary)
+                } else {
+                    VerdictChip(
+                        purchaseVerdictLabel(review.verdict),
+                        icon = Icons.Default.TaskAlt,
+                        tint = verdictInk(review.verdict),
+                        corners = purchaseVerdictCorners(review.verdict)
+                    )
+                }
             }
             Text(
-                purchaseVerdictDetail(review),
+                order.refund?.takeIf { givenBack }?.let { refund ->
+                    "Гроші повернулись ${formatDate(LocalDate.ofEpochDay(refund.backDay))} · ${money(refund.amount)}"
+                } ?: purchaseVerdictDetail(review),
                 color = TextSecondary,
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine,
                 modifier = Modifier.padding(top = Space.sm)
             )
-            costPerUseLine(review)?.let {
+            warrantyChip(order, today)?.let { chip ->
+                Row(Modifier.padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+                    EmojiGlyph("🛡️", 16.dp)
+                    Spacer(Modifier.width(Space.xs))
+                    Text(chip, color = TextSecondary, fontSize = Type.captionSize)
+                }
+            }
+            if (delightDue(order, today)) {
+                DelightQuestion(order, onDelight, onAgain)
+            } else {
+                delightAnswer(order)?.let { DelightAnswerView(it) }
+            }
+            costPerUseLine(review)?.takeIf { !givenBack }?.let {
                 Row(
                     Modifier.fillMaxWidth().padding(top = Space.sm),
                     verticalAlignment = Alignment.CenterVertically
@@ -7732,15 +8030,19 @@ fun ArchivedPurchase(
                 modifier = Modifier.padding(top = Space.xs)
             )
             returnLine(order, today)?.let { line ->
-                Row(Modifier.padding(top = Space.xs), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        line,
-                        Modifier.weight(1f),
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine
-                    )
+                Text(
+                    line,
+                    Modifier.padding(top = Space.xs),
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onKeep) { Text("Залишаю") }
+                    TextButton(onReturn) {
+                        EmojiGlyph("↩️", 16.dp)
+                        Text(" Повертаю")
+                    }
                 }
             }
             Row(Modifier.padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
@@ -7888,11 +8190,21 @@ fun SettingsScreen(
     onRestore: (String) -> Unit,
     onDropFromBin: (String) -> Unit,
     onEmptyBin: () -> Unit,
-    onImported: () -> Unit
+    onImported: () -> Unit,
+    /** «ще 2 посилки до оплати: 1 498 ₴», or null when no parcel asks for money. */
+    parcelsToPay: String? = null,
+    /** The parcels' money inside the forecast, day by day. */
+    weatherParcels: List<CodChip> = emptyList(),
+    /** «Мені винні»: returns still waiting for their money. Null when none. */
+    owed: Owed? = null
 ) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     var checking by remember { mutableStateOf(false) }
+    // «Мій номер для Нової пошти» — a preference of this phone, in no backup.
+    val parcelPrefs = remember { ParcelPrefs(context) }
+    var novaPhone by remember { mutableStateOf(parcelPrefs.phone()) }
+    var phoneOpen by remember { mutableStateOf(false) }
     var available by remember { mutableStateOf<UpdateInfo?>(null) }
     val scope = rememberCoroutineScope()
     val today = remember { LocalDate.now().toEpochDay() }
@@ -8036,10 +8348,14 @@ fun SettingsScreen(
                         }
                     )
 
+                    // Below the panel rather than inside it: the figure is income less
+                    // the standing costs, and a parcel's money is said beside it.
+                    parcelsToPay?.let { ParcelsToPayLine(it) }
+
                     // The week ahead as weather: a rainy Wednesday seen on Monday.
                     if (weather.isNotEmpty()) {
                         Spacer(Modifier.height(Space.md))
-                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance), balance)
+                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance), balance, weatherParcels)
                     }
                     // Four tiles, each the one figure its own tab is about, each a door
                     // into that tab. Bento rather than a column of rows: the four
@@ -8099,6 +8415,21 @@ fun SettingsScreen(
                             colour = TileSky,
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         ) { onOpenTab(TAB_PAYMENTS) }
+                    }
+
+                    // Money owed back for things returned. Pink once a shop is past
+                    // its days; until then it is simply money on its way.
+                    owed?.let { back ->
+                        Spacer(Modifier.height(Space.md))
+                        OverviewTile(
+                            "Мені винні",
+                            money(back.total),
+                            owedCaption(back),
+                            emoji = "💸",
+                            colour = if (back.overdue > 0) TilePink else TileMint,
+                            modifier = Modifier.fillMaxWidth().revealOnEnter(5, entrance),
+                            alarm = back.overdue > 0
+                        ) { onOpenTab(TAB_ORDERS) }
                     }
 
                     // Not a warning but a permission: the one thing that would fit.
@@ -8381,6 +8712,19 @@ fun SettingsScreen(
                     "Вішлісти й фінанси зберігаються лише на телефоні. Оцінка товару " +
                         "надсилає Google назву й опис товару — без ціни і без ваших сум."
                 )
+                // Optional. With it Nova Poshta answers in full — the cash on
+                // delivery above all, which the forecast counts.
+                SettingsRow(
+                    Icons.Default.Phone,
+                    "Мій номер для Нової пошти",
+                    if (novaPhone.isBlank()) {
+                        "Не вказано. З ним пошта показує суму до сплати при отриманні, " +
+                            "вартість доставки й відправника"
+                    } else {
+                        "${maskedPhone(novaPhone)} · лише на цьому телефоні"
+                    },
+                    onClick = { phoneOpen = true }
+                )
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 MonoSettingsItem { monoOpen = true }
                 ListItem(
@@ -8580,6 +8924,11 @@ fun SettingsScreen(
         CollapsingTitle("Огляд", listState)
     }
     if (monoOpen) MonoSheet { monoOpen = false }
+    if (phoneOpen) {
+        NovaPhoneDialog(novaPhone, { phoneOpen = false }) { typed ->
+            parcelPrefs.savePhone(typed).also { saved -> if (saved) novaPhone = parcelPrefs.phone() }
+        }
+    }
     available?.let { update ->
         AlertDialog(
             onDismissRequest = { available = null },
@@ -8846,7 +9195,13 @@ fun BoughtSheet(wish: Wish, close: () -> Unit, confirm: (tracking: String, paid:
  * all — a verdict computed from a figure nobody could fix would be decoration.
  */
 @Composable
-fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
+fun CloseOrderSheet(
+    order: Order,
+    close: () -> Unit,
+    /** «Не таке, як на фото»: the purchase filed, for the return sheet to take over. */
+    onReturn: ((Order) -> Unit)? = null,
+    save: (Order) -> Unit
+) {
     var paidText by remember(order.id) {
         mutableStateOf(amountText(if (order.paid > 0) order.paid else order.price))
     }
@@ -8858,28 +9213,34 @@ fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
     // Only asked when the purchase is being filed. Later edits are about use.
     val filing = order.archivedDay <= 0L
     var returnDays by remember(order.id) { mutableIntStateOf(defaultReturnDays(order)) }
+    // The warranty runs from the day the carrier says it was collected, else from
+    // the day it is filed. Asked when filing, and changeable later from the archive.
+    val today = remember { LocalDate.now() }
+    val filedDay = order.archivedDay.takeIf { it > 0L } ?: today.toEpochDay()
+    val warrantyFrom = remember(order.id) { warrantyStart(order, filedDay) }
+    var warrantyUntil by remember(order.id) { mutableLongStateOf(order.warrantyUntil) }
+
+    /** The purchase as this sheet would file it. */
+    fun filed(): Order = order.copy(
+        paid = paid,
+        uses = uses.coerceAtLeast(0),
+        status = RECEIVED,
+        // Filed on the day it was closed, and never re-dated by a later
+        // correction to the use count.
+        archivedDay = filedDay,
+        returnBy = if (filing) {
+            returnDays.takeIf { it > 0 }?.let { today.toEpochDay() + it } ?: 0L
+        } else {
+            order.returnBy
+        },
+        warrantyUntil = warrantyUntil
+    )
+
     FormSheet(
         title = if (order.archivedDay > 0L) "Покупка в архіві" else "Завершити покупку",
         confirmLabel = if (order.archivedDay > 0L) "Зберегти" else "В архів",
         confirmEnabled = paid > 0.0,
-        onConfirm = {
-            save(
-                order.copy(
-                    paid = paid,
-                    uses = uses.coerceAtLeast(0),
-                    status = RECEIVED,
-                    // Filed on the day it was closed, and never re-dated by a later
-                    // correction to the use count.
-                    archivedDay = order.archivedDay.takeIf { it > 0L }
-                        ?: LocalDate.now().toEpochDay(),
-                    returnBy = if (filing) {
-                        returnDays.takeIf { it > 0 }?.let { LocalDate.now().toEpochDay() + it } ?: 0L
-                    } else {
-                        order.returnBy
-                    }
-                )
-            )
-        },
+        onConfirm = { save(filed()) },
         onDismiss = close
     ) {
         Text(order.name, fontSize = Type.captionSize, color = TextSecondary)
@@ -8910,6 +9271,22 @@ fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
                 lineHeight = Type.captionLine,
                 modifier = Modifier.padding(top = Space.xs)
             )
+            // «Як на фото? Ні» — the quick way into a return, at the moment the
+            // parcel has just been opened. Filed with what is typed above.
+            if (onReturn != null && !order.digital) {
+                TextButton(
+                    { onReturn(filed()) },
+                    Modifier.padding(top = Space.xs),
+                    enabled = paid > 0.0
+                ) {
+                    Text("Не таке, як на фото? ")
+                    EmojiGlyph("↩️", 16.dp)
+                    Text(" Повертаю")
+                }
+            }
+        }
+        if (!isRefunded(order)) {
+            WarrantyPicker(warrantyFrom, warrantyUntil, today) { warrantyUntil = it }
         }
         OutlinedTextField(
             usesText,
@@ -8928,7 +9305,8 @@ fun CloseOrderSheet(order: Order, close: () -> Unit, save: (Order) -> Unit) {
             lineHeight = Type.captionLine,
             modifier = Modifier.padding(top = Space.sm)
         )
-        if (paid > 0.0) {
+        // A purchase sent back is not judged: it was not kept.
+        if (paid > 0.0 && countsAsBought(order)) {
             val review = purchaseReview(paid, order.lowestSeen, uses)
             Text(
                 purchaseVerdictLabel(review.verdict),
@@ -9222,7 +9600,7 @@ fun BillingSegments(billingMonth: Int, today: LocalDate, set: (Int) -> Unit) {
 fun TrackingDialog(
     order: Order,
     close: () -> Unit,
-    save: (tracking: String, digital: Boolean, name: String) -> Unit
+    save: (tracking: String, digital: Boolean, name: String, phone: String) -> Unit
 ) {
     var number by remember { mutableStateOf(order.tracking) }
     // Editable, because a purchase added from a page that would not open is named
@@ -9231,6 +9609,8 @@ fun TrackingDialog(
     // The kind is corrected here as well, because the shop list in Purchases.kt
     // guesses and this is where a wrong guess is noticed.
     var digital by remember { mutableStateOf(order.digital) }
+    // A parcel for somebody else: their number, so Nova Poshta answers in full.
+    var phone by remember { mutableStateOf(order.recipientPhone) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text(if (digital) "Покупка" else "Трек-номер") },
@@ -9252,11 +9632,23 @@ fun TrackingDialog(
                         label = { Text("Номер відправлення") },
                         singleLine = true
                     )
+                    if (detectCarrier(number) == CARRIER_NOVA_POSHTA) {
+                        RecipientPhoneField(phone) { phone = it }
+                    }
                 }
             }
         },
         confirmButton = {
-            Button({ save(if (digital) "" else number.trim(), digital, name.trim().ifBlank { order.name }) }) {
+            Button({
+                save(
+                    if (digital) "" else number.trim(),
+                    digital,
+                    name.trim().ifBlank { order.name },
+                    // Kept only when it reads as a number; anything else is dropped
+                    // rather than sent to the carrier as if it were one.
+                    if (digital) "" else normalizedPhone(phone)
+                )
+            }) {
                 Text("Зберегти")
             }
         },

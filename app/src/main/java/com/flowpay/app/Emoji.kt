@@ -134,6 +134,7 @@ fun recapEmoji(kind: RecapKind): String = when (kind) {
     RecapKind.DEAREST_WISH -> "💎"
     RecapKind.PATIENCE_PAID -> "🎯"
     RecapKind.CHEAPEST_BOUGHT -> "🪙"
+    RecapKind.DELIGHTED -> "😍"
     RecapKind.MONTH_ON_MONTH -> "📊"
     RecapKind.COMMITTED_SHARE -> "🍰"
     RecapKind.STANDING_COSTS -> "🧾"

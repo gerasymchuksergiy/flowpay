@@ -2,6 +2,12 @@
  <uses-permission android:name="android.permission.INTERNET"/>
  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+ <!-- «Відкрити в Новій пошті»: Android 11+ hides other apps unless named here,
+      and the launcher intent for them would come back null. ParcelsNet.kt. -->
+ <queries>
+  <package android:name="eu.novapost"/>
+  <package android:name="ua.novaposhtaa"/>
+ </queries>
  <application
   android:theme="@style/Theme.FlowPay"
   android:label="FlowPay"

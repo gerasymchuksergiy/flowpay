@@ -117,17 +117,27 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             }
 
         val parcels = store.orders()
+        // The owner's number for Nova Poshta, when given — see ParcelsMore.kt.
+        val myPhone = ParcelPrefs(applicationContext).phone()
         // A filed purchase is history and a download has no carrier, so neither is
         // asked about. The filed ones used to be asked twice a day for ever.
         fun followed(order: Order) = order.archivedDay == 0L && isAutoTracked(order)
-        val trackable = parcels.filter { followed(it) }
+        // A purchase being sent back is filed, so the line above skips it; its
+        // return waybill is followed on its own, into its own fields.
+        val trackable = parcels.filter { followed(it) || followsReturn(it) }
         var parcelsRead = 0
         val checkedAt = System.currentTimeMillis()
         val freshParcels = parcels.map { order ->
-            if (!followed(order) || System.currentTimeMillis() > deadline + PARCEL_BUDGET_MS) {
-                return@map order
+            if (System.currentTimeMillis() > deadline + PARCEL_BUDGET_MS) return@map order
+            if (followsReturn(order)) {
+                val refund = order.refund ?: return@map order
+                val back = runCatching { parcelStatus(refund.tracking, myPhone) }.getOrNull() ?: return@map order
+                parcelsRead++
+                return@map applyReturnStatus(order, back, checkedAt, today)
             }
-            val status = runCatching { parcelStatus(order.tracking) }.getOrNull() ?: return@map order
+            if (!followed(order)) return@map order
+            val status = runCatching { parcelStatus(order.tracking, phoneFor(order, myPhone)) }.getOrNull()
+                ?: return@map order
             parcelsRead++
             // A parcel changing stage is news, not an emergency: it goes into the
             // morning digest, which says which parcel needs collecting rather than
@@ -148,6 +158,15 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
             store.saveOrders(mergeById(store.orders(), parcels, freshParcels) { it.id })
         }
         store.saveAlerted(alerted)
+        // The hours of the points parcels are waiting at, asked once a week each.
+        // Never allowed to fail the pass: they are a nicety on the parcel page.
+        try {
+            refreshPickupPoints(applicationContext, freshParcels)
+        } catch (stopped: kotlinx.coroutines.CancellationException) {
+            throw stopped
+        } catch (failed: Exception) {
+            // Nothing: the next pass asks again.
+        }
 
         // Once a year, and never in a way that can fail the pass. The payment
         // reminder shifts off weekends with or without this; the calendar only

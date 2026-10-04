@@ -54,7 +54,9 @@ fun WeatherTile(
     today: LocalDate,
     modifier: Modifier = Modifier,
     /** The card's own money from monobank, when connected — see Mono.kt. */
-    balance: Double? = null
+    balance: Double? = null,
+    /** Parcels that take money at the counter on these days — see ParcelsMore.kt. */
+    parcels: List<CodChip> = emptyList()
 ) {
     BentoTile(TileSky, modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -91,6 +93,10 @@ fun WeatherTile(
                     )
                 }
             }
+        }
+        if (parcels.isNotEmpty()) {
+            Spacer(Modifier.height(Space.sm))
+            CodChipsRow(parcels, TileSky)
         }
         Spacer(Modifier.height(Space.sm))
         TileCaption(weatherLine(days, today), TileSky)

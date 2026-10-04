@@ -189,11 +189,16 @@ fun expenseRows(
             // What was handed over, not what the shop listed. A promo code or a
             // different shop entirely is the difference, and the listed price goes
             // in the note rather than in the column that gets totalled.
-            val spent = if (order.paid > 0.0) order.paid else order.price
-            val note = if (order.paid > 0.0 && order.price > 0.0 && order.paid != order.price) {
-                "у списку було ${csvAmount(order.price)}"
-            } else {
-                ""
+            // Money that came back on a return is not money spent: the row keeps the
+            // purchase and says what was refunded, and the column that gets totalled
+            // holds what is still out of pocket. See ParcelsMore.kt.
+            val back = order.refund?.takeIf { it.backDay > 0L }?.amount ?: 0.0
+            val spent = ((if (order.paid > 0.0) order.paid else order.price) - back).coerceAtLeast(0.0)
+            val note = when {
+                back > 0.0 -> "повернено ${csvAmount(back)}"
+                order.paid > 0.0 && order.price > 0.0 && order.paid != order.price ->
+                    "у списку було ${csvAmount(order.price)}"
+                else -> ""
             }
             add(
                 listOf(

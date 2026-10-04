@@ -89,7 +89,12 @@ data class Digest(
      * threshold as said on exactly this, so it cannot be stamped as said on a
      * morning whose message did not carry it.
      */
-    val rateTargetSaid: Boolean = false
+    val rateTargetSaid: Boolean = false,
+    /**
+     * The said-once lines this message carried (see [purchaseOnceLines]), for the
+     * worker to remember so tomorrow's message does not carry them again.
+     */
+    val onceKeys: List<String> = emptyList()
 ) {
     /** Nothing happened. The caller sends no notification at all. */
     val empty: Boolean get() = title.isBlank()
@@ -144,8 +149,16 @@ fun digest(
      */
     paid: List<PaidMark> = emptyList(),
     /** Each wish's price as the previous message saw it, by id. See [recentChange]. */
-    lastSaid: Map<String, Double> = emptyMap()
+    lastSaid: Map<String, Double> = emptyMap(),
+    /** What the directory said about pickup points, by id — for «забрати можна до 21:00». */
+    points: Map<String, PickupPoint> = emptyMap(),
+    /** The moment the message is built, for the pickup hours. The digest's own hour by default. */
+    now: java.time.LocalDateTime = today.atTime(DEFAULT_DIGEST_HOUR, 0),
+    /** Keys of the said-once lines already carried by an earlier message. */
+    said: Set<String> = emptySet()
 ): Digest {
+    // Said once each — a refund that is late, a warranty ending, «Як тобі …?».
+    val once = purchaseOnceLines(orders, today.toEpochDay()).filterNot { it.key in said }
     // The rate and its source arrive apart, as the rest of the message needs only
     // the figure; the threshold needs both, so they are put back together for it.
     val rateLine = rateTargetLine(
@@ -170,12 +183,13 @@ fun digest(
         // Above the waiting parcel: one that is going back to the sender has a
         // deadline you cannot see and an outcome you have to act to change.
         problemLine(orders)?.let { add(it) }
-        parcelLine(orders, today)?.let { add(it) }
+        parcelLine(orders, today, points, now)?.let { add(it) }
         addAll(paymentLines(pays, today, holidays, paid))
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
         // Last: a window closing is worth a line, never the headline.
         addAll(returnLines(orders, today.toEpochDay()))
+        addAll(once.map { it.text })
     }
     if (news.isEmpty()) return Digest("", emptyList())
 
@@ -188,9 +202,9 @@ fun digest(
     // it is only when there are several that a name for the collection earns the
     // line it takes.
     return if (news.size == 1) {
-        Digest(news.first(), listOf(trailer), rateTargetSaid = rateLine != null)
+        Digest(news.first(), listOf(trailer), rateTargetSaid = rateLine != null, onceKeys = once.map { it.key })
     } else {
-        Digest("Зведення за день", news + trailer, rateTargetSaid = rateLine != null)
+        Digest("Зведення за день", news + trailer, rateTargetSaid = rateLine != null, onceKeys = once.map { it.key })
     }
 }
 
@@ -211,8 +225,21 @@ private fun problemLine(orders: List<Order>): String? {
     }
 }
 
-/** Parcels that are sitting at a branch, and how long they stay free. */
-private fun parcelLine(orders: List<Order>, today: LocalDate): String? {
+/**
+ * Parcels that are sitting at a branch, how long they stay free, what they will
+ * still take at the counter, and until when the point is open.
+ *
+ * The sum is what the carrier says is owed, and it drops out by itself once the
+ * carrier answers nought. The hours are added only when every waiting parcel is at
+ * the one point, because «забрати можна до 21:00» about two branches would be
+ * true of one of them.
+ */
+private fun parcelLine(
+    orders: List<Order>,
+    today: LocalDate,
+    points: Map<String, PickupPoint>,
+    now: java.time.LocalDateTime
+): String? {
     // A purchase that has been closed and filed is a record, not an errand. The
     // status it was archived with can still read "На відділенні", and reporting
     // that every morning would be the app nagging about something already done.
@@ -234,7 +261,12 @@ private fun parcelLine(orders: List<Order>, today: LocalDate): String? {
     }
     // With several parcels the deadline belongs to one of them, so it is named.
     val whose = if (waiting.size > 1 && tightest != null) " (${tightest.first.name})" else ""
-    return "$head — $tail$whose"
+    val toPay = waiting.sumOf { it.amountToPay.coerceAtLeast(0.0) }
+    val pay = if (toPay > 0.0) ", до сплати ${money(toPay)}" else ""
+    val point = waiting.map { it.details.warehouseRef }.distinct().singleOrNull()
+        ?.takeIf { it.isNotBlank() }?.let { points[it] }
+    val hours = point?.let { pickupUntilLine(it, now) }?.let { ", $it" }.orEmpty()
+    return "$head — $tail$whose$pay$hours"
 }
 
 /**

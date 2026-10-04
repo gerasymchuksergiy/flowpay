@@ -68,6 +68,9 @@ enum class RecapKind {
     /** The cheapest thing bought, stated without a verdict. */
     CHEAPEST_BOUGHT,
 
+    /** «Що справді порадувало»: a purchase the owner answered 😍 (or 🙂) about. */
+    DELIGHTED,
+
     /** This month's standing costs against last month's. */
     MONTH_ON_MONTH,
 
@@ -216,16 +219,21 @@ fun monthlyRecap(
     val firstDay = start.toEpochDay()
     val lastDay = start.plusMonths(1).minusDays(1).toEpochDay()
 
-    val cards = listOfNotNull(
+    // A purchase sent back was not kept: it is not a purchase to recap.
+    val kept = orders.filter { countsAsBought(it) }
+    val body = listOfNotNull(
         opening(wishes, pays, month),
         whatTheWatchingCaught(wishes, firstDay, lastDay),
         superlative(wishes, lastDay),
-        purchase(orders, firstDay, lastDay),
+        purchase(kept, firstDay, lastDay),
+        delighted(kept, firstDay, lastDay),
         theMonthItself(pays, marks, month, today, income, usdSellRate),
         conversion(wishes, pays, today, usdSellRate),
-        subscriptions(pays, firstDay, lastDay),
-        label(wishes, pays, orders, marks, month, firstDay, lastDay)
-    ).take(MAX_RECAP_CARDS)
+        subscriptions(pays, firstDay, lastDay)
+    )
+    // The reveal always closes the deck. With nine slots a full month would
+    // otherwise lose the label to the ceiling, and the deck its ending.
+    val cards = body.take(MAX_RECAP_CARDS - 1) + label(wishes, pays, kept, marks, month, firstDay, lastDay)
 
     return Recap(month = month, title = monthTitle(month), cards = cards)
 }
@@ -338,6 +346,27 @@ private fun purchase(orders: List<Order>, firstDay: Long, lastDay: Long): RecapC
         overline = "Найдешевша покупка",
         headline = cheapest.name,
         detail = money(cheapest.paid)
+    )
+}
+
+/**
+ * «Що справді порадувало»: what the owner answered 😍 about this month, in the
+ * owner's own words where there are some. Warm answers only, like the rest of the
+ * deck — a 😞 is the owner's to see in the archive, not to be handed back monthly.
+ */
+private fun delighted(orders: List<Order>, firstDay: Long, lastDay: Long): RecapCard? {
+    val warm = delightedIn(orders, firstDay, lastDay)
+    val first = warm.firstOrNull() ?: return null
+    val felt = delightWords(first.delight)
+    return RecapCard(
+        kind = RecapKind.DELIGHTED,
+        overline = "Що справді порадувало",
+        headline = first.name,
+        detail = listOfNotNull(
+            first.why.takeIf { it.isNotBlank() }?.let { "Хотілось, бо: «$it». Через три тижні — $felt" }
+                ?: "Через три тижні — $felt",
+            "і ще ${purchasesLabel(warm.size - 1)}".takeIf { warm.size > 1 }
+        ).joinToString(" · ")
     )
 }
 

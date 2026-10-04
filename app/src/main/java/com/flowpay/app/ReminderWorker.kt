@@ -56,6 +56,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             ?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay() }
             ?: 0L
         val rateTarget = store.rateTarget()
+        val parcelPrefs = ParcelPrefs(applicationContext)
+        val said = parcelPrefs.digestSaid()
         val summary = digest(
             wishes = store.wishes(),
             pays = store.pays(),
@@ -75,11 +77,19 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             // screen days earlier, and a notification cannot be waved away in place
             // the way the pill now can.
             paid = store.paidMarks(today),
-            lastSaid = store.digestPrices()
+            lastSaid = store.digestPrices(),
+            // A cache of the directory, read here and never fetched: the morning
+            // message only reads what is already on the phone.
+            points = parcelPrefs.points(),
+            now = LocalDateTime.now(),
+            said = said
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
         if (!summary.empty) notify(summary.title, summary.body)
+        // Remembered with the message that carried them, so tomorrow's does not
+        // say the same once-only line again.
+        if (summary.onceKeys.isNotEmpty()) parcelPrefs.saveDigestSaid(said + summary.onceKeys)
 
         // Disarmed after the message rather than before it, and only when the message
         // carried the line — asked of the message itself rather than worked out a

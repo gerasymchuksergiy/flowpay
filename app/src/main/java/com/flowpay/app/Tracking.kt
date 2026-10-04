@@ -126,7 +126,28 @@ data class ParcelDetails(
     val cargoType: String = "",
     val canRedirect: Boolean = false,
     val canRefuse: Boolean = false,
-    val canExtendTerm: Boolean = false
+    val canExtendTerm: Boolean = false,
+    /**
+     * `WarehouseRecipientRef` — the pickup point's id in Nova Poshta's directory,
+     * which is what its opening hours are asked by. See [PickupPoint].
+     */
+    val warehouseRef: String = "",
+    // The next four come back only when the request carries the recipient's (or
+    // the sender's) phone number; without it Nova Poshta warns «Please enter a
+    // valid phone number … to show full information» and leaves them empty.
+    /** `DocumentCost` — what the delivery itself costs. */
+    val deliveryCost: Double = 0.0,
+    /** `AfterpaymentOnGoodsCost`, else `RedeliverySum` — cash on delivery for the goods. */
+    val goodsToPay: Double = 0.0,
+    /** `StorageAmount` — paid storage already charged. */
+    val storageCharged: Double = 0.0,
+    /** `CounterpartySenderDescription`, else `SenderFullNameEW` — who sent it. */
+    val sender: String = "",
+    /**
+     * `RecipientDateTime` — when it was collected. What a warranty is counted from,
+     * and when a returned parcel reached the shop.
+     */
+    val receivedAt: LocalDateTime? = null
 ) {
     /** Nothing has ever been fetched, so the detail has nothing to lay out. */
     val isEmpty: Boolean
@@ -286,6 +307,31 @@ fun problemNote(code: Int): String = when (code) {
 const val STAGE_HELD_NOTE = "Крапка нижче — останнє, де посилка справді була. Далі вона не пішла."
 
 /**
+ * The body of one `getStatusDocuments` request.
+ *
+ * An empty key, the number, and the phone — normalised to 380XXXXXXXXX, or empty.
+ * Checked live on 4 October 2026: with an empty phone the answer carries the
+ * warning «Please enter a valid phone number from the express invoice to show full
+ * information»; with any well-formed number the warning goes and the answer keeps
+ * the same 128 fields, which the matching number then fills in.
+ */
+fun trackingRequest(number: String, phone: String): JSONObject = JSONObject()
+    .put("apiKey", "")
+    .put("modelName", "TrackingDocument")
+    .put("calledMethod", "getStatusDocuments")
+    .put(
+        "methodProperties",
+        JSONObject().put(
+            "Documents",
+            JSONArray().put(
+                JSONObject()
+                    .put("DocumentNumber", number.filter { !it.isWhitespace() })
+                    .put("Phone", normalizedPhone(phone))
+            )
+        )
+    )
+
+/**
  * Pulls the status out of a Nova Poshta tracking response.
  *
  * Returns null when the call itself failed, so a network hiccup is never mistaken
@@ -332,7 +378,15 @@ fun parseNovaPoshtaStatus(json: String): ParcelStatus? {
             cargoType = item.optString("CargoType").trim(),
             canRedirect = item.optBoolean("PossibilityCreateRedirecting", false),
             canRefuse = item.optBoolean("PossibilityCreateRefusal", false),
-            canExtendTerm = item.optBoolean("PossibilityTermExtension", false)
+            canExtendTerm = item.optBoolean("PossibilityTermExtension", false),
+            warehouseRef = item.optString("WarehouseRecipientRef").trim(),
+            deliveryCost = carrierNumber(item.optString("DocumentCost")),
+            goodsToPay = carrierNumber(item.optString("AfterpaymentOnGoodsCost")).takeIf { it > 0.0 }
+                ?: carrierNumber(item.optString("RedeliverySum")),
+            storageCharged = carrierNumber(item.optString("StorageAmount")),
+            sender = item.optString("CounterpartySenderDescription").trim()
+                .ifBlank { item.optString("SenderFullNameEW").trim() },
+            receivedAt = parseCreatedMoment(item.optString("RecipientDateTime"))
         )
     )
 }
@@ -844,6 +898,9 @@ fun detailsJson(details: ParcelDetails): JSONObject = JSONObject()
     .put("ct", details.cargoType)
     .put("rd", details.canRedirect).put("rf", details.canRefuse)
     .put("te", details.canExtendTerm)
+    .put("pkWr", details.warehouseRef).put("pkDc", details.deliveryCost)
+    .put("pkGp", details.goodsToPay).put("pkSc", details.storageCharged)
+    .put("pkSn", details.sender).put("pkRa", details.receivedAt?.toString().orEmpty())
 
 fun detailsOf(o: JSONObject?): ParcelDetails {
     if (o == null) return ParcelDetails()
@@ -862,7 +919,15 @@ fun detailsOf(o: JSONObject?): ParcelDetails {
         payerType = o.optString("pt"), paymentMethod = o.optString("pm"),
         cargoType = o.optString("ct"),
         canRedirect = o.optBoolean("rd", false), canRefuse = o.optBoolean("rf", false),
-        canExtendTerm = o.optBoolean("te", false)
+        canExtendTerm = o.optBoolean("te", false),
+        // Absent on everything stored before 4 October 2026: empty and nought, which
+        // is what those parcels were — asked without a phone, with no directory id.
+        warehouseRef = o.optString("pkWr"),
+        deliveryCost = o.optDouble("pkDc", 0.0).takeIf { it.isFinite() } ?: 0.0,
+        goodsToPay = o.optDouble("pkGp", 0.0).takeIf { it.isFinite() } ?: 0.0,
+        storageCharged = o.optDouble("pkSc", 0.0).takeIf { it.isFinite() } ?: 0.0,
+        sender = o.optString("pkSn"),
+        receivedAt = storedMoment(o.optString("pkRa"))
     )
 }
 

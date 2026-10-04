@@ -162,11 +162,18 @@ private val S10_ANYWHERE = Regex("""\b[A-Z]{2}\d{9}[A-Z]{2}\b""")
  */
 fun trackingNumberIn(text: String?): String? {
     if (text.isNullOrBlank()) return null
+    novaPoshtaNumberIn(text)?.let { return it }
+    return S10_ANYWHERE.find(text.uppercase())?.value
+}
+
+/** Only the fourteen-digit Nova Poshta number out of [text], spaces taken out. See [sharedParcelNumber]. */
+fun novaPoshtaNumberIn(text: String?): String? {
+    if (text.isNullOrBlank()) return null
     SPACED_NP.findAll(text).forEach { match ->
         val digits = match.value.filter { it.isDigit() }
         if (digits.length == 14) return digits
     }
-    return S10_ANYWHERE.find(text.uppercase())?.value
+    return null
 }
 
 /** What a parcel added from its number alone is called until it is renamed. */
@@ -202,9 +209,15 @@ fun defaultReturnDays(order: Order): Int = when {
 
 fun returnChoiceLabel(days: Int): String = if (days <= 0) "не стежити" else daysLabel(days)
 
-/** Days left to send it back on [today], or null when nothing is tracked or it is over. */
+/**
+ * Days left to send it back on [today], or null when nothing is tracked or it is over.
+ *
+ * Null as well once a return has been started: the window has done its job, and
+ * «повернути можна ще 2 дні» about a thing already on its way back would be the
+ * app reminding about something already dealt with.
+ */
 fun returnDaysLeft(order: Order, today: Long): Int? =
-    order.returnBy.takeIf { it > 0L && it >= today }?.let { (it - today).toInt() }
+    order.returnBy.takeIf { it > 0L && it >= today && order.refund == null }?.let { (it - today).toInt() }
 
 /** The line on the archived card while the window is open. */
 fun returnLine(order: Order, today: Long): String? {
