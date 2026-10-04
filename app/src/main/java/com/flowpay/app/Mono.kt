@@ -376,12 +376,16 @@ fun monoMatches(
     val used = HashSet<String>()
     val out = ArrayList<MonoMatch>()
     val debits = txs.filter { it.isDebit && it.mcc !in NOT_A_PAYMENT_MCC }
-    for (pay in pays) {
-        if (isFinished(pay, today)) continue
-        for (due in recentDueDates(pay, today)) {
+    for (original in pays) {
+        if (isFinished(original, today)) continue
+        for (due in recentDueDates(original, today)) {
             val month = monthKey(due)
-            if (isPaid(marks, pay.name, month)) continue
-            if (onTrial(pay, due.toEpochDay())) continue
+            if (isPaid(marks, original.name, month)) continue
+            // Free that month: nothing was owed. A promo month is matched against
+            // the promo price, which is what the bank will have taken.
+            val price = priceOn(original, due.toEpochDay())
+            if (price <= 0.0) continue
+            val pay = if (price == original.amount) original else original.copy(amount = price)
             val candidates = debits.mapNotNull { tx ->
                 if (tx.id in used || "${tx.id}|${pay.name}" in rejected) return@mapNotNull null
                 val day = Instant.ofEpochSecond(tx.time).atZone(zone).toLocalDate()
@@ -576,10 +580,427 @@ fun prettyMerchant(description: String): String {
  */
 fun monoDrifts(pays: List<Pay>, marks: List<PaidMark>, today: LocalDate): List<Pair<Pay, Double>> {
     val months = listOf(monthKey(today), monthKey(today.minusMonths(1)))
-    return pays.filter { it.monoMerchant.isNotBlank() && !isFinished(it, today) }.mapNotNull { pay ->
+    return pays.filter { it.monoMerchant.isNotBlank() && isLive(it, today) }.mapNotNull { pay ->
         val mark = months.firstNotNullOfOrNull { month ->
             marks.firstOrNull { it.name == pay.name && it.month == month && it.currency == pay.currency }
         } ?: return@mapNotNull null
-        if (kotlin.math.abs(mark.amount - pay.amount) > maxOf(1.0, pay.amount * 0.02)) pay to mark.amount else null
+        // Against what that month's charge was meant to take: a promo month marked
+        // at the promo price is not a price change.
+        val planned = monthKeyDate(mark.month)?.let { priceOn(pay, chargeDateIn(pay, it).toEpochDay()) } ?: pay.amount
+        if (planned <= 0.0) return@mapNotNull null
+        if (kotlin.math.abs(mark.amount - planned) > maxOf(1.0, planned * 0.02)) pay to mark.amount else null
     }
 }
+
+// ------------------------------------------------------------ what the statement still tells
+
+/*
+ * The second round of monobank (4 October 2026, «додай все»): what the stored
+ * statement says about a payment's life, read-only like everything else here.
+ * Each answer is a question or a line, never a decision: a quiet merchant is
+ * asked about («Скасовано?»), a double charge is pointed at, a charge after a
+ * cancellation is asked about, a missed charge is mentioned once. The two things
+ * done without asking are the two the owner set up to be done: a paused payment
+ * whose confirmed merchant charges again runs again, and a jar that covers a
+ * wish's price is announced once.
+ */
+
+/** The day an operation happened, on the phone's calendar. */
+fun txDay(tx: MonoTx, zone: ZoneId = ZoneId.systemDefault()): LocalDate =
+    Instant.ofEpochSecond(tx.time).atZone(zone).toLocalDate()
+
+/** Charges from the merchant the owner confirmed for this payment, newest first. */
+fun merchantDebits(pay: Pay, txs: List<MonoTx>): List<MonoTx> =
+    if (pay.monoMerchant.isBlank()) {
+        emptyList()
+    } else {
+        txs.filter { it.isDebit && it.mcc !in NOT_A_PAYMENT_MCC && merchantKey(it.description) == pay.monoMerchant }
+            .sortedByDescending { it.time }
+    }
+
+/**
+ * The due date a charge on [day] pays for — the one within the matching window
+ * (four days early, six late), the closest when two are — or null when none is.
+ * Asked of the rhythm alone, not of [runsOn]: a paused payment still has dates.
+ */
+fun dueDateFor(pay: Pay, day: LocalDate): LocalDate? =
+    listOf(day.minusMonths(1), day, day.plusMonths(1))
+        .filter { !isAnnual(pay) || it.monthValue == pay.billingMonth }
+        .map { chargeDateIn(pay, it) }
+        .filter { !day.isBefore(it.minusDays(EARLY_DAYS)) && !day.isAfter(it.plusDays(LATE_DAYS)) }
+        .minByOrNull { kotlin.math.abs(java.time.temporal.ChronoUnit.DAYS.between(it, day)) }
+
+/** The latest date on or before [today] this payment was due on. */
+fun lastDueDate(pay: Pay, today: LocalDate): LocalDate {
+    if (isAnnual(pay)) {
+        val thisYear = chargeDateIn(pay, LocalDate.of(today.year, pay.billingMonth, 1))
+        return if (!thisYear.isAfter(today)) thisYear else chargeDateIn(pay, LocalDate.of(today.year - 1, pay.billingMonth, 1))
+    }
+    val thisMonth = chargeDateIn(pay, today)
+    return if (!thisMonth.isAfter(today)) thisMonth else chargeDateIn(pay, today.minusMonths(1))
+}
+
+// ------------------------------------------------------------ a paused payment charges again
+
+/**
+ * The list with every paused payment whose confirmed merchant charged again
+ * running again — the research's «Пауза»: when the bank sees a charge, the pause
+ * is lifted. The pause ends at the due date the charge pays for, so that charge
+ * is counted and ticked like any other, and the amount is kept for the morning's
+ * «Megogo знову списує 199 ₴».
+ *
+ * Only a charge for a date inside the pause counts: a late charge for the month
+ * before it is not the payment coming back. And only one near the payment's own
+ * price — another purchase from the same shop is not the subscription.
+ */
+fun bankResumed(
+    pays: List<Pay>,
+    txs: List<MonoTx>,
+    accountCurrency: Map<String, Int>,
+    usdSell: Double,
+    today: LocalDate,
+    zone: ZoneId = ZoneId.systemDefault()
+): List<Pay> = pays.map { pay ->
+    if (pay.pausedFrom <= 0L || pay.monoMerchant.isBlank() || isInstalment(pay)) return@map pay
+    val found = merchantDebits(pay, txs).sortedBy { it.time }.firstNotNullOfOrNull { tx ->
+        val day = txDay(tx, zone)
+        val due = dueDateFor(pay, day)
+        val inside = if (due != null) due.toEpochDay() >= pay.pausedFrom else day.toEpochDay() >= pay.pausedFrom + LATE_DAYS
+        if (!inside || day.toEpochDay() < pay.pausedFrom) return@firstNotNullOfOrNull null
+        val charged = chargedIn(tx, pay, accountCurrency[tx.account] ?: UAH_CODE, usdSell) ?: return@firstNotNullOfOrNull null
+        if (!withinShare(charged, pay.amount, 0.4)) return@firstNotNullOfOrNull null
+        (if (due != null && due.isBefore(day)) due else day) to charged
+    } ?: return@map pay
+    val (from, charged) = found
+    resumed(pay, today, until = from.toEpochDay(), bankCharge = kotlin.math.round(charged * 100) / 100.0)
+}
+
+// ------------------------------------------------------------ «Мовчать»
+
+/** A confirmed payment the bank has gone quiet about. */
+data class SilentPay(
+    val pay: Pay,
+    /** Days since the last charge — or, for an annual fee, since the date it was due. */
+    val days: Int,
+    val annual: Boolean,
+    /** The last charge seen from its merchant. */
+    val last: MonoTx
+)
+
+/** A month and ten days without a charge is a monthly subscription that stopped. */
+const val SILENT_MONTHLY_DAYS = 40
+
+/** Ten days past its date without a charge is an annual fee that did not renew. */
+const val SILENT_ANNUAL_DAYS = 10
+
+/** How long «Ще чекаю» quiets the question. */
+const val SILENT_WAIT_DAYS = 30L
+
+/**
+ * «Spotify: списань не було 47 днів. Скасовано?» — the Rocket Money block, read
+ * from the statement: confirmed payments whose merchant has charged nothing for
+ * 40 days (monthly) or for 10 days past the date (annual).
+ *
+ * Left out: a payment paused, cancelled or free this time (nothing was owed), one
+ * whose last due month was ticked by hand (it is being paid some other way), one
+ * with no charge in the stored statement at all (the app cannot say how long),
+ * and one the owner said «Ще чекаю» about ([waiting], name to the epoch day the
+ * question may come back).
+ */
+fun silentPayments(
+    pays: List<Pay>,
+    txs: List<MonoTx>,
+    marks: List<PaidMark>,
+    waiting: Map<String, Long>,
+    today: LocalDate,
+    zone: ZoneId = ZoneId.systemDefault()
+): List<SilentPay> = pays
+    .filter { it.monoMerchant.isNotBlank() && !isInstalment(it) && lifeOf(it, today) == PayLife.RUNNING }
+    .filterNot { (waiting[it.name] ?: 0L) > today.toEpochDay() }
+    .mapNotNull { pay ->
+        val last = merchantDebits(pay, txs).firstOrNull() ?: return@mapNotNull null
+        val due = lastDueDate(pay, today)
+        if (!chargesIn(pay, due) || priceOn(pay, due.toEpochDay()) <= 0.0) return@mapNotNull null
+        if (isPaid(marks, pay.name, monthKey(due))) return@mapNotNull null
+        val lastDay = txDay(last, zone)
+        if (isAnnual(pay)) {
+            val since = java.time.temporal.ChronoUnit.DAYS.between(due, today).toInt()
+            val chargedAround = !lastDay.isBefore(due.minusDays(EARLY_DAYS))
+            if (since < SILENT_ANNUAL_DAYS || chargedAround) null else SilentPay(pay, since, annual = true, last = last)
+        } else {
+            val days = java.time.temporal.ChronoUnit.DAYS.between(lastDay, today).toInt()
+            if (days < SILENT_MONTHLY_DAYS) null else SilentPay(pay, days, annual = false, last = last)
+        }
+    }
+
+/** «Spotify: списань не було 47 днів» — no verb that would have to agree with the name. */
+fun silentLine(silent: SilentPay): String =
+    if (silent.annual) {
+        "${silent.pay.name}: дата минула ${daysLabel(silent.days)} тому, а річного списання не було"
+    } else {
+        "${silent.pay.name}: списань не було ${daysLabel(silent.days)}"
+    }
+
+/**
+ * The «діє до» a quiet payment is cancelled with from «Прибрати»: the end of the
+ * period its last charge paid for — already behind, which is why the bank went
+ * quiet.
+ */
+fun silentPaidUntil(silent: SilentPay, zone: ZoneId = ZoneId.systemDefault()): LocalDate {
+    val last = txDay(silent.last, zone)
+    return (if (silent.annual) last.plusYears(1) else last.plusMonths(1)).minusDays(1)
+}
+
+// ------------------------------------------------------------ «Схоже на подвійне списання»
+
+/** The same confirmed merchant taking the same amount twice within a few days. */
+data class DoubleCharge(val pay: Pay, val first: MonoTx, val second: MonoTx) {
+    /** The two operations in a fixed order: what «Усе гаразд» remembers. */
+    val key: String get() = listOf(first.id, second.id).sorted().joinToString("|")
+}
+
+/** Charges this close are one charge too many; further apart they can be two months. */
+const val DOUBLE_CHARGE_DAYS = 3L
+
+/** How far back a double charge is still worth pointing at. */
+const val DOUBLE_LOOKBACK_DAYS = 30L
+
+/**
+ * «Схоже на подвійне списання: Megogo 199 ₴ × 2» — the same confirmed merchant,
+ * the same amount to the kopeck, twice within three days. A hold that settles is
+ * one operation under one id, so it is never mistaken for two.
+ */
+fun doubleCharges(pays: List<Pay>, txs: List<MonoTx>, dismissed: Set<String>, now: Long): List<DoubleCharge> =
+    pays.filter { it.monoMerchant.isNotBlank() }.flatMap { pay ->
+        val debits = merchantDebits(pay, txs)
+            .filter { now - it.time <= DOUBLE_LOOKBACK_DAYS * 86_400 }
+            .sortedBy { it.time }
+        buildList {
+            for (i in debits.indices) {
+                for (j in i + 1 until debits.size) {
+                    val first = debits[i]
+                    val second = debits[j]
+                    if (second.time - first.time > DOUBLE_CHARGE_DAYS * 86_400) break
+                    if (first.amount == second.amount && first.id != second.id) add(DoubleCharge(pay, first, second))
+                }
+            }
+        }
+    }.distinctBy { it.key }.filterNot { it.key in dismissed }
+
+/** «Megogo 199 ₴ × 2 · 2 і 3 жовтня» */
+fun doubleChargeLine(double: DoubleCharge, accountCurrency: Map<String, Int>, zone: ZoneId = ZoneId.systemDefault()): String {
+    val one = txDay(double.first, zone)
+    val two = txDay(double.second, zone)
+    val days = if (one == two) "двічі ${dayMonth(one)}" else "${one.dayOfMonth} і ${dayMonth(two)}"
+    val amount = amountLabelMinor(-double.first.amount, accountCurrency[double.first.account] ?: UAH_CODE)
+    return "${double.pay.name} $amount × 2 · $days"
+}
+
+// ------------------------------------------------------------ «Списали після скасування?»
+
+/**
+ * A cancelled payment's merchant, kept for three months after the payment itself
+ * has gone from the list, so a charge after the cancellation is still caught.
+ */
+data class GoneMerchant(
+    val name: String,
+    /** The [merchantKey] the owner confirmed. */
+    val merchant: String,
+    /** The last day of what was paid for; a charge after it is the question. */
+    val stopsAfter: Long,
+    val currency: String = UAH,
+    /** The payment as it was, running, for «Повернути платіж»: its [payJson]. */
+    val pay: String = ""
+)
+
+/** How long a cancelled payment's merchant is watched after what was paid for ran out. */
+const val GONE_KEEP_DAYS = 92L
+
+/** The watch list with [pay] on it once, and anything past three months dropped. */
+fun withGone(gone: List<GoneMerchant>, pay: Pay, today: LocalDate): List<GoneMerchant> =
+    (gone.filterNot { it.name == pay.name && it.merchant == pay.monoMerchant } +
+        GoneMerchant(pay.name, pay.monoMerchant, pay.stopsAfter, pay.currency, payJson(unstopped(pay)).toString()))
+        .filter { today.toEpochDay() - it.stopsAfter <= GONE_KEEP_DAYS }
+
+fun goneJson(gone: List<GoneMerchant>): JSONArray = JSONArray().apply {
+    gone.forEach {
+        put(
+            JSONObject().put("n", it.name).put("m", it.merchant).put("s", it.stopsAfter)
+                .put("cur", it.currency).put("p", it.pay)
+        )
+    }
+}
+
+fun goneOf(text: String?): List<GoneMerchant> = runCatching {
+    val array = JSONArray(text ?: "[]")
+    (0 until array.length()).mapNotNull { array.optJSONObject(it) }.map {
+        GoneMerchant(
+            it.optString("n"),
+            it.optString("m"),
+            it.optLong("s", 0L),
+            it.optString("cur", UAH).ifBlank { UAH },
+            it.optString("p")
+        )
+    }.filter { it.merchant.isNotBlank() && it.stopsAfter > 0L }
+}.getOrDefault(emptyList())
+
+/** A charge from a cancelled payment's merchant after what was paid for ran out. */
+data class AfterCancel(
+    val name: String,
+    val tx: MonoTx,
+    /** What it took, in the payment's currency. */
+    val charged: Double,
+    val currency: String,
+    /** The payment, while it is still on the list (cancelled, its question waiting). */
+    val pay: Pay?,
+    /** Its watch entry, once it has gone to the bin. */
+    val gone: GoneMerchant?
+)
+
+/**
+ * «Списали після скасування?» — every charge from a cancelled payment's confirmed
+ * merchant dated after the last day it was paid for, within three months of it.
+ * [dismissed] holds the operations the owner said «Це не воно» about.
+ */
+fun chargedAfterCancel(
+    pays: List<Pay>,
+    gone: List<GoneMerchant>,
+    txs: List<MonoTx>,
+    dismissed: Set<String>,
+    accountCurrency: Map<String, Int>,
+    usdSell: Double,
+    zone: ZoneId = ZoneId.systemDefault()
+): List<AfterCancel> {
+    val listed = pays.filter { it.stopReason == STOP_CANCELLED && it.monoMerchant.isNotBlank() && it.stopsAfter > 0L }
+    val watched: List<Pair<GoneMerchant, Pay?>> =
+        listed.map { GoneMerchant(it.name, it.monoMerchant, it.stopsAfter, it.currency) to it } +
+            gone.filter { entry -> listed.none { it.name == entry.name && it.monoMerchant == entry.merchant } }
+                .map { it to null }
+    return watched.flatMap { (entry, pay) ->
+        val stub = pay ?: Pay(entry.name, 0.0, currency = entry.currency, monoMerchant = entry.merchant)
+        merchantDebits(stub, txs)
+            .filter { it.id !in dismissed }
+            .filter { tx -> txDay(tx, zone).toEpochDay().let { it > entry.stopsAfter && it <= entry.stopsAfter + GONE_KEEP_DAYS } }
+            .map { tx ->
+                val charged = chargedIn(tx, stub, accountCurrency[tx.account] ?: UAH_CODE, usdSell) ?: (-tx.amount / 100.0)
+                AfterCancel(entry.name, tx, kotlin.math.round(charged * 100) / 100.0, entry.currency, pay, entry.takeIf { pay == null })
+            }
+    }.sortedByDescending { it.tx.time }
+}
+
+/** «Списали після скасування: Netflix 249 ₴, 2 листопада» */
+fun afterCancelLine(after: AfterCancel, zone: ZoneId = ZoneId.systemDefault()): String =
+    "Списали після скасування: ${after.name} ${amountLabel(after.charged, after.currency)}, ${dayMonth(txDay(after.tx, zone))}"
+
+// ------------------------------------------------------------ «не списалось»
+
+/** A confirmed payment whose date this month passed with no charge from its merchant. */
+data class MissedCharge(val pay: Pay, val due: LocalDate)
+
+/** Days after its date before a charge that has not come is mentioned: services bill a little late. */
+const val MISSED_GRACE_DAYS = 3L
+
+/**
+ * The research's «Spotify не списався 3 жовтня — перевір картку»: the merchant
+ * the owner confirmed took nothing around this month's date, the date is a few
+ * days behind, and the statement has been read since then — so the silence is
+ * the bank's and not a statement nobody has fetched yet. A month ticked by hand
+ * is paid, and a paused, cancelled or free one owed nothing.
+ */
+fun missedCharges(
+    pays: List<Pay>,
+    txs: List<MonoTx>,
+    marks: List<PaidMark>,
+    today: LocalDate,
+    /** The last day the statement was read on; nothing later than it can be judged. */
+    readUpTo: LocalDate,
+    zone: ZoneId = ZoneId.systemDefault()
+): List<MissedCharge> = pays
+    .filter { it.monoMerchant.isNotBlank() && !isInstalment(it) && lifeOf(it, today) == PayLife.RUNNING }
+    .mapNotNull { pay ->
+        val due = chargeDateIn(pay, today)
+        if (!chargesIn(pay, due) || priceOn(pay, due.toEpochDay()) <= 0.0) return@mapNotNull null
+        val judged = due.plusDays(MISSED_GRACE_DAYS)
+        if (!judged.isBefore(today) || readUpTo.isBefore(judged)) return@mapNotNull null
+        if (isPaid(marks, pay.name, monthKey(due))) return@mapNotNull null
+        val charged = merchantDebits(pay, txs).any { !txDay(it, zone).isBefore(due.minusDays(EARLY_DAYS)) }
+        if (charged) null else MissedCharge(pay, due)
+    }
+
+/** «Spotify: 3 жовтня списання не було — перевірте картку», with no verb to agree with the name. */
+fun missedLine(missed: MissedCharge): String =
+    "${missed.pay.name}: ${dayMonth(missed.due)} списання не було — перевірте картку"
+
+/** What the statement adds to the morning message, each line said once. */
+fun monoLines(
+    missed: List<MissedCharge>,
+    doubles: List<DoubleCharge>,
+    after: List<AfterCancel>,
+    accountCurrency: Map<String, Int>,
+    zone: ZoneId = ZoneId.systemDefault()
+): List<OnceLine> =
+    after.map { OnceLine("after|${it.tx.id}", afterCancelLine(it, zone)) } +
+        doubles.map { OnceLine("double|${it.key}", "Схоже на подвійне списання: ${doubleChargeLine(it, accountCurrency, zone)}") } +
+        missed.map { OnceLine("missed|${it.pay.name}|${monthKey(it.due)}", missedLine(it)) }
+
+// ------------------------------------------------------------ «не вистачить на завтра»
+
+/**
+ * The morning's first line when tomorrow's charges from monobank are more than
+ * the card's own money: «Завтра Netflix 249 ₴ + iCloud 99 ₴, а власних на картці
+ * 210 ₴ — докиньте 138 ₴».
+ *
+ * Only payments the owner confirmed are paid from monobank (a confirmed merchant)
+ * and only what is still unpaid. [own] is balance minus the credit line on the
+ * cards the owner ticked ([ownUah]). Dollar charges count at the sell rate, and
+ * are left out when there is none rather than read as nought.
+ */
+fun shortTomorrowLine(pays: List<Pay>, marks: List<PaidMark>, today: LocalDate, own: Double, usdSell: Double): String? {
+    val tomorrow = today.plusDays(1)
+    val due = stillOwing(pays, marks, today)
+        .filter { it.monoMerchant.isNotBlank() && nextCharge(it, today) == tomorrow }
+        .mapNotNull { pay ->
+            val price = priceOn(pay, tomorrow.toEpochDay())
+            val uah = when {
+                pay.currency != USD -> price
+                usdSell > 0.0 -> price * usdSell
+                else -> return@mapNotNull null
+            }
+            Triple(pay, price, uah).takeIf { price > 0.0 }
+        }
+    if (due.isEmpty()) return null
+    val total = due.sumOf { it.third }
+    if (total <= own) return null
+    val what = due.joinToString(" + ") { (pay, price, _) -> "${pay.name} ${amountLabel(price, pay.currency)}" }
+    val card = if (own > 0.0) "а власних на картці ${approxMoney(own)}" else "а власних грошей на картці немає"
+    return "Завтра $what, $card — докиньте ${money(kotlin.math.ceil(total - own))}"
+}
+
+// ------------------------------------------------------------ a jar that covers the price
+
+/** A wish whose jar now holds its whole live price. */
+data class JarAlert(val wish: Wish, val jar: Double, val price: Double) {
+    /** Once per price level, like the target-price alert: a lower price is news again. */
+    val key: String get() = "${wish.id}@${kotlin.math.round(price).toLong()}"
+}
+
+/** A price this many days old is not a live price any more. */
+const val JAR_PRICE_FRESH_DAYS = 2L
+
+/**
+ * Wishes whose linked jar first covers the best live price — read from a page in
+ * the last two days and in stock ([Freshness.OK]). A wish on hold is the owner's
+ * decision to wait and is not interrupted. [said] holds the keys already
+ * announced.
+ */
+fun jarAlerts(wishes: List<Wish>, jars: List<MonoJar>, said: Set<String>, today: Long): List<JarAlert> =
+    wishes.mapNotNull { wish ->
+        if (wish.jar.isBlank() || wish.price <= 0.0 || wish.freshness != Freshness.OK) return@mapNotNull null
+        if (onHold(wish, today) || today - wish.checkedDay > JAR_PRICE_FRESH_DAYS) return@mapNotNull null
+        val jar = jars.firstOrNull { it.id == wish.jar }?.let(::jarUah) ?: return@mapNotNull null
+        JarAlert(wish, jar, wish.price).takeIf { jar >= wish.price && it.key !in said }
+    }
+
+/** «На банці 4 200 ₴, а ціна вже 3 999 ₴ — можна купувати» */
+fun jarAlertText(alert: JarAlert): String =
+    "На банці ${approxMoney(alert.jar)}, а ціна вже ${money(alert.price)} — можна купувати"

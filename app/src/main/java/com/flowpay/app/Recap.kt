@@ -483,7 +483,13 @@ private fun subscriptions(pays: List<Pay>, firstDay: Long, lastDay: Long): Recap
         val (pay, change) = moved
         return RecapCard(
             kind = RecapKind.SUB_PRICE_MOVED,
-            overline = if (change.raised) "Подорожчала — і не тихо" else "Подешевшала",
+            // A promo running out is written into the history as a move (see
+            // [withPromoEnded]), and it is not the service raising its price.
+            overline = when {
+                isPromoEnd(pay, change) -> "Акція скінчилась"
+                change.raised -> "Подорожчала — і не тихо"
+                else -> "Подешевшала"
+            },
             headline = pay.name,
             detail = amountMoveLine(pay).orEmpty()
         )
@@ -492,9 +498,13 @@ private fun subscriptions(pays: List<Pay>, firstDay: Long, lastDay: Long): Recap
     if (ended != null) {
         return RecapCard(
             kind = RecapKind.TRIAL_ENDED,
-            overline = "Безкоштовне скінчилось",
+            overline = if (isPromo(ended)) "Акція скінчилась" else "Безкоштовне скінчилось",
             headline = ended.name,
-            detail = "Пробний період закінчився · тепер ${amountLabel(ended.amount, ended.currency)}"
+            detail = if (isPromo(ended)) {
+                "Тепер ${amountLabel(ended.amount, ended.currency)} замість ${amountLabel(ended.promoPrice, ended.currency)}"
+            } else {
+                "Пробний період закінчився · тепер ${amountLabel(ended.amount, ended.currency)}"
+            }
         )
     }
     if (pays.isEmpty()) return null

@@ -759,10 +759,10 @@ class ParcelsMoreTest {
         assertEquals(1, lines.size)
         // Said once: a message that carried it is remembered and the next one is quiet.
         val first = digest(listOf(), listOf(), listOf(covered), LocalDate.ofEpochDay(today), 41.0, 0.0)
-        assertEquals(lines.map { it.key }, first.onceKeys)
+        assertEquals(lines.map { it.key }, first.said)
         val next = digest(
             listOf(), listOf(), listOf(covered), LocalDate.ofEpochDay(today + 1), 41.0, 0.0,
-            said = first.onceKeys.toSet()
+            said = first.said.toSet()
         )
         assertTrue(next.empty)
     }

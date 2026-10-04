@@ -5,7 +5,6 @@ import android.content.Intent
 import androidx.core.content.edit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -52,19 +51,9 @@ class ParcelPrefs(context: Context) {
         prefs.edit { putString(KEY_POINTS, json.toString()) }
     }
 
-    /** The keys of the said-once lines the morning message has already carried. */
-    fun digestSaid(): Set<String> = runCatching {
-        val array = JSONArray(prefs.getString(KEY_SAID, "[]"))
-        (0 until array.length()).map { array.optString(it) }.toSet()
-    }.getOrDefault(emptySet())
-
-    fun saveDigestSaid(keys: Collection<String>) =
-        prefs.edit { putString(KEY_SAID, JSONArray(keys.toList().takeLast(ONCE_MEMORY)).toString()) }
-
     private companion object {
         const val KEY_PHONE = "pk_np_phone"
         const val KEY_POINTS = "pk_points"
-        const val KEY_SAID = "pk_said"
         const val POINT_FORGET_MS = 30L * 86_400_000L
     }
 }

@@ -959,8 +959,8 @@ fun delightedIn(orders: List<Order>, firstDay: Long, lastDay: Long): List<Order>
 
 // ------------------------------------------------------------ the morning message, said once
 
-/** A line that should reach the morning message once, under its own key. */
-data class OnceLine(val key: String, val text: String)
+// [OnceLine] is declared in PaymentsLife.kt; both kinds of line share it and the
+// one memory of what was said (LifeMemory).
 
 /**
  * What the purchases have to say this morning, each line under the key that stops
@@ -984,9 +984,6 @@ fun purchaseOnceLines(orders: List<Order>, today: Long): List<OnceLine> = buildL
         add(OnceLine("pkJoy-${order.id}", delightDigestLine(order)))
     }
 }
-
-/** How many said-once keys are remembered. */
-const val ONCE_MEMORY = 200
 
 // ------------------------------------------------------------ Nova Poshta's own app
 

@@ -46,7 +46,15 @@ data class MonoView(
     val matches: List<MonoMatch>,
     val found: List<FoundSubscription>,
     /** Confirmed payments the bank now charges differently for. */
-    val drifts: List<Pair<Pay, Double>> = emptyList()
+    val drifts: List<Pair<Pay, Double>> = emptyList(),
+    /** «Мовчать»: confirmed payments the bank has gone quiet about. */
+    val silent: List<SilentPay> = emptyList(),
+    /** «Схоже на подвійне списання». */
+    val doubles: List<DoubleCharge> = emptyList(),
+    /** «Списали після скасування?» */
+    val afterCancel: List<AfterCancel> = emptyList(),
+    /** Each account's currency, to read the amounts above. */
+    val currencies: Map<String, Int> = emptyMap()
 )
 
 // ------------------------------------------------------------ settings

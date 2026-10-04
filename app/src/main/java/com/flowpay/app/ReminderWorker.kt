@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.net.toUri
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -56,11 +57,26 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             ?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay() }
             ?: 0L
         val rateTarget = store.rateTarget()
+        // A promo that ran out is written into its history first, so this morning
+        // can say «150 → 300» like any other raise — see PaymentsLife.kt.
+        recordPromoEnds(store, today)
+        val pays = store.pays()
+        val marks = store.paidMarks(today)
+        // What payments' lives, the bank statement and the purchases have to say
+        // once — said lines are remembered in one place (LifeMemory) and left out.
+        val memory = LifeMemory(applicationContext)
+        val said = memory.said()
+        val mono = MonoStore(applicationContext)
+        val client = mono.client()?.takeIf { mono.connected() }
+        val once = unsaid(lifeLines(pays, today) + monoMorning(mono, client, pays, marks, today, rate), said)
+        // Tomorrow's charges the card cannot cover lead the message — on a balance
+        // read within the last day, never an older one.
+        val lead = client?.takeIf { System.currentTimeMillis() - mono.clientAt() < 24 * 3_600_000L }
+            ?.let { shortTomorrowLine(pays, marks, today, ownUah(it, mono.accountsToRead(it)), rate) }
         val parcelPrefs = ParcelPrefs(applicationContext)
-        val said = parcelPrefs.digestSaid()
         val summary = digest(
             wishes = store.wishes(),
-            pays = store.pays(),
+            pays = pays,
             orders = store.orders(),
             today = today,
             usdSellRate = rate,
@@ -76,20 +92,24 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             // morning message named bills that had been ticked off on the payments
             // screen days earlier, and a notification cannot be waved away in place
             // the way the pill now can.
-            paid = store.paidMarks(today),
+            paid = marks,
             lastSaid = store.digestPrices(),
             // A cache of the directory, read here and never fetched: the morning
             // message only reads what is already on the phone.
             points = parcelPrefs.points(),
             now = LocalDateTime.now(),
-            said = said
+            said = said,
+            lead = listOfNotNull(lead),
+            once = once
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
-        if (!summary.empty) notify(summary.title, summary.body)
-        // Remembered with the message that carried them, so tomorrow's does not
-        // say the same once-only line again.
-        if (summary.onceKeys.isNotEmpty()) parcelPrefs.saveDigestSaid(said + summary.onceKeys)
+        if (!summary.empty) {
+            notify(summary.title, summary.body, summary.actions)
+            // Asked of the message, like the rate threshold below: only what it
+            // carried is remembered as said.
+            memory.markSaid(summary.said)
+        }
 
         // Disarmed after the message rather than before it, and only when the message
         // carried the line — asked of the message itself rather than worked out a
@@ -114,7 +134,7 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         return Result.success()
     }
 
-    private fun notify(title: String, text: String) {
+    private fun notify(title: String, text: String, actions: List<DigestAction> = emptyList()) {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Щоденне зведення", NotificationManager.IMPORTANCE_DEFAULT)
@@ -123,24 +143,61 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             applicationContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         if (allowed) {
-            NotificationManagerCompat.from(applicationContext).notify(
-                CHANNEL.hashCode(),
-                NotificationCompat.Builder(applicationContext, CHANNEL)
-                    .setSmallIcon(R.drawable.ic_tile)
-                    .setContentTitle(title)
-                    .setContentText(text)
-                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                    // The digest is mostly about money going out, so it opens
-                    // the payments tab. See Notifications.kt.
-                    .setContentIntent(openTabIntent(applicationContext, TAB_PAYMENTS))
-                    .setAutoCancel(true)
-                    .build()
-            )
+            val builder = NotificationCompat.Builder(applicationContext, CHANNEL)
+                .setSmallIcon(R.drawable.ic_tile)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                // The digest is mostly about money going out, so it opens
+                // the payments tab. See Notifications.kt.
+                .setContentIntent(openTabIntent(applicationContext, TAB_PAYMENTS))
+                .setAutoCancel(true)
+            // «Як скасувати» under a trial about to charge: the service's own page,
+            // opened in the browser straight from the notification.
+            actions.forEachIndexed { index, action ->
+                val open = android.app.PendingIntent.getActivity(
+                    applicationContext,
+                    ACTION_REQUEST_BASE + index,
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, action.url.toUri())
+                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                    android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                )
+                builder.addAction(0, action.label, open)
+            }
+            NotificationManagerCompat.from(applicationContext).notify(CHANNEL.hashCode(), builder.build())
         }
+    }
+
+    /**
+     * What the stored statement adds to the morning, each line said once: a
+     * charge after a cancellation, a double charge, a missed charge. Nothing
+     * without monobank; nothing about a statement never read.
+     */
+    private fun monoMorning(
+        mono: MonoStore,
+        client: MonoClient?,
+        pays: List<Pay>,
+        marks: List<PaidMark>,
+        today: LocalDate,
+        usdSell: Double
+    ): List<OnceLine> {
+        if (client == null || mono.lastSync() <= 0L) return emptyList()
+        val txs = mono.txs()
+        val currencies = accountCurrencies(client)
+        val readUpTo = Instant.ofEpochMilli(mono.lastSync()).atZone(ZoneId.systemDefault()).toLocalDate()
+        return monoLines(
+            missed = missedCharges(pays, txs, marks, today, readUpTo),
+            doubles = doubleCharges(pays, txs, mono.doublesOk(), System.currentTimeMillis() / 1000),
+            after = chargedAfterCancel(pays, mono.gone(), txs, mono.afterOk(), currencies, usdSell),
+            accountCurrency = currencies
+        )
     }
 
     companion object {
         private const val CHANNEL = "payment_reminders"
+
+        /** Request codes for the message's buttons, apart from every other PendingIntent. */
+        private const val ACTION_REQUEST_BASE = 7_100
 
         /**
          * Schedules the digest for the hour the user chose.
