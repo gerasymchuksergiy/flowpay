@@ -66,6 +66,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -323,7 +324,14 @@ data class Wish(
      * lowest price and how many shops offer it. A yardstick — never the price,
      * never a push. Null on every wish nobody has bound one to. PricesMore.kt.
      */
-    val market: Market? = null
+    val market: Market? = null,
+    /**
+     * «Пропустити цього місяця»: the month, "2026-10", whose contribution the plan
+     * does not ask for. Empty when none. Unlike [holdUntil] the wish stays in view
+     * and its prices keep being watched; from the 1st the plan asks again by
+     * itself. See MoneyPlan.kt.
+     */
+    val skipMonth: String = ""
 )
 
 data class Pay(
@@ -695,6 +703,13 @@ class Store(context: Context) {
                 BIN_ORDER -> orderOf(json).let { back ->
                     if (orders().none { it.id == back.id }) saveOrders(orders() + back)
                 }
+                // A fund (MoneyPlan.kt), kept beside the other lists under its own key.
+                BIN_FUND -> fundOf(json).let { back ->
+                    val now = fundsOf(prefs.getString(PlanStore.FUNDS_KEY, "[]"))
+                    if (now.none { it.id == back.id }) {
+                        prefs.edit { putString(PlanStore.FUNDS_KEY, fundsJson(now + back)) }
+                    }
+                }
                 // An entry of a kind this version does not know is left in the bin
                 // rather than dropped: a newer build may be able to restore it.
                 else -> return
@@ -976,6 +991,9 @@ class Store(context: Context) {
         .put("orders", JSONArray(prefs.getString("orders", "[]")))
         .put("paid", JSONArray(prefs.getString("paid", "[]")))
         .put("bin", JSONArray(prefs.getString("bin", "[]")))
+        // The funds — money the owner says he put aside — are his data like the
+        // wishes. «На життя» and the payday are preferences, like the income.
+        .put("mpFunds", JSONArray(prefs.getString(PlanStore.FUNDS_KEY, "[]")))
         .toString(2)
 
     fun importJson(text: String) {
@@ -989,12 +1007,14 @@ class Store(context: Context) {
         // payment records that the file never claimed to replace.
         val paid = root.optJSONArray("paid")
         val bin = root.optJSONArray("bin")
+        val funds = root.optJSONArray("mpFunds")
         prefs.edit {
             putString("w", wishes.toString())
             putString("pay", payments.toString())
             putString("orders", orders.toString())
             paid?.let { putString("paid", it.toString()) }
             bin?.let { putString("bin", it.toString()) }
+            funds?.let { putString(PlanStore.FUNDS_KEY, it.toString()) }
         }
     }
 
@@ -1037,6 +1057,8 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     // The duel record is the owner's own answers, so it travels with the wish.
     .put("dw", wish.duelWins).put("dp", wish.duelsPlayed)
     .put("jr", wish.jar)
+    // «Пропустити»: the owner's own decision about a month, so it travels too.
+    .put("mpsk", wish.skipMonth)
     .put("ab", aboutJson(wish.about))
     // Written exactly as held, empty included, so that what comes back out of the
     // bin is what went in. A wish that predates the list is not filled in here:
@@ -1258,6 +1280,8 @@ fun wishOf(o: JSONObject): Wish {
         duelsPlayed = o.optInt("dp", 0).coerceAtLeast(0),
         // Absent on every wish not tied to a monobank jar.
         jar = o.optString("jr"),
+        // Absent on every wish whose plan was never skipped.
+        skipMonth = o.optString("mpsk"),
         about = aboutOf(o.optJSONObject("ab")),
         // A wish saved with only `u` has no array here at all, and stays empty
         // rather than being filled in on the way past: [wishSources] is the one
@@ -1859,6 +1883,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // in memory until something happens to write the list back.
     var paid by remember { mutableStateOf(store.paidMarks()) }
     var bin by remember { mutableStateOf(store.bin()) }
+    // «На життя», the payday, the funds and the payday ritual — MoneyPlan.kt.
+    val planStore = remember { PlanStore(context) }
+    var funds by remember { mutableStateOf(planStore.funds()) }
+    var planSettings by remember { mutableStateOf(planStore.settings()) }
+    var ritualRecord by remember { mutableStateOf(planStore.ritual()) }
+    var declinedFunds by remember { mutableStateOf(planStore.declinedFunds()) }
+    // Bumped when the income is edited from Огляд, so the figure is read again.
+    var incomeEdits by remember { mutableIntStateOf(0) }
 
     // Both belong to whichever tab is showing, so leaving a tab clears them.
     LaunchedEffect(tab) {
@@ -2036,8 +2068,24 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // Платежі tab edits the income, and both used to stay stale everywhere else
     // until the app was killed.
     val usdSell = remember(returns, tab) { store.fxRate().first }.sell
-    val monthBudget =
-        budget(remember(pays, returns, tab) { store.income() }, monthlyTotal(pays, usdSell, today))
+    // One «Вільно» for every surface: income less the month's payments, plus what
+    // the funds hold of this month's annual charges, less «На життя» when it is on.
+    // See MoneyPlan.kt. With nothing set it is income less payments, as it was.
+    val moneyInputs = MoneyInputs(
+        today = today,
+        income = remember(pays, returns, tab, incomeEdits) { store.income() },
+        pays = pays,
+        marks = paid,
+        wishes = wishes,
+        funds = funds,
+        usdSell = usdSell,
+        life = planSettings.life,
+        payday = planSettings.payday,
+        holidays = remember(returns) { store.holidaysAround(today) },
+        ritual = ritualRecord
+    )
+    val moneyNow = remember(moneyInputs) { moneyPlan(moneyInputs) }
+    val monthBudget = moneyNow.month.asBudget()
 
     val addLabel = when {
         // An item page has its own actions, and the button would cover them.
@@ -2142,6 +2190,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         orders = store.orders()
         paid = store.paidMarks()
         bin = store.bin()
+        funds = planStore.funds()
+        planSettings = planStore.settings()
+        ritualRecord = planStore.ritual()
+        declinedFunds = planStore.declinedFunds()
     }
 
     // A monobank pass writes ticks and jar balances straight into the store; the
@@ -2161,6 +2213,87 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     val monoBalance = remember(monoVersion) {
         MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
     }
+    val monoAt = remember(monoVersion) { MonoStore(context).clientAt() }
+
+    // A fund pays its part of an annual charge once the month is marked or over —
+    // whichever way the mark came, a monobank tick included. Kept, so the next
+    // contribution counts towards next year's charge. See [settledFund].
+    LaunchedEffect(moneyNow.funds) {
+        if (moneyNow.funds != funds) {
+            funds = moneyNow.funds
+            planStore.saveFunds(moneyNow.funds)
+        }
+    }
+
+    /** A tick on Платежі, and what a fund paid for it said out loud. */
+    fun markPaid(marks: List<PaidMark>) {
+        // Onto the marks as the store has them, not over them: the widget and the
+        // morning message may have marked something since this list was read
+        // (QuickActions.kt, HANDOFF §15).
+        val before = paid
+        paid = store.updatePaidMarks { now -> rebaseMarks(now, before, marks) }
+        val settled = settledFunds(funds, pays, paid, today, usdSell)
+        if (settled != funds) {
+            coverageNote(funds, settled, pays, paid, usdSell)?.let { say(it) }
+            funds = settled
+            planStore.saveFunds(settled)
+        }
+    }
+
+    val moneyHost = MoneyHost(
+        inputs = moneyInputs,
+        plan = moneyNow,
+        settings = planSettings,
+        monoBalance = monoBalance,
+        monoAt = monoAt,
+        declinedFunds = declinedFunds,
+        treat = monthTreat(wishes, moneyNow.treatBudget - codTotal(codDues(orders, today)), today.toEpochDay()),
+        saveSettings = { settings ->
+            planSettings = settings
+            planStore.saveSettings(settings)
+        },
+        saveIncome = { value ->
+            store.saveIncome(value)
+            incomeEdits++
+        },
+        updateWishes = { change ->
+            val next = change(wishes)
+            wishes = next
+            store.saveWishes(next)
+        },
+        updateFunds = { change ->
+            val next = change(funds)
+            funds = next
+            planStore.saveFunds(next)
+        },
+        deleteFund = { fund ->
+            val next = funds.filterNot { it.id == fund.id }
+            funds = next
+            planStore.saveFunds(next)
+            // Into the bin like everything else, so a slip costs nothing.
+            recycle(binEntryOf(fund, today.toEpochDay())) {
+                if (funds.none { it.id == fund.id }) {
+                    val back = funds + fund
+                    funds = back
+                    planStore.saveFunds(back)
+                }
+            }
+        },
+        addPay = { pay ->
+            val next = pays + pay
+            pays = next
+            store.savePays(next)
+        },
+        saveRitual = { record ->
+            ritualRecord = record
+            planStore.saveRitual(record)
+        },
+        declineFund = { name ->
+            planStore.declineFund(name)
+            declinedFunds = planStore.declinedFunds()
+        },
+        say = { say(it) }
+    )
 
     // The background pass writes prices, histories and parcel statuses straight
     // into the store. The lists here were read at launch and never again, so the
@@ -2394,6 +2527,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             // so the move is visible rather than something to go
                             // looking for.
                             freeCash = monthBudget.free,
+                            moneyHost = moneyHost,
                             onDelete = { deleteWish(it) },
                             onBought = { order, wish ->
                                 val next = orders + order
@@ -2422,13 +2556,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             adding = adding,
                             setAdding = { adding = it },
                             paid = paid,
-                            // Onto the marks as the store has them, not over them: the
-                            // widget and the morning message may have marked something
-                            // since this list was read (QuickActions.kt, HANDOFF §15).
-                            setPaid = { marks ->
-                                val before = paid
-                                paid = store.updatePaidMarks { now -> rebaseMarks(now, before, marks) }
-                            },
+                            setPaid = { marks -> markPaid(marks) },
                             onDelete = { deletePay(it) },
                             orders = orders,
                             // A plan's purchase went back: the purchase says so.
@@ -2438,7 +2566,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                 store.saveOrders(next)
                             },
                             shared = sharedLetter,
-                            onSharedUsed = { sharedLetter = null }
+                            onSharedUsed = { sharedLetter = null },
+                            moneyHost = moneyHost
                         )
                         TAB_ORDERS -> OrdersScreen(
                             items = orders,
@@ -2472,7 +2601,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                     orders,
                                     monthBudget.income,
                                     usdSell,
-                                    today
+                                    today,
+                                    plan = moneyNow
                                 )
                                 // Parcels that will still take money at the counter —
                                 // ParcelsMore.kt. They rain on their day, they are a
@@ -2484,7 +2614,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                     onOpenRecap = { recapOpen = true },
                                     summary = summary,
                                     weather = weatherWithParcels(
-                                        moneyWeather(pays, paid, today, usdSell, monthBudget.income, summary.freeCash),
+                                        moneyWeather(
+                                            pays, paid, today, usdSell, monthBudget.income, summary.freeCash,
+                                            covered = weatherCover(moneyNow.funds, pays, today, usdSell)
+                                        ),
                                         cod, monthBudget.income, summary.freeCash
                                     ),
                                     balance = monoBalance,
@@ -2509,7 +2642,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                         bin = store.bin()
                                     },
                                     onEmptyBin = { store.emptyBin(); bin = store.bin() },
-                                    onImported = { reload() }
+                                    onImported = { reload() },
+                                    moneyHost = moneyHost
                                 )
                             }
                         }
@@ -2623,6 +2757,8 @@ fun WishlistScreen(
     opened: String?,
     setOpened: (String?) -> Unit,
     freeCash: Double,
+    /** The month and its plans — «Пропустити» and «А якщо куплю зараз?» on a wish page. */
+    moneyHost: MoneyHost? = null,
     /** Deleting is the app's one irreversible act, so it is owned above this screen. */
     onDelete: (Wish) -> Unit,
     /**
@@ -2665,6 +2801,7 @@ fun WishlistScreen(
                     onEdit = { editing = shown },
                     onDelete = { onDelete(shown); setOpened(null) },
                     freeCash = freeCash,
+                    moneyHost = moneyHost,
                     onBought = { trackingNumber, paid ->
                         onBought(
                             Order(
@@ -4116,7 +4253,8 @@ fun SharedTransitionScope.WishDetailScreen(
     onEdit: () -> Unit,
     onDelete: () -> Unit,
     freeCash: Double,
-    onBought: (tracking: String, paid: Double) -> Unit
+    onBought: (tracking: String, paid: Double) -> Unit,
+    moneyHost: MoneyHost? = null
 ) {
     // The wish as it is now, for the work that lands seconds after it began. The
     // parameter seen inside a coroutine is the one from the frame it started in,
@@ -4135,6 +4273,8 @@ fun SharedTransitionScope.WishDetailScreen(
     var pickingHold by remember { mutableStateOf(false) }
     var addingSource by remember { mutableStateOf(false) }
     var buying by remember { mutableStateOf(false) }
+    // «А якщо куплю зараз?» — see Afford.kt.
+    var affording by remember { mutableStateOf(false) }
     var refreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     // Which of the three views of the history is showing: hryvnia, dollars, or
@@ -4215,6 +4355,8 @@ fun SharedTransitionScope.WishDetailScreen(
     }
     // The same five cases the tiles inside the section choose between, in one line.
     val planSummary = when {
+        held && !plan.reached -> "Бажання відкладене — план зараз не рахується"
+        wish.skipMonth == monthKey(today) && !plan.reached -> "Пропущено цього місяця"
         plan.reached -> "Сума зібрана"
         byDate && deadlineDate == null -> "Дату покупки ще не обрано"
         byDate && monthsLeft == 0 -> "Потрібно ${money(plan.remaining)} одразу"
@@ -4853,7 +4995,11 @@ fun SharedTransitionScope.WishDetailScreen(
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    personal("Вільно після витрат ${money(freeCash)} на місяць"),
+                                    // The same «Вільно» as Огляд: after life too, when it is on.
+                                    personal(
+                                        (if ((moneyHost?.plan?.month?.life ?: 0.0) > 0.0) "Вільно після платежів і життя " else "Вільно після витрат ") +
+                                            "${money(freeCash)} на місяць"
+                                    ),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine
@@ -4945,6 +5091,22 @@ fun SharedTransitionScope.WishDetailScreen(
                             }
                         }
                     }
+
+                    // A held wish asks nothing of the month — the app does not nag
+                    // about what was decided (HANDOFF §12) — and says so here. Any
+                    // other plan can skip this month: «Пропустити», with its price.
+                    if (held && !plan.reached) {
+                        Text(
+                            "Поки бажання відкладене, його план не входить у «Плани не сходяться» " +
+                                "і не зменшує «Подарунок собі».",
+                            Modifier.padding(top = Space.md),
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine
+                        )
+                    } else if (moneyHost != null) {
+                        WishSkipRow(wish, today, onChange)
+                    }
                 }
             }
 
@@ -4976,6 +5138,12 @@ fun SharedTransitionScope.WishDetailScreen(
                     ) {
                         Icon(Icons.Default.ShoppingCartCheckout, null)
                         Text("  Я купив це")
+                    }
+                }
+                // What buying it now would do to the money — before it is done.
+                if (moneyHost != null && wish.price > 0.0) {
+                    TextButton({ affording = true }, Modifier.fillMaxWidth()) {
+                        Text("А якщо куплю зараз?", color = TextPrimary)
                     }
                 }
                 Spacer(Modifier.height(Space.md))
@@ -5081,6 +5249,15 @@ fun SharedTransitionScope.WishDetailScreen(
                 }
             }
         }
+    }
+
+    if (affording && moneyHost != null) {
+        AffordSheet(
+            moneyHost,
+            initialName = wish.name,
+            initialPrice = bestSource(wishSources(wish))?.price?.takeIf { it > 0.0 } ?: wish.price,
+            wishId = wish.id
+        ) { affording = false }
     }
 
     if (addingSource) {
@@ -5993,7 +6170,9 @@ fun PaymentsScreen(
     onOrderReturned: (orderId: String, day: Long) -> Unit = { _, _ -> },
     /** A letter about a subscription shared into the app, waiting here. */
     shared: SharedLetter? = null,
-    onSharedUsed: () -> Unit = {}
+    onSharedUsed: () -> Unit = {},
+    /** «На життя», the funds and the payday — MoneyPlan.kt. Null draws the screen as it was. */
+    moneyHost: MoneyHost? = null
 ) {
     val touch = rememberTouch()
     // The rate the exchange screen already fetched and cached. Dollar entries are
@@ -6010,7 +6189,10 @@ fun PaymentsScreen(
     val committed = yearlyCommitment(items, rate.sell, today)
     var income by remember { mutableDoubleStateOf(store.income()) }
     var editingIncome by remember { mutableStateOf(false) }
-    val month = budget(income, monthly)
+    // The same «Вільно» as Огляд — life and the funds in it — from this screen's
+    // own income, so an edit here shows at once.
+    val honest = moneyHost?.let { honestMonth(it.inputs.copy(income = income, pays = items, marks = paid), it.plan.funds) }
+    val month = honest?.asBudget() ?: budget(income, monthly)
     var editing by remember { mutableStateOf<Int?>(null) }
     val shift = yearlyShift(items, rate.sell, today)
     val thisMonth = monthKey(today)
@@ -6144,7 +6326,12 @@ fun PaymentsScreen(
                             Modifier.revealOnEnter(1, entrance).height(IntrinsicSize.Min),
                             horizontalArrangement = Arrangement.spacedBy(Space.md)
                         ) {
-                            MonthLeftTile(committedOf(month), Modifier.weight(1f).fillMaxHeight()) { editingIncome = true }
+                            MonthLeftTile(
+                                committedOf(month),
+                                Modifier.weight(1f).fillMaxHeight(),
+                                lifeShare = honest?.let { lifeShare(it) } ?: 0f,
+                                detail = honest?.let { monthBarDetail(it) }
+                            ) { editingIncome = true }
                             BentoTile(TileSand, Modifier.weight(1f).fillMaxHeight()) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
@@ -6420,7 +6607,11 @@ fun PaymentsScreen(
                                         touch.switched(!done)
                                         setPaid(togglePaid(paid, pay, markMonth))
                                     },
-                                    onOpen = { editing = position }
+                                    onOpen = { editing = position },
+                                    // An annual payment with a fund wears its ring.
+                                    extra = moneyHost?.plan?.funds?.firstOrNull { fundPay(it, items) == pay }?.let { fund ->
+                                        { tile -> FundOnTile(fund, pay, rate.sell, tile) }
+                                    }
                                 )
                             }
                             if (pair.size == 1) Spacer(Modifier.weight(1f))
@@ -6518,8 +6709,23 @@ fun PaymentsScreen(
                 // the month the charge actually lands shows a month that fits when it
                 // does not.
                 val dormant = annualElsewhere(items, today)
+                // 🫙 Фонди take the place of the «Далі ніж за місяць» line: each annual
+                // charge can be saved for a little a month, and a fund of its own —
+                // a cushion, the car's service — sits beside them. See Funds.kt.
+                if (moneyHost != null) {
+                    item(key = "funds") {
+                        Column(
+                            Modifier
+                                .padding(horizontal = Space.screen)
+                                .padding(top = Space.xl, bottom = Space.sm)
+                        ) {
+                            SectionTitle(if (dormant.isNotEmpty()) "Раз на рік" else "Фонди")
+                            FundsTile(moneyHost)
+                        }
+                    }
+                }
                 if (dormant.isNotEmpty()) {
-                    item(key = "annual-elsewhere") {
+                    if (moneyHost == null) item(key = "annual-elsewhere") {
                         Column(
                             Modifier
                                 .padding(horizontal = Space.screen)
@@ -6578,12 +6784,20 @@ fun PaymentsScreen(
                                     )
                                 }
                                 // The smoothed figure, and only ever here beside the
-                                // real one above it.
+                                // real one above it. With a fund, what the fund holds
+                                // instead — one payment never shows two sums a month.
+                                val fund = moneyHost?.plan?.funds?.firstOrNull { fundPay(it, items) == pay }
                                 Text(
-                                    personal("≈${amountLabel(
-                                        kotlin.math.round(monthlyEquivalent(pay)),
-                                        pay.currency
-                                    )}/міс"),
+                                    personal(
+                                        if (fund != null) {
+                                            fundProgressLine(fund, pay, rate.sell)
+                                        } else {
+                                            "≈${amountLabel(
+                                                kotlin.math.round(monthlyEquivalent(pay)),
+                                                pay.currency
+                                            )}/міс"
+                                        }
+                                    ),
                                     color = TextDisabled,
                                     fontSize = Type.captionSize,
                                     // Right-aligned against the row's edge, so unequal
@@ -6619,7 +6833,13 @@ fun PaymentsScreen(
         }
     }
     if (editingIncome) {
-        IncomeDialog(income, { editingIncome = false }) { value ->
+        IncomeDialog(
+            income,
+            { editingIncome = false },
+            payday = moneyHost?.settings?.payday,
+            holidays = moneyHost?.inputs?.holidays ?: emptySet(),
+            savePayday = { payday -> moneyHost?.let { it.saveSettings(it.settings.copy(payday = payday)) } }
+        ) { value ->
             income = value
             store.saveIncome(value)
             editingIncome = false
@@ -6660,7 +6880,11 @@ fun PaymentsScreen(
                 // Marks are matched by name, so a rename carries them across. Left
                 // behind, the renamed rent read as unpaid this month, the reminder
                 // started again, and every past month went red.
-                if (changed.name != pay.name) setPaid(renamePaidMarks(paid, pay.name, changed.name))
+                if (changed.name != pay.name) {
+                    setPaid(renamePaidMarks(paid, pay.name, changed.name))
+                    // A fund for this payment follows the new name, as the marks do.
+                    moneyHost?.updateFunds { renamedFunds(it, pay.name, changed.name) }
+                }
                 editing = null
             }
         }
@@ -6686,7 +6910,9 @@ fun PaymentTile(
     done: Boolean,
     modifier: Modifier = Modifier,
     onToggle: () -> Unit,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    /** Drawn under the trial line, in the tile's colour — a fund's ring (MoneyPlanUi.kt). */
+    extra: (@Composable (Color) -> Unit)? = null
 ) {
     // A paid tile goes quiet: the pastel gives way to the dark ground, so a row of
     // tiles reads as what is still to pay (colour) and what is done (dark). Fading
@@ -6732,7 +6958,9 @@ fun PaymentTile(
         )
         // The annual figure is the one that changes minds about a subscription;
         // an annual charge says both denominators. See [billingLine].
-        TileCaption(personal(instalmentLine(pay, today) ?: billingLine(pay)), shown)
+        // With a fund, its ring says what goes in a month, so the smoothed
+        // «≈…/міс» steps back: one payment, one sum a month.
+        TileCaption(personal(instalmentLine(pay, today) ?: if (extra != null && isAnnual(pay)) "раз на рік" else billingLine(pay)), shown)
         if (isInstalment(pay)) {
             InstalmentBar(instalmentsBehind(pay, today), pay.instalments, inkOn(shown), Modifier.padding(top = Space.xs))
         }
@@ -6749,6 +6977,7 @@ fun PaymentTile(
                 overflow = TextOverflow.Ellipsis
             )
         }
+        extra?.invoke(shown)
         // What it used to cost: the whole defence against a quiet raise.
         amountMoveLine(pay)?.let { TileCaption(personal(it), shown) }
         Spacer(Modifier.weight(1f))
@@ -6765,7 +6994,15 @@ fun PaymentTile(
  * sand «Сплачено». Tapping it edits the income, as the row it replaced did.
  */
 @Composable
-fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: () -> Unit) {
+fun MonthLeftTile(
+    bar: Committed,
+    modifier: Modifier = Modifier,
+    /** «На життя»'s share of the income: its own 🛒 segment, after the payments'. */
+    lifeShare: Float = 0f,
+    /** The caption when life or the funds are in the month — see [monthBarDetail]. */
+    detail: String? = null,
+    onEditIncome: () -> Unit
+) {
     BentoTile(SurfaceRaised, modifier, onClick = onEditIncome, onClickLabel = "Змінити дохід") {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -6789,19 +7026,35 @@ fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: (
         // No bar without an income: its denominator would be invented.
         if (bar.state != CommittedState.UNKNOWN) {
             Spacer(Modifier.height(Space.sm))
+            val grown = entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 300L).coerceIn(0f, 1f)
+            // Life rides after the payments in the same lime, lighter: one accent,
+            // two parts of what the month is spoken for by.
+            val life = if (bar.share > 0f) (lifeShare / bar.share).coerceIn(0f, 1f) else 0f
             Box(Modifier.fillMaxWidth().height(6.dp).background(HairLine, Radius.pill)) {
-                Box(
-                    Modifier
-                        .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 300L).coerceIn(0f, 1f))
-                        .height(6.dp)
-                        .background(if (bar.state == CommittedState.OVERSPENT) Negative else Accent, Radius.pill)
-                )
+                Row(Modifier.fillMaxWidth(grown).height(6.dp).clip(Radius.pill)) {
+                    if (life < 1f) {
+                        Box(
+                            Modifier
+                                .weight(1f - life)
+                                .height(6.dp)
+                                .background(if (bar.state == CommittedState.OVERSPENT) Negative else Accent)
+                        )
+                    }
+                    if (life > 0f) {
+                        Box(
+                            Modifier
+                                .weight(life)
+                                .height(6.dp)
+                                .background((if (bar.state == CommittedState.OVERSPENT) Negative else Accent).copy(alpha = 0.45f))
+                        )
+                    }
+                }
             }
         }
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.height(Space.sm))
         TileCaption(
-            if (bar.state == CommittedState.UNKNOWN) "Торкніться, щоб вказати дохід" else personal(committedDetail(bar)),
+            if (bar.state == CommittedState.UNKNOWN) "Торкніться, щоб вказати дохід" else personal(detail ?: committedDetail(bar)),
             SurfaceRaised,
             maxLines = 3
         )
@@ -8611,10 +8864,17 @@ fun SettingsScreen(
     /** The parcels' money inside the forecast, day by day. */
     weatherParcels: List<CodChip> = emptyList(),
     /** «Мені винні»: returns still waiting for their money. Null when none. */
-    owed: Owed? = null
+    owed: Owed? = null,
+    /** «На життя», the payday, the funds and the plans — MoneyPlan.kt. Null draws the screen as it was. */
+    moneyHost: MoneyHost? = null
 ) {
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
+    // The plan's dialogs and sheets — see MoneyPlanUi.kt.
+    var lifeOpen by remember { mutableStateOf(false) }
+    var incomeOpen by remember { mutableStateOf(false) }
+    var affordOpen by remember { mutableStateOf(false) }
+    var skipping by remember { mutableStateOf<PlanAsk?>(null) }
     var checking by remember { mutableStateOf(false) }
     // «Мій номер для Нової пошти» — a preference of this phone, in no backup.
     val parcelPrefs = remember { ParcelPrefs(context) }
@@ -8731,17 +8991,27 @@ fun SettingsScreen(
                     // saved nothing yet the loudest thing here said «0 ₴», «0%» and an
                     // empty ring: three ways of saying nothing.
                     val bar = committedOf(
-                        Budget(summary.income, summary.monthlyExpenses, summary.freeCash, summary.overspent, summary.budgetUnknown)
+                        moneyHost?.plan?.month?.asBudget()
+                            ?: Budget(summary.income, summary.monthlyExpenses, summary.freeCash, summary.overspent, summary.budgetUnknown)
                     )
+                    // With «На життя» on, the figure is «після платежів і життя», and
+                    // the panel opens the one number it rests on.
+                    val lifeOn = moneyHost?.plan?.month?.let { it.life > 0.0 } == true
                     HeroPanel(
-                        modifier = Modifier.revealOnEnter(1, entrance),
-                        label = when {
+                        modifier = Modifier
+                            .revealOnEnter(1, entrance)
+                            .then(if (lifeOn) Modifier.clip(Radius.lg).clickable(onClickLabel = "Змінити витрати на життя") { lifeOpen = true } else Modifier),
+                        label = moneyHost?.plan?.month?.let { heroLabel(it) } ?: when {
                             summary.budgetUnknown -> "Вкажіть дохід на Платежах"
                             summary.overspent -> "Не сходиться цього місяця"
                             else -> "Вільно до кінця місяця"
                         },
                         value = personalFigure(if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash)),
-                        caption = personal(committedDetail(bar)),
+                        caption = personal(
+                            moneyHost?.let { host ->
+                                heroCaption(host.plan.month, paydayCountdown(host.inputs.payday, host.today, host.inputs.holidays))
+                            } ?: committedDetail(bar)
+                        ),
                         muted = summary.budgetUnknown,
                         emoji = "💰",
                         // The bar, and the eye that hides the sums on every screen
@@ -8774,6 +9044,41 @@ fun SettingsScreen(
                     // Below the panel rather than inside it: the figure is income less
                     // the standing costs, and a parcel's money is said beside it.
                     parcelsToPay?.let { ParcelsToPayLine(it) }
+                    // What the card can spend a day until money arrives — monobank's
+                    // own balance and a known payday only; without either nothing
+                    // changes. And on a payday, the ritual. See MoneyPlan.kt.
+                    moneyHost?.let { host ->
+                        val allowanceNow = host.monoBalance?.takeIf { host.inputs.payday.known }
+                            ?.let { allowance(host.inputs, host.plan, it) }
+                        allowanceNow?.let {
+                            Spacer(Modifier.height(Space.md))
+                            AllowanceTile(it, host.monoAt, Modifier.revealOnEnter(2, entrance))
+                        }
+                        ritualFor(host.inputs, host.plan)?.let { ritual ->
+                            Spacer(Modifier.height(Space.md))
+                            RitualTile(
+                                ritual,
+                                host.today,
+                                Modifier.revealOnEnter(2, entrance),
+                                onDone = { chosen ->
+                                    // Each list changed as it is now; the record kept for «Скасувати».
+                                    host.updateWishes { now -> applyRitual(now, emptyList(), chosen, ritual.anchor, host.today).first }
+                                    host.updateFunds { now -> applyRitual(emptyList(), now, chosen, ritual.anchor, host.today).second }
+                                    val record = applyRitual(emptyList(), emptyList(), chosen, ritual.anchor, host.today).third
+                                    host.saveRitual(record)
+                                    host.say("Записано: відкладено ${money(record.total)}")
+                                },
+                                onUndo = { done ->
+                                    host.updateWishes { now -> undoRitual(now, emptyList(), done).first }
+                                    host.updateFunds { now -> undoRitual(emptyList(), now, done).second }
+                                    host.saveRitual(null)
+                                },
+                                onLater = {
+                                    host.saveRitual(RitualRecord(ritual.anchor.toEpochDay(), false, host.today.toEpochDay()))
+                                }
+                            )
+                        }
+                    }
 
                     // The week ahead as weather: a rainy Wednesday seen on Monday.
                     if (weather.isNotEmpty()) {
@@ -8861,6 +9166,16 @@ fun SettingsScreen(
                         Spacer(Modifier.height(Space.md))
                         TreatTile(gift, Modifier.revealOnEnter(5, entrance)) { onOpenWish(gift.wish.id) }
                     }
+                    // «Чи потягну?» before a purchase, and how much of next month is
+                    // already paid for — the second only once a «Подушка» exists.
+                    moneyHost?.let { host ->
+                        Spacer(Modifier.height(Space.md))
+                        AffordInvite(Modifier.revealOnEnter(6, entrance)) { affordOpen = true }
+                        monthAhead(host.inputs, host.plan)?.let { ahead ->
+                            Spacer(Modifier.height(Space.md))
+                            MonthAheadTile(ahead, Modifier.revealOnEnter(6, entrance))
+                        }
+                    }
                     if (summary.plansConflict) {
                         Spacer(Modifier.height(Space.md))
                         Card(
@@ -8877,15 +9192,29 @@ fun SettingsScreen(
                                 )
                                 Text(
                                     personal(
-                                        "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
-                                            "а вільно ${money(summary.freeCash)}. " +
-                                            "Не вистачає ${money(summary.plansOverBudget)}."
+                                        moneyHost?.let { plansConflictLine(it.plan) }
+                                            ?: ("Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
+                                                "а вільно ${money(summary.freeCash)}. " +
+                                                "Не вистачає ${money(summary.plansOverBudget)}.")
                                     ),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine,
                                     modifier = Modifier.padding(top = Space.xs)
                                 )
+                                // One tap instead of only a warning: skip the least wanted
+                                // plan this month — its price said before it is done.
+                                moneyHost?.let { skipCandidate(it.plan) }?.let { ask ->
+                                    TextButton({ skipping = ask }, Modifier.padding(top = Space.xs)) {
+                                        // White, not lime: the lime on this screen is the hero's.
+                                        Text(
+                                            "💤 Пропустити цього місяця: «${ask.name}»",
+                                            color = TextPrimary,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -9107,6 +9436,22 @@ fun SettingsScreen(
                 }
 
                 SectionTitle("Налаштування")
+                // When the money comes, and what life costs: the two numbers the
+                // one «Вільно» rests on beside the income. See MoneyPlan.kt.
+                moneyHost?.let { host ->
+                    SettingsRow(
+                        Icons.Default.Payments,
+                        "Дохід і день зарплати",
+                        incomeRowDetail(host.inputs.income, host.settings.payday),
+                        onClick = { incomeOpen = true }
+                    )
+                    SettingsRow(
+                        Icons.Default.ShoppingCart,
+                        "Витрати на життя",
+                        lifeRowDetail(host.settings.life),
+                        onClick = { lifeOpen = true }
+                    )
+                }
                 // Filled list items painted a large lighter block across the screen and
                 // left a hard seam under the header. They sit on the page instead.
                 // The calm half of what the strip above used to say on every visit.
@@ -9357,6 +9702,44 @@ fun SettingsScreen(
     if (phoneOpen) {
         NovaPhoneDialog(novaPhone, { phoneOpen = false }) { typed ->
             parcelPrefs.savePhone(typed).also { saved -> if (saved) novaPhone = parcelPrefs.phone() }
+        }
+    }
+    moneyHost?.let { host ->
+        if (lifeOpen) {
+            LifeDialog(host.settings.life, { lifeOpen = false }) { life ->
+                host.saveSettings(host.settings.copy(life = life))
+                lifeOpen = false
+            }
+        }
+        if (incomeOpen) {
+            IncomeDialog(
+                host.inputs.income,
+                { incomeOpen = false },
+                payday = host.settings.payday,
+                holidays = host.inputs.holidays,
+                savePayday = { payday -> host.saveSettings(host.settings.copy(payday = payday)) }
+            ) { value ->
+                host.saveIncome(value)
+                incomeOpen = false
+            }
+        }
+        if (affordOpen) AffordSheet(host) { affordOpen = false }
+        skipping?.let { ask ->
+            SkipDialog(ask, host.today, close = { skipping = null }) {
+                when (ask.kind) {
+                    PlanKind.WISH -> host.updateWishes { list ->
+                        list.map { if (it.id == ask.id) skippedWish(it, host.today, true) else it }
+                    }
+                    PlanKind.FUND -> host.updateFunds { list ->
+                        list.map { if (it.id == ask.id) skippedFund(it, host.today, true) else it }
+                    }
+                }
+                host.say(
+                    "«${ask.name}» пропущено в ${monthLocative(host.today.monthValue)} — " +
+                        "з 1 ${monthGenitive(host.today.plusMonths(1).monthValue)} знову"
+                )
+                skipping = null
+            }
         }
     }
     available?.let { update ->
@@ -9862,13 +10245,25 @@ fun verdictInk(verdict: PurchaseVerdict): Color = when (verdict) {
  * it, so the wishlist can plan against a real figure instead of a guess.
  */
 @Composable
-fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
+fun IncomeDialog(
+    current: Double,
+    close: () -> Unit,
+    /**
+     * The payday, asked here because it is part of the same question — when the
+     * money comes. Null leaves the dialog as it was. See MoneyPlan.kt.
+     */
+    payday: Payday? = null,
+    holidays: Set<Long> = emptySet(),
+    savePayday: (Payday) -> Unit = {},
+    save: (Double) -> Unit
+) {
     var text by remember { mutableStateOf(amountText(current)) }
+    var day by remember { mutableStateOf(payday ?: Payday()) }
     AlertDialog(
         onDismissRequest = close,
         title = { Text("Дохід на місяць") },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
                     "Потрібен лише для того, щоб порахувати, скільки лишається після " +
                         "постійних витрат. Нікуди не надсилається.",
@@ -9877,9 +10272,15 @@ fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
                     lineHeight = Type.captionLine
                 )
                 NumberField("Сума, ₴", text) { text = it }
+                if (payday != null) PaydayFields(day, LocalDate.now(), holidays) { day = it }
             }
         },
-        confirmButton = { Button({ save(parseAmount(text)) }) { Text("Зберегти") } },
+        confirmButton = {
+            Button({
+                if (payday != null && day != payday) savePayday(day)
+                save(parseAmount(text))
+            }) { Text("Зберегти") }
+        },
         dismissButton = { TextButton(close) { Text("Скасувати") } }
     )
 }

@@ -70,6 +70,17 @@ private val MONTHS_GENITIVE = listOf(
 fun formatDate(date: LocalDate): String =
     "${date.dayOfMonth} ${MONTHS_GENITIVE[date.monthValue - 1]} ${date.year}"
 
+/** «квітня» — a month after «з» or «до»: «з квітня на травень». */
+fun monthGenitive(month: Int): String = MONTHS_GENITIVE[(month - 1).coerceIn(0, 11)]
+
+private val MONTHS_LOCATIVE = listOf(
+    "січні", "лютому", "березні", "квітні", "травні", "червні",
+    "липні", "серпні", "вересні", "жовтні", "листопаді", "грудні"
+)
+
+/** «жовтні» — a month after «в»/«у»: «пропущено в жовтні». */
+fun monthLocative(month: Int): String = MONTHS_LOCATIVE[(month - 1).coerceIn(0, 11)]
+
 /** "10 грудня" — the same date as a heading, where the year is noise. */
 fun dayMonth(date: LocalDate): String =
     "${date.dayOfMonth} ${MONTHS_GENITIVE[date.monthValue - 1]}"

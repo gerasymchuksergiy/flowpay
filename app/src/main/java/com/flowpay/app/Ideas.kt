@@ -78,11 +78,20 @@ fun moneyWeather(
     usdSell: Double,
     income: Double,
     free: Double,
-    days: Int = 7
+    days: Int = 7,
+    /**
+     * What a fund already holds of an annual charge in these days, by payment
+     * name — see [weatherCover]. Money put aside months ago is not money leaving
+     * this week, so the covered part does not rain a second time.
+     */
+    covered: Map<String, Double> = emptyMap()
 ): List<MoneyDay> = (0 until days).map { offset ->
     val date = today.plusDays(offset.toLong())
     val due = chargedOn(items, date).filterNot { isPaid(marks, it.name, monthKey(date)) }
-    val leaving = due.sumOf { if (it.currency == USD) it.amount * usdSell.coerceAtLeast(0.0) else it.amount }
+    val leaving = due.sumOf {
+        val uah = if (it.currency == USD) it.amount * usdSell.coerceAtLeast(0.0) else it.amount
+        (uah - (covered[it.name] ?: 0.0)).coerceAtLeast(0.0)
+    }
     val sky = moneySky(leaving, income, free)
     MoneyDay(date, sky.emoji, sky.word, leaving, due.map { it.name })
 }
