@@ -5,6 +5,7 @@
 # WorkManager builds its workers from the class names recorded in its database.
 -keep class com.flowpay.app.PriceWorker { *; }
 -keep class com.flowpay.app.ReminderWorker { *; }
+-keep class com.flowpay.app.TelegramWorker { *; }
 
 # The launcher activity is named in the manifest.
 -keep class com.flowpay.app.MainActivity { *; }
