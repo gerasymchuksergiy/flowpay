@@ -198,6 +198,200 @@ class PricesMoreTest {
         assertEquals(AlertKind.TARGET_REACHED, priceAlertFor(before, 1540.0).kind)
     }
 
+    // ------------------------------------------------- sharing a link already watched
+
+    @Test
+    fun `sharing a link already on the list opens that wish`() {
+        val watched = rozetkaWish()
+        val other = Wish("w2", "Інше", "https://prom.ua/p1", "", 100.0, history = emptyList())
+
+        val link = sharedLink("Глянь: $rozetkaUrl", listOf(other, watched))
+
+        assertEquals("w1", wishToOpen(link))
+        assertEquals(
+            "«Навушники JBL Tune 520BT Black (JBLT520BTBLKEU)» уже у списку — відкриваю сторінку",
+            knownShareNote(watched)
+        )
+    }
+
+    @Test
+    fun `a new link or no link at all opens nothing`() {
+        val wishes = listOf(rozetkaWish())
+
+        assertNull(wishToOpen(sharedLink("https://prom.ua/p2", wishes)))
+        assertNull(wishToOpen(sharedLink("без посилання", wishes)))
+    }
+
+    @Test
+    fun `the shop app's share tags do not make a known link look new`() {
+        val wishes = listOf(rozetkaWish())
+
+        assertEquals("w1", wishToOpen(sharedLink("$rozetkaUrl?utm_source=app&utm_medium=share", wishes)))
+        assertEquals("w1", wishToOpen(sharedLink("https://www.rozetka.com.ua/ua/jbl_jblt520btblkeu/p369896649", wishes)))
+        // A parameter that is part of the product stays part of it.
+        val sized = listOf(rozetkaWish().copy(id = "w3", url = "https://shop.example/p?size=42", sources = emptyList()))
+        assertNull(wishToOpen(sharedLink("https://shop.example/p?size=43&utm_source=x", sized)))
+        assertEquals("w3", wishToOpen(sharedLink("https://shop.example/p?size=42&utm_source=x", sized)))
+    }
+
+    // ------------------------------------------------------------ «Схоже на збій»
+
+    private fun watched(vararg points: PricePoint, price: Double = points.last().price) = Wish(
+        id = "g1", name = "Навушники", url = "https://shop.example/h", image = "",
+        price = price, history = points.toList(), checkedDay = points.last().day
+    )
+
+    @Test
+    fun `a one-check dip far from both neighbours is asked about`() {
+        val history = listOf(PricePoint(1599.0, 20_300L), PricePoint(15.0, 20_340L), PricePoint(1599.0, 20_340L))
+
+        assertEquals(listOf(PricePoint(15.0, 20_340L)), glitchCandidates(history))
+    }
+
+    @Test
+    fun `a spike lasting a day is asked about too`() {
+        val history = listOf(PricePoint(1000.0, 20_300L), PricePoint(1500.0, 20_340L), PricePoint(1000.0, 20_341L))
+
+        assertEquals(listOf(PricePoint(1500.0, 20_340L)), glitchCandidates(history))
+    }
+
+    @Test
+    fun `a sale that lasted three days, a step, and a small dip are left alone`() {
+        val sale = listOf(PricePoint(1599.0, 20_300L), PricePoint(999.0, 20_340L), PricePoint(1599.0, 20_343L))
+        val step = listOf(PricePoint(1599.0, 20_300L), PricePoint(999.0, 20_340L), PricePoint(899.0, 20_341L))
+        val small = listOf(PricePoint(1000.0, 20_300L), PricePoint(700.0, 20_340L), PricePoint(1000.0, 20_341L))
+
+        assertTrue(glitchCandidates(sale).isEmpty())
+        assertTrue(glitchCandidates(step).isEmpty())
+        assertTrue(glitchCandidates(small).isEmpty())
+    }
+
+    @Test
+    fun `the price standing now is never a candidate and cannot be set aside`() {
+        val history = listOf(PricePoint(1599.0, 20_300L), PricePoint(15.0, 20_340L))
+
+        assertTrue(glitchCandidates(history).isEmpty())
+        assertFalse(canSetAside(history, PricePoint(15.0, 20_340L)))
+        assertTrue(canSetAside(history, PricePoint(1599.0, 20_300L)))
+    }
+
+    @Test
+    fun `a point the owner called real is not asked about again`() {
+        val wish = watched(PricePoint(1599.0, 20_300L), PricePoint(15.0, 20_340L), PricePoint(1599.0, 20_340L))
+
+        val kept = withRealPoint(wish, PricePoint(15.0, 20_340L))
+
+        assertTrue(glitchCandidates(kept.history, kept.realPoints).isEmpty())
+        assertEquals(wish.history, kept.history)
+    }
+
+    @Test
+    fun `a set-aside point stops counting everywhere the history is read`() {
+        val glitch = PricePoint(15.0, 20_340L)
+        val wish = watched(
+            PricePoint(1599.0, 20_280L), PricePoint(1599.5, 20_300L), glitch, PricePoint(1599.0, 20_340L),
+            PricePoint(1549.0, 20_350L)
+        ).copy(targetPrice = 1500.0)
+
+        val clean = withoutGlitch(wish, glitch)
+
+        assertFalse(clean.history.any { samePoint(it, glitch) })
+        assertEquals(listOf(SetAside(glitch, PricePoint(1599.0, 20_340L))), clean.excluded)
+        // The lowest ever and the purchase verdict.
+        assertEquals(15.0, lowestTracked(wish), 0.001)
+        assertEquals(1549.0, lowestTracked(clean), 0.001)
+        assertEquals(PurchaseVerdict.PATIENT, purchaseReview(1549.0, lowestTracked(clean)).verdict)
+        // The thirty-day window and the all-time low the verdict and the bar use.
+        val insight = priceInsight(clean.history, clean.price, 20_350L)
+        assertEquals(1549.0, insight.lowest, 0.001)
+        assertEquals(1549.0, insight.referenceLow, 0.001)
+        // The target hints.
+        assertFalse(targetSuggestions(clean.history, 1549.0, 20_350L).any { it.price == 15.0 })
+        // «новий мінімум»: 1 400 is a new low once the glitch is gone, and was not before.
+        assertEquals(AlertKind.NEW_LOW, priceAlertFor(clean.copy(targetPrice = 0.0), 1400.0).kind)
+        assertFalse(priceAlertFor(wish.copy(targetPrice = 0.0), 1400.0).kind == AlertKind.NEW_LOW)
+        // The shop's discount check: the thirty days before 1 549 no longer hold 15.
+        assertEquals(1599.0, lowBeforeCurrent(clean.history, 1549.0, 20_350L)!!, 0.001)
+    }
+
+    @Test
+    fun `putting a point back restores the history exactly, even on a shared day`() {
+        val glitch = PricePoint(15.0, 20_340L, 41.2, SOURCE_MONOBANK)
+        val wish = watched(PricePoint(1599.0, 20_300L), glitch, PricePoint(1599.0, 20_340L))
+
+        val back = withGlitchBack(withoutGlitch(wish, glitch), glitch)
+
+        assertEquals(wish.history, back.history)
+        assertTrue(back.excluded.isEmpty())
+        // Put back by hand means real: the hint does not ask about it again.
+        assertTrue(glitchCandidates(back.history, back.realPoints).isEmpty())
+    }
+
+    @Test
+    fun `the counts read as Ukrainian`() {
+        assertEquals("1 точка схожа на збій магазину — не враховувати?", glitchHint(1))
+        assertEquals("2 точки схожі на збій магазину — не враховувати?", glitchHint(2))
+        assertEquals("5 точок схожі на збій магазину — не враховувати?", glitchHint(5))
+        assertEquals("21 точка схожа на збій магазину — не враховувати?", glitchHint(21))
+        assertEquals("1 точку не враховано", excludedNote(1))
+        assertEquals("3 точки не враховано", excludedNote(3))
+        assertEquals("11 точок не враховано", excludedNote(11))
+        assertNull(excludedNote(0))
+    }
+
+    // ------------------------------------------------------ the gap while sold out
+
+    @Test
+    fun `a gap opens when the thing is seen sold out and closes when a price is back`() {
+        val opened = stockGapsAfter(emptyList(), Freshness.OUT_OF_STOCK, 20_340L)
+        assertEquals(listOf(StockGap(20_340L)), opened)
+        // Still sold out, or a page that said nothing: the same gap, untouched.
+        assertEquals(opened, stockGapsAfter(opened, Freshness.OUT_OF_STOCK, 20_341L))
+        assertEquals(opened, stockGapsAfter(opened, Freshness.UNREADABLE, 20_342L))
+        assertEquals(listOf(StockGap(20_340L, 20_350L)), stockGapsAfter(opened, Freshness.OK, 20_350L))
+        // A price with no gap open changes nothing.
+        assertTrue(stockGapsAfter(emptyList(), Freshness.OK, 20_350L).isEmpty())
+    }
+
+    @Test
+    fun `a refresh records the gap on the wish itself`() {
+        val wish = rozetkaWish().copy(checkedDay = 20_365L)
+        val soldOut = rozetka.replace("schema.org/InStock", "schema.org/OutOfStock")
+
+        val gone = (readWish(wish, soldOut, 20_370L) as Reading.Stale).wish
+        assertEquals(listOf(StockGap(20_370L)), gone.stockGaps)
+
+        val back = (readWish(gone, rozetka, 20_380L) as Reading.Priced).wish
+        assertEquals(listOf(StockGap(20_370L, 20_380L)), back.stockGaps)
+    }
+
+    @Test
+    fun `the gap is placed on the chart by date, and an open one runs to the end`() {
+        val points = listOf(PricePoint(1000.0, 100L), PricePoint(900.0, 150L), PricePoint(900.0, 200L))
+
+        assertEquals(listOf(0.2f..0.4f), gapSpans(points, listOf(StockGap(120L, 140L))))
+        assertEquals(listOf(0.9f..1.0f), gapSpans(points, listOf(StockGap(190L))))
+        // Undated points are spaced evenly; a day has no place on such a chart.
+        assertTrue(gapSpans(points + PricePoint(800.0, 0L), listOf(StockGap(120L, 140L))).isEmpty())
+    }
+
+    @Test
+    fun `glitches, real points and gaps survive the round trip through storage`() {
+        val glitch = PricePoint(15.0, 20_340L)
+        val wish = withRealPoint(
+            withoutGlitch(watched(PricePoint(1599.0, 20_300L), glitch, PricePoint(1599.0, 20_340L)), glitch),
+            PricePoint(1599.0, 20_300L)
+        ).copy(stockGaps = listOf(StockGap(20_200L, 20_210L), StockGap(20_350L)))
+
+        val back = wishOf(wishJson(wish))
+
+        assertEquals(wish.excluded.map { it.point }, back.excluded.map { it.point })
+        assertEquals(wish.excluded.map { it.next?.price to it.next?.day }, back.excluded.map { it.next?.price to it.next?.day })
+        assertEquals(wish.realPoints, back.realPoints)
+        assertEquals(wish.stockGaps, back.stockGaps)
+        assertEquals(wish, back)
+    }
+
     @Test
     fun `the card fields survive the round trip through storage`() {
         val source = rozetkaWish().sources.single()

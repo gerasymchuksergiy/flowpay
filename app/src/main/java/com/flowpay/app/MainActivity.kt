@@ -307,7 +307,17 @@ data class Wish(
      * The monobank jar this wish is saved in. Empty when none. While set, [saved]
      * follows the jar's balance on every monobank pass — see MonoSync.kt.
      */
-    val jar: String = ""
+    val jar: String = "",
+    /**
+     * History points the owner set aside as a shop's glitch («Це був збій»), each
+     * with the point that followed it. Moved out of [history], so nothing that reads
+     * the history sees them; «Повернути» moves one back. See PricesMore.kt.
+     */
+    val excluded: List<SetAside> = emptyList(),
+    /** Points the owner said were real prices, so the glitch hint stops asking. */
+    val realPoints: List<PricePoint> = emptyList(),
+    /** When the thing was sold out, so the chart's line stops there. PricesMore.kt. */
+    val stockGaps: List<StockGap> = emptyList()
 )
 
 data class Pay(
@@ -977,6 +987,11 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     // Written even when empty, like the array above, so that what comes back out
     // of the bin is exactly what went in.
     .put("sq", wish.searchQuery)
+    // Set-aside glitches, points said to be real, sold-out spans (PricesMore.kt).
+    // The owner's own answers and part of the history, so they travel with it.
+    .put("wpx", setAsideJson(wish.excluded))
+    .put("wpr", pointsJson(wish.realPoints))
+    .put("wpg", gapsJson(wish.stockGaps))
     // Unlike the two above this one is genuinely absent rather than empty on a
     // wish nobody has asked about, and the difference is load-bearing: absent
     // means the section offers to write one, and an empty object would mean a
@@ -1193,7 +1208,12 @@ fun wishOf(o: JSONObject): Wish {
         // Absent on every wish saved before this existed and on every wish nobody
         // has asked about, both of which are the same thing: no model has written
         // about it, so the section offers to.
-        appraisal = appraisalOf(o.optJSONObject("ap"))
+        appraisal = appraisalOf(o.optJSONObject("ap")),
+        // Absent on everything saved before 4 October's second pass: nothing set
+        // aside, nothing confirmed, no sold-out span recorded.
+        excluded = setAsideOf(o.optJSONArray("wpx")),
+        realPoints = pointsOf(o.optJSONArray("wpr")),
+        stockGaps = gapsOf(o.optJSONArray("wpg"))
     )
 }
 
@@ -1807,7 +1827,12 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     sharedTracking = number
                     tab = TAB_ORDERS
                 } ?: say("У повідомленні немає ні посилання, ні трек-номера")
-                is SharedLink.Known -> say("«${link.wish.name}» вже у списку")
+                // Already watched: its page and its chart, not a line saying so —
+                // see [wishToOpen].
+                is SharedLink.Known -> {
+                    openedWish = wishToOpen(link)
+                    say(knownShareNote(link.wish))
+                }
                 is SharedLink.New -> {
                     // The link is saved before the page is read, so a shop that
                     // blocks the fetch costs a name and a price, never the item.
@@ -4328,10 +4353,11 @@ fun SharedTransitionScope.WishDetailScreen(
                                 // the hryvnia moving underneath it.
                                 CHART_REBASED -> RebasedPriceAndRate(wish.history)
                                 CHART_DOLLAR -> PriceChart(usdPoints, format = ::dollars)
-                                else -> PriceChart(
-                                    remember(wish.history, wish.price, wish.checkedDay) {
-                                        chartSeries(wish.history, wish.price, wish.checkedDay)
-                                    },
+                                // The step line breaks where the thing was sold out,
+                                // and a point the scrub ends on can be set aside as a
+                                // shop's glitch — see PricesUi.kt.
+                                else -> WishHistoryChart(
+                                    wish,
                                     // Every chart here is drawn on its own scale, so two
                                     // of them side by side cannot be compared by eye.
                                     // This figure is what makes them comparable, and it
@@ -4341,9 +4367,12 @@ fun SharedTransitionScope.WishDetailScreen(
                                     // while the reading is doubtful, like everything else
                                     // on this card that depends on the price being real.
                                     note = "від першої ціни ${signedPercent(change)}"
-                                        .takeIf { wish.history.isNotEmpty() && !stale }
+                                        .takeIf { wish.history.isNotEmpty() && !stale },
+                                    onChange = onChange
                                 )
                             }
+                            // «Схоже на збій» and the points already set aside.
+                            GlitchNotes(wish, onChange)
                             if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
                                 Text(
                                     "Зараз ${dollars(usdPoints.last().price)} " +
