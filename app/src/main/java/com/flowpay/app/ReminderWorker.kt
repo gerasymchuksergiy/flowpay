@@ -56,6 +56,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             ?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay() }
             ?: 0L
         val rateTarget = store.rateTarget()
+        val planInputs = moneyInputs(applicationContext, store, today, rate)
+        val plan = moneyPlan(planInputs)
         val summary = digest(
             wishes = store.wishes(),
             pays = store.pays(),
@@ -75,7 +77,10 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             // screen days earlier, and a notification cannot be waved away in place
             // the way the pill now can.
             paid = store.paidMarks(today),
-            lastSaid = store.digestPrices()
+            lastSaid = store.digestPrices(),
+            // The plan's lines and the one «Вільно» — see MoneyPlan.kt.
+            planLines = planDigestLines(planInputs, plan),
+            month = plan.month.asBudget()
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.

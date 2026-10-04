@@ -41,16 +41,13 @@ data class Allowance(
  * is out already.
  */
 fun plansToPutAside(inputs: MoneyInputs, plan: MoneyPlan): Double =
-    pendingAsks(inputs, plan).sumOf { askRounded(it.monthly) }
+    pendingAsks(inputs, plan).sumOf { askRounded(it.left) }
 
 /** The plans whose contribution for the period now running has not been put aside yet. */
 fun pendingAsks(inputs: MoneyInputs, plan: MoneyPlan): List<PlanAsk> {
     val anchor = currentAnchor(inputs.payday, inputs.today, inputs.holidays).toEpochDay()
     if (inputs.ritual?.let { it.done && it.anchor == anchor } == true) return emptyList()
-    return plan.active.filter { ask ->
-        val fund = if (ask.kind == PlanKind.FUND) plan.funds.firstOrNull { it.id == ask.id } else null
-        fund == null || putThisMonth(fund, inputs.today) <= 0.0
-    }
+    return plan.pending
 }
 
 fun allowance(inputs: MoneyInputs, plan: MoneyPlan, balance: Double): Allowance {
@@ -122,10 +119,10 @@ data class Affordability(
 
 /** The plans in the order they give way: the least wanted by the duel, then the furthest off; funds last. */
 fun givingWayOrder(asks: List<PlanAsk>): List<PlanAsk> {
-    val wishes = asks.filter { it.kind == PlanKind.WISH && it.monthly > 0.0 }
+    val wishes = asks.filter { it.kind == PlanKind.WISH && it.left > 0.0 }
     val rated = wishes.filter { it.rating != null }.sortedBy { it.rating }
     val unrated = wishes.filter { it.rating == null }.sortedByDescending { it.farDate?.toEpochDay() ?: Long.MAX_VALUE }
-    val funds = asks.filter { it.kind == PlanKind.FUND && it.monthly > 0.0 }
+    val funds = asks.filter { it.kind == PlanKind.FUND && it.left > 0.0 }
         .sortedByDescending { it.farDate?.toEpochDay() ?: Long.MAX_VALUE }
     return rated + unrated + funds
 }
@@ -172,7 +169,7 @@ fun planMoves(asks: List<PlanAsk>, shortfall: Double, today: LocalDate): List<Pl
     val moves = mutableListOf<PlanMove>()
     for (ask in givingWayOrder(asks)) {
         if (left <= 0.0) break
-        val taken = minOf(askRounded(ask.monthly), left)
+        val taken = minOf(askRounded(ask.left), left)
         moves += PlanMove(ask, taken, moveEffect(ask, taken, today))
         left -= taken
     }
@@ -296,7 +293,7 @@ fun affordability(
             free - planned - price < 0.0 -> {
                 verdict = AffordVerdict.PLANS_MOVE
                 shortfall = price + planned - free
-                moves = planMoves(plan.active, shortfall, today)
+                moves = planMoves(plan.pending, shortfall, today)
             }
             else -> {
                 verdict = AffordVerdict.FITS

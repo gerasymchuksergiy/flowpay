@@ -234,19 +234,32 @@ data class PlanAsk(
     val monthlyPlan: Double = 0.0,
     /** Kept in a monobank jar: the jar holds it, so «Я відклав» leaves its figure alone. */
     val jar: Boolean = false,
-    val skipped: Boolean = false
+    val skipped: Boolean = false,
+    /** What was already put aside for it this month — «✅ Відклав», «Я відклав». */
+    val put: Double = 0.0
 ) {
     val byDate: Boolean get() = deadline != null
+
+    /** What this month still asks after what was put aside. */
+    val left: Double get() = (monthly - put).coerceAtLeast(0.0)
 
     /** The date «найдальша дата» is about. */
     val farDate: LocalDate? get() = deadline ?: ready
 }
 
-/** A wish's plan, or null when it asks nothing — a held wish never does. */
-fun wishPlanAsk(wish: Wish, today: LocalDate): PlanAsk? {
+/**
+ * A wish's plan, or null when it asks nothing — a held wish never does.
+ *
+ * [put] is what «Я відклав» added this month. The month's call is worked out
+ * from before it, so money just put aside still counts as this month's — a plan
+ * that reached its goal with it must not vanish from «Плани не сходяться» and
+ * hand the same money to the treat.
+ */
+fun wishPlanAsk(wish: Wish, today: LocalDate, put: Double = 0.0): PlanAsk? {
     if (onHold(wish, today.toEpochDay())) return null
-    val would = wishAsk(wish, today)
-    if (would <= 0.0) return null
+    val before = if (put > 0.0) wish.copy(saved = (wish.saved - put).coerceAtLeast(0.0)) else wish
+    val would = wishAsk(before, today)
+    if (would <= 0.0 && put <= 0.0) return null
     val skipped = wish.skipMonth == monthKey(today)
     val goal = wishGoal(wish)
     val deadline = wish.deadline.takeIf { it > 0L }?.let { LocalDate.ofEpochDay(it) }
@@ -256,7 +269,7 @@ fun wishPlanAsk(wish: Wish, today: LocalDate): PlanAsk? {
         id = wish.id,
         name = wish.name,
         emoji = wishEmoji(wish.name),
-        monthly = if (skipped) 0.0 else would,
+        monthly = if (skipped) put else maxOf(would, put),
         wouldAsk = would,
         goal = goal,
         saved = wish.saved.coerceAtLeast(0.0),
@@ -265,15 +278,18 @@ fun wishPlanAsk(wish: Wish, today: LocalDate): PlanAsk? {
         rating = if (wish.duelsPlayed > 0) duelRating(wish) else null,
         monthlyPlan = wish.monthlyPlan,
         jar = wish.jar.isNotBlank(),
-        skipped = skipped
+        skipped = skipped,
+        put = put
     )
 }
 
-/** A fund's plan, or null when it asks nothing. */
+/** A fund's plan, or null when it asks nothing. What went in this month counts as this month's, as for a wish. */
 fun fundPlanAsk(fund: Fund, pays: List<Pay>, today: LocalDate, usdSell: Double): PlanAsk? {
     val pay = fundPay(fund, pays)
-    val would = fundWouldAsk(fund, pay, today, usdSell)
-    if (would <= 0.0) return null
+    val put = putThisMonth(fund, today)
+    val before = if (put > 0.0) fund.copy(saved = (fund.saved - put).coerceAtLeast(0.0)) else fund
+    val would = fundWouldAsk(before, pay, today, usdSell)
+    if (would <= 0.0 && put <= 0.0) return null
     val skipped = fund.skipMonth == monthKey(today)
     val goal = fundGoal(fund, pay, usdSell)
     val deadline = fundDeadline(fund, pay, today)
@@ -287,7 +303,7 @@ fun fundPlanAsk(fund: Fund, pays: List<Pay>, today: LocalDate, usdSell: Double):
         id = fund.id,
         name = fund.name,
         emoji = fundEmoji(fund, pay),
-        monthly = if (skipped) 0.0 else would,
+        monthly = if (skipped) put else maxOf(would, put),
         wouldAsk = would,
         goal = goal,
         saved = fund.saved,
@@ -295,7 +311,8 @@ fun fundPlanAsk(fund: Fund, pays: List<Pay>, today: LocalDate, usdSell: Double):
         ready = ready,
         rating = null,
         monthlyPlan = fund.monthly,
-        skipped = skipped
+        skipped = skipped,
+        put = put
     )
 }
 
@@ -307,8 +324,11 @@ data class MoneyPlan(
     /** Every plan with something to ask, the skipped ones included. */
     val asks: List<PlanAsk>
 ) {
-    /** The plans that ask something this month. */
+    /** The plans that ask something this month, what was already put aside included. */
     val active: List<PlanAsk> get() = asks.filter { it.monthly > 0.0 }
+
+    /** The plans with something this month still to put aside. */
+    val pending: List<PlanAsk> get() = asks.filter { it.left > 0.0 }
     val planned: Double get() = asks.sumOf { it.monthly }
     val wishPlanned: Double get() = asks.filter { it.kind == PlanKind.WISH }.sumOf { it.monthly }
     val fundPlanned: Double get() = asks.filter { it.kind == PlanKind.FUND }.sumOf { it.monthly }
@@ -325,7 +345,10 @@ data class MoneyPlan(
 
 fun moneyPlan(inputs: MoneyInputs): MoneyPlan {
     val funds = settledFunds(inputs)
-    val asks = inputs.wishes.mapNotNull { wishPlanAsk(it, inputs.today) } +
+    // What «Я відклав» put into each wish this month: still this month's money.
+    val ritual = inputs.ritual?.takeIf { it.done && monthKey(LocalDate.ofEpochDay(it.day)) == monthKey(inputs.today) }
+    val puts = ritual?.entries?.filter { it.kind == PlanKind.WISH }?.associate { it.id to it.amount }.orEmpty()
+    val asks = inputs.wishes.mapNotNull { wishPlanAsk(it, inputs.today, puts[it.id] ?: 0.0) } +
         funds.mapNotNull { fundPlanAsk(it, inputs.pays, inputs.today, inputs.usdSell) }
     return MoneyPlan(honestMonth(inputs, funds), funds, asks)
 }
@@ -350,7 +373,7 @@ fun plansConflictLine(plan: MoneyPlan): String {
  * a fund is saving for a bill that will come regardless.
  */
 fun skipCandidate(plan: MoneyPlan): PlanAsk? {
-    val active = plan.active
+    val active = plan.pending
     val wishes = active.filter { it.kind == PlanKind.WISH }
     val rated = wishes.filter { it.rating != null }
     if (rated.isNotEmpty()) {
@@ -551,9 +574,9 @@ fun ritualFor(inputs: MoneyInputs, plan: MoneyPlan): Ritual? {
     val anchor = ritualAnchor(inputs.payday, inputs.today, inputs.holidays) ?: return null
     val record = inputs.ritual?.takeIf { it.anchor == anchor.toEpochDay() }
     if (record != null && !record.done) return null
-    val asks = plan.active
+    val asks = plan.pending
     if (asks.isEmpty() && record == null) return null
-    val full = asks.map { askRounded(it.monthly) }
+    val full = asks.map { askRounded(it.left) }
     val known = !plan.month.unknown
     val scaled = known && full.sum() > plan.month.free
     val proposed = if (scaled) proportional(full, plan.month.free) else full
@@ -658,8 +681,8 @@ fun planDigestLines(inputs: MoneyInputs, plan: MoneyPlan): List<String> {
         val tomorrow = today.plusDays(1)
         val salaryTomorrow = paydaysAround(inputs.payday, today, inputs.holidays).any { it.salary && it.date == tomorrow }
         if (!salaryTomorrow) return emptyList()
-        val wishes = plan.active.filter { it.kind == PlanKind.WISH }.sumOf { askRounded(it.monthly) }
-        val funds = plan.active.filter { it.kind == PlanKind.FUND }.sumOf { askRounded(it.monthly) }
+        val wishes = plan.pending.filter { it.kind == PlanKind.WISH }.sumOf { askRounded(it.left) }
+        val funds = plan.pending.filter { it.kind == PlanKind.FUND }.sumOf { askRounded(it.left) }
         val line = when {
             wishes > 0.0 && funds > 0.0 -> "Завтра зарплата — за планом ${money(wishes + funds)} на бажання і фонди"
             wishes > 0.0 -> "Завтра зарплата — за планом ${money(wishes)} на бажання"
@@ -669,9 +692,7 @@ fun planDigestLines(inputs: MoneyInputs, plan: MoneyPlan): List<String> {
         return listOf(line)
     }
     if (today.dayOfMonth != 1) return emptyList()
-    val due = plan.active.filter { ask ->
-        ask.kind == PlanKind.FUND && plan.funds.firstOrNull { it.id == ask.id }?.let { putThisMonth(it, today) <= 0.0 } == true
-    }.sumOf { askRounded(it.monthly) }
+    val due = plan.pending.filter { it.kind == PlanKind.FUND }.sumOf { askRounded(it.left) }
     return if (due > 0.0) listOf("Час відкласти у фонди: ${money(due)}") else emptyList()
 }
 
@@ -764,6 +785,74 @@ fun dearerLine(ahead: MonthAhead): String? {
     val by = ahead.dearerBy
     if (by < 1.0 || ahead.reasons.isEmpty()) return null
     return "${monthName(ahead.month.monthValue)} дорожчий на ${money(kotlin.math.round(by))}: ${ahead.reasons.joinToString(", ")}"
+}
+
+// ------------------------------------------------------------ what the screens say
+
+/** The label over «Вільно» on Огляд. */
+fun heroLabel(month: HonestMonth): String = when {
+    month.unknown -> "Вкажіть дохід на Платежах"
+    month.overspent -> "Не сходиться цього місяця"
+    month.life > 0.0 -> "Вільно після платежів і життя"
+    else -> "Вільно до кінця місяця"
+}
+
+/**
+ * The line under it: what the figure is made of — «змінити» beside life, since
+ * life is the owner's own guess — what the funds paid, and the payday.
+ */
+fun heroCaption(month: HonestMonth, countdown: String?): String {
+    val own = month.payments.total - month.covered
+    val fromFunds = if (month.covered > 0.0) " · з фондів ${money(month.covered)}" else ""
+    val made = when {
+        month.unknown -> committedDetail(committedOf(month.asBudget()))
+        month.life > 0.0 -> "Платежі ${money(own)} · на життя ${money(month.life)}$fromFunds · змінити"
+        month.covered > 0.0 -> "Постійні витрати ${money(own)} з ${money(month.income)}$fromFunds"
+        else -> committedDetail(committedOf(month.asBudget()))
+    }
+    return listOfNotNull(made, countdown?.replaceFirstChar { it.uppercase() }).joinToString("\n")
+}
+
+/** The caption under «Лишається» on Платежі, with life and the funds when they are in it. */
+fun monthBarDetail(month: HonestMonth): String? = when {
+    month.unknown -> null
+    month.life > 0.0 -> "Платежі ${money(month.payments.total - month.covered)} · 🛒 життя ${money(month.life)} з ${money(month.income)}"
+    month.covered > 0.0 -> "Постійні витрати ${money(month.payments.total - month.covered)} з ${money(month.income)} · ще ${money(month.covered)} з фондів"
+    else -> null
+}
+
+/** Life's share of the income, for its own segment of the bar. */
+fun lifeShare(month: HonestMonth): Float =
+    if (month.unknown || month.life <= 0.0) 0f else (month.life / month.income).coerceIn(0.0, 1.0).toFloat()
+
+/** The settings row for «На життя». */
+fun lifeRowDetail(life: LifeCost): String =
+    if (life.amount > 0.0) "${money(life.amount)} на місяць · «Вільно» — після платежів і життя"
+    else "Вимкнено · «Вільно» рахується без їжі й дороги"
+
+/** The settings row for the income and the payday. */
+fun incomeRowDetail(income: Double, payday: Payday): String {
+    val got = if (income > 0.0) "${money(income)} на місяць" else "Дохід не вказано"
+    return if (payday.known) "$got · зарплата: ${paydayLabel(payday)}" else "$got · день зарплати не вказано"
+}
+
+/** «Найближча зарплата — 23 жовтня», said in the income dialog while the payday is set. */
+fun nextPaydayNote(payday: Payday, today: LocalDate, holidays: Set<Long>): String? {
+    if (!payday.known) return null
+    paydayToday(payday, today, holidays)?.let { return if (it.salary) "Зарплата сьогодні" else "Аванс сьогодні" }
+    val next = nextPayday(payday, today, holidays) ?: return null
+    return "Найближча ${if (next.salary) "зарплата" else "виплата авансу"} — ${dayMonth(next.date)}"
+}
+
+/** «Зібрано 2 140 з 7 600 ₴ · цього місяця відкласти 1 240 ₴» — the funds tile's heading line. */
+fun fundsSummary(plan: MoneyPlan, pays: List<Pay>, today: LocalDate, usdSell: Double): String {
+    val funds = plan.funds
+    val saved = funds.sumOf { it.saved }
+    val goals = funds.sumOf { fundGoal(it, fundPay(it, pays), usdSell) }
+    val due = plan.pending.filter { it.kind == PlanKind.FUND }.sumOf { askRounded(it.left) }
+    val head = if (goals > 0.0) "Зібрано ${bareAmount(kotlin.math.round(saved))} з ${money(kotlin.math.round(goals))}"
+    else "Зібрано ${money(kotlin.math.round(saved))}"
+    return if (due > 0.0) "$head · цього місяця відкласти ${money(due)}" else head
 }
 
 // ------------------------------------------------------------ dates said plainly

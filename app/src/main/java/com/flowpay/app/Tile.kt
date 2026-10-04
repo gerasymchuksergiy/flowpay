@@ -95,7 +95,8 @@ class FlowPayTileService : TileService() {
             rate,
             // A subscription still inside its free trial takes nothing yet, and the
             // tile's whole job is one honest figure for what is left this month.
-            budget(store.income(), monthlyTotal(store.pays(), rate.sell, LocalDate.now()))
+            // The same «Вільно» as Огляд: «На життя» and the funds in it (MoneyPlan.kt).
+            honestBudget(applicationContext, store, rate.sell, LocalDate.now())
         )
         tile.label = face.label
         tile.state = if (face.active) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE

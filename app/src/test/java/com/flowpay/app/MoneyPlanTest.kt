@@ -325,6 +325,28 @@ class MoneyPlanTest {
         assertNull(ritualOf(null))
     }
 
+    @Test
+    fun `money put aside this month still counts as this month's, so the treat does not get it twice`() {
+        val on = LocalDate.of(2026, 10, 23)
+        // 2 000 more reaches the goal: after «Я відклав» the plan asks nothing more.
+        val wishes = listOf(wish("a", 3_000.0, monthly = 2_000.0, saved = 1_000.0))
+        val funds = listOf(Fund("f", "ТО авто", goal = 3_000.0, saved = 2_000.0, monthly = 2_000.0))
+        val before = moneyPlan(inputs(wishes = wishes, funds = funds, payday = Payday(25), on = on))
+        assertEquals(3_000.0, before.planned, 0.0)
+        val chosen = before.pending.map { it to askRounded(it.left) }
+        val (w, f, record) = applyRitual(wishes, funds, chosen, on, on)
+        val after = moneyPlan(inputs(wishes = w, funds = f, payday = Payday(25), on = on, ritual = record))
+        // Still this month's 3 000 in the check and off the treat...
+        assertEquals(3_000.0, after.planned, 0.0)
+        assertEquals(before.treatBudget, after.treatBudget, 0.0)
+        // ...and nothing left to ask for.
+        assertTrue(after.pending.isEmpty())
+        assertNull(skipCandidate(after))
+        // Next month the reached goals ask nothing.
+        val november = moneyPlan(inputs(wishes = w, funds = f, payday = Payday(25), on = LocalDate.of(2026, 11, 2), ritual = record))
+        assertEquals(0.0, november.planned, 0.0)
+    }
+
     // ------------------------------------------------------------ the morning message
 
     @Test
@@ -420,6 +442,79 @@ class MoneyPlanTest {
         val input = inputs(funds = listOf(cushion))
         assertEquals("Наступний місяць уже оплачено", monthAheadHeadline(monthAhead(input, moneyPlan(input))!!))
         assertNull(monthAhead(inputs(), moneyPlan(inputs())))
+    }
+
+    // ------------------------------------------------------------ what the screens say
+
+    @Test
+    fun `the hero says what «Вільно» is made of`() {
+        val bare = honestMonth(inputs())
+        assertEquals("Вільно до кінця місяця", heroLabel(bare))
+        assertEquals("Постійні витрати 11 300 ₴ з 40 000 ₴", plain(heroCaption(bare, null)))
+        val life = honestMonth(inputs(life = LifeCost(true, 12_000.0)))
+        assertEquals("Вільно після платежів і життя", heroLabel(life))
+        assertEquals(
+            "Платежі 11 300 ₴ · на життя 12 000 ₴ · змінити\nДо зарплати ще 19 днів",
+            plain(heroCaption(life, paydayCountdown(Payday(25), today, emptySet())))
+        )
+        assertEquals("Не сходиться цього місяця", heroLabel(honestMonth(inputs(life = LifeCost(true, 40_000.0)))))
+        assertEquals("Вкажіть дохід на Платежах", heroLabel(honestMonth(inputs(income = 0.0))))
+        val insured = Pay("Автоцивілка", 6_400.0, day = 20, billingMonth = 10)
+        val fund = Fund("f", "Автоцивілка", payName = "Автоцивілка", saved = 6_400.0, dueMonth = "2026-10")
+        val covered = honestMonth(inputs(pays = listOf(rent, internet, insured), funds = listOf(fund)))
+        assertEquals("Постійні витрати 11 300 ₴ з 40 000 ₴ · з фондів 6 400 ₴", plain(heroCaption(covered, null)))
+    }
+
+    @Test
+    fun `the bar on Платежі gets life as its own part`() {
+        val life = honestMonth(inputs(life = LifeCost(true, 12_000.0)))
+        assertEquals("Платежі 11 300 ₴ · 🛒 життя 12 000 ₴ з 40 000 ₴", plain(monthBarDetail(life)))
+        assertEquals(0.3f, lifeShare(life), 1e-6f)
+        assertNull(monthBarDetail(honestMonth(inputs())))
+        assertEquals(0f, lifeShare(honestMonth(inputs())), 0f)
+        assertNull(monthBarDetail(honestMonth(inputs(income = 0.0, life = LifeCost(true, 12_000.0)))))
+    }
+
+    @Test
+    fun `the settings rows say what is set`() {
+        assertEquals("Вимкнено · «Вільно» рахується без їжі й дороги", lifeRowDetail(LifeCost()))
+        assertEquals("12 000 ₴ на місяць · «Вільно» — після платежів і життя", plain(lifeRowDetail(LifeCost(true, 12_000.0))))
+        assertEquals("40 000 ₴ на місяць · зарплата: 25 числа", plain(incomeRowDetail(40_000.0, Payday(25))))
+        assertEquals("Дохід не вказано · день зарплати не вказано", incomeRowDetail(0.0, Payday()))
+        assertEquals("Найближча зарплата — 23 жовтня", nextPaydayNote(Payday(25), today, emptySet()))
+        assertEquals("Найближча виплата авансу — 9 жовтня", nextPaydayNote(Payday(25, 10), today, emptySet()))
+        assertNull(nextPaydayNote(Payday(), today, emptySet()))
+    }
+
+    @Test
+    fun `the funds tile sums what is saved and what this month asks`() {
+        val june = Pay("Автоцивілка", 6_400.0, day = 1, billingMonth = 6)
+        val funds = listOf(
+            Fund("f", "Автоцивілка", payName = "Автоцивілка", saved = 2_140.0, dueMonth = "2027-06"),
+            Fund("c", "Подушка", monthly = 1_000.0, saved = 3_000.0, goal = 10_000.0)
+        )
+        val input = inputs(pays = listOf(rent, june), funds = funds)
+        val plan = moneyPlan(input)
+        // 609 for the insurance (4 260 over 7 months), 1 000 for the cushion.
+        assertEquals("Зібрано 5 140 з 16 400 ₴ · цього місяця відкласти 1 609 ₴", plain(fundsSummary(plan, listOf(rent, june), today, 41.6)))
+    }
+
+    @Test
+    fun `the morning message carries the plan's lines and the one «Вільно»`() {
+        val eve = inputs(
+            wishes = listOf(wish("a", 30_000.0, monthly = 2_000.0)),
+            payday = Payday(25),
+            on = LocalDate.of(2026, 10, 22),
+            life = LifeCost(true, 12_000.0)
+        )
+        val plan = moneyPlan(eve)
+        val message = digest(
+            emptyList(), eve.pays, emptyList(), eve.today, 41.6, eve.income,
+            planLines = planDigestLines(eve, plan),
+            month = plan.month.asBudget()
+        )
+        assertEquals("Завтра зарплата — за планом 2 000 ₴ на бажання", plain(message.title))
+        assertEquals(listOf("Вільно 16 700 ₴"), message.lines.map { plain(it) })
     }
 
     // ------------------------------------------------------------ dates said plainly

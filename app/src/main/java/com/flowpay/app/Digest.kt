@@ -144,7 +144,17 @@ fun digest(
      */
     paid: List<PaidMark> = emptyList(),
     /** Each wish's price as the previous message saw it, by id. See [recentChange]. */
-    lastSaid: Map<String, Double> = emptyMap()
+    lastSaid: Map<String, Double> = emptyMap(),
+    /**
+     * The plan's own lines — the eve of a salary, the funds on the 1st. See
+     * [planDigestLines]; worked out by the caller, which holds the plan.
+     */
+    planLines: List<String> = emptyList(),
+    /**
+     * The month as Огляд shows it — «На життя» and the funds included — for the
+     * closing line. Absent, income less payments, as it always was.
+     */
+    month: Budget? = null
 ): Digest {
     // The rate and its source arrive apart, as the rest of the message needs only
     // the figure; the threshold needs both, so they are put back together for it.
@@ -172,6 +182,7 @@ fun digest(
         problemLine(orders)?.let { add(it) }
         parcelLine(orders, today)?.let { add(it) }
         addAll(paymentLines(pays, today, holidays, paid))
+        addAll(planLines)
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
         // Last: a window closing is worth a line, never the headline.
@@ -181,7 +192,7 @@ fun digest(
 
     // The month's free cash rides along rather than standing on its own. It is the
     // figure every one of the lines above is spent against, and it is never news.
-    val trailer = freeCashLine(budget(income, monthlyTotal(pays, usdSellRate, today)))
+    val trailer = freeCashLine(month ?: budget(income, monthlyTotal(pays, usdSellRate, today)))
 
     // A single piece of news is its own headline. Hiding one sentence behind a
     // generic title would make the digest worse than the notification it replaced;

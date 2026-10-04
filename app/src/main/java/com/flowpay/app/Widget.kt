@@ -51,7 +51,9 @@ class FlowPayWidget : GlanceAppWidget() {
             // already has, and totalLabel says so out loud when it is missing.
             usdSellRate = store.fxRate().first.sell,
             today = LocalDate.now(),
-            marks = store.paidMarks()
+            marks = store.paidMarks(),
+            // The same «Вільно» as Огляд: «На життя» and the funds in it (MoneyPlan.kt).
+            month = honestBudget(context, store, store.fxRate().first.sell, LocalDate.now())
         )
         // The next payment's emoji, from the imported pack when there is one —
         // decoded here because a widget draws a bitmap, not a composable glyph.
