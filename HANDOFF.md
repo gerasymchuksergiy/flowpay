@@ -1491,3 +1491,108 @@ scrub-to-«Це був збій» gesture; Hotline from a mobile network.
 - «До магазину ↗» → «Магазин ↗» to fit «Hotline ↗» — fine?
 - «Поділитися» now opens a sheet over the shop instead of switching to FlowPay —
   keep, or go back to switching?
+
+---
+
+## 24. One «Вільно», funds and the payday (4 October 2026, v3.21.0)
+
+The planning half of «додай все»: ideas №1 «На життя», №5 «Чи потягну?», №7
+funds, №8 payday, the held-wish quick win, YNAB's true expenses, month ahead and
+snooze, Revolut's and Rocket Money's payday views, Cleo's ritual, Copilot's
+reserve and Monarch's funds — merged into one model. Logic: `MoneyPlan.kt`,
+`Funds.kt`, `Afford.kt` (tests `MoneyPlanTest`, `FundsTest`, `AffordTest`);
+preferences `PlanStore.kt`; tiles and sheets `MoneyPlanUi.kt`; small hooks in
+MainActivity, Overview, Ideas, Digest, ReminderWorker, Widget, Tile, Bin, Savings.
+Rendered on the JVM (`screens/PlanShots.kt`); **not seen on the phone**, and no
+AlertDialog renders under Robolectric (it never goes idle — the old income dialog
+too), so the income/life/skip/put dialogs were never drawn.
+
+### The rule: one «Вільно»
+`income − this month's payments (annual whole, in its own month — §12) + what
+funds hold of this month's annual charges − «На життя»`, computed by
+`honestMonth()`. `.asBudget()` is what «Лишається», the widget, the quick tile
+(`honestBudget`) and the digest's closing line read; `overview(…, plan)` takes the
+same `MoneyPlan`. Plans (wish and fund monthly sums) are **not** subtracted from
+it — they are checked against it («Плани не сходяться») and taken off the treat
+(`MoneyPlan.treatBudget`). With nothing set, every figure is as before (pinned).
+
+### The pieces
+- **«На життя»:** `LifeCost`, prefs `mp_life_on`/`mp_life`, off by default.
+  Settings row on Огляд; the hero says «після платежів і життя … · змінити» (tap
+  the hero); Платежі's bar has a lighter-lime 🛒 part. The widget's and tile's
+  words still say «Вільно на місяць»; only their data changed.
+- **Held and skipped plans:** `plannedMonthly` returns 0 for a held wish (§14 bug
+  3, fixed) and for a skipped month.
+- **«Пропустити»:** `Wish.skipMonth` (JSON `mpsk`) and `Fund.skipMonth`, on the
+  plans card (candidate: lowest duel rating, else farthest date; wishes before
+  funds), the wish page and a fund's sheet. The price is said first (`skipPrice`).
+- **Payday:** `Payday(salary, advance)`, `LAST_WORKING_DAY = -1`, prefs
+  `mp_payday`/`mp_advance`; a weekend/holiday payday moves back to the working
+  day before. Set in the income dialog. The hero says «до зарплати ще N днів».
+- **«Розкласти зарплату»:** 5 days from the salary day (not the advance; the
+  1st–5th with no payday); proportional sums when plans don't fit; «Я відклав»
+  adds to wishes and funds (jar wishes skipped), undo, ✕ hides it for that
+  payday; record in `mp_ritual`. Money put aside this month stays this month's
+  (`PlanAsk.put`), so a goal reached with it does not drop out of the check and
+  feed the treat twice.
+- **Фонди:** `Fund`, prefs `mp_funds`, backup key `mpFunds` (an old file without
+  it keeps the phone's funds), bin kind `mpf`. A payment fund's goal is the
+  payment at the sell rate, its date the charge in `dueMonth`, its monthly sum
+  `deadlinePlan`. **The trap:** in the charge month the payment counts whole and
+  `fundCoverage` adds the fund's part back once (capped at the month's charge) —
+  in «Вільно», `moneyWeather(covered=…)`, the «Чи потягну?»/per-day sums and month
+  ahead. **Settlement is derived (`settledFund`):** when the charge month is
+  marked paid (any way, monobank too) or has ended, the fund pays min(saved,
+  charged) into `coveredMonth`/`covered` and moves `dueMonth` a year on; unticking
+  within the month returns it. A `LaunchedEffect` in FlowPayApp persists it; a
+  tick says «Фонд покрив …». One offer per annual payment ≥ a month away; «Не
+  треба» in `mp_fund_no`. Presets: Подушка ☂️ (the cushion, at most one), ТО авто,
+  Подарунки, Ліки, Відпустка. The 🫙 tile replaces «Далі ніж за місяць»; annual
+  rows and tiles with a fund show «зібрано X з Y». 🫙 and 🛟 are not in the
+  owner's Apple pack (phone font draws 🫙; ☂️ used for Подушка).
+- **Digest:** the eve of a salary «Завтра зарплата — за планом …»; with no payday
+  the 1st says «Час відкласти у фонди: …» (`planDigestLines`, passed to
+  `digest(planLines, month)`).
+- **«Місяць наперед»:** only with a cushion fund. `monthCostAt` judges each charge
+  at its own date's price through `priceOn` (§21) — a free trial still running
+  costs nothing, a promo still running its promo price (fixed at the merge; the
+  branch had counted promo months as free). Numerator = cushion + funds held for
+  next month's annual charges.
+- **«Чи потягну?» (`Afford.kt`):** by balance (monobank `ownUah`, or a typed «Зараз
+  на картці» in `mp_cash`/`mp_cash_day`) before the next payday; otherwise by plan,
+  labelled so. Checks: payments, life (if on), then plans give way (least wanted,
+  farthest, funds last), then «Влазить». Levers: cancel a trial, buy the day after
+  payday. «Купив частинами» creates an instalment `Pay` from the purchase day.
+  `MoneyHost.treat` subtracts the parcels' cash on delivery like Огляд does
+  (merged).
+- **«Скільки можна сьогодні»:** monobank plus a payday only; assumes «Я відклав»
+  money has left the card.
+
+### Merged with §20–§23
+- `markPaid` (fund settlement) now writes through `Store.updatePaidMarks` with
+  `rebaseMarks` (§22) instead of saving the screen's list.
+- The forecast is `weatherWithParcels(moneyWeather(…, covered = weatherCover(…)),
+  cod, …)` — funds and cash on delivery both.
+- The widget reads `honestBudget` inside its composition (§22's stamp), and its
+  hidden-sums line uses the same month.
+- New sums from this section are wrapped in `personal()` where they met a
+  conflict; the rest are in the mask audit (§22 addendum).
+
+### Keys
+Prefs: `mp_life_on mp_life mp_payday mp_advance mp_cash mp_cash_day mp_funds
+mp_ritual mp_fund_no`. JSON: `Wish.mpsk`; Fund `mpi mpn mpe mpg mps mpm mpd mpp
+mpdm mpcm mpc mpq mpsk mppm mppa mpad`; ritual `mpa mpo mpd mpe(mpk mpi mps mpj)`;
+backup `mpFunds`.
+
+### Not built
+Splitting payments into «з авансу / із зарплати» lists; cash or another bank as
+one extra number; a "low per-day" digest line.
+
+### Open with the owner
+- Roughly how much «на життя» a month? (Off until set.)
+- Which day is payday; an advance; or the last working day?
+- Is money put aside kept on the same card, or in jars / another account? (If
+  on the card, «Скільки можна сьогодні» reads too high after «Я відклав».)
+- A «Подушка» fund (turns on «Місяць наперед»)? Which annual payments get funds?
+- Should the widget/tile say «після платежів і життя» when life is on?
+- Phone-font 🫙 for Фонди acceptable?
