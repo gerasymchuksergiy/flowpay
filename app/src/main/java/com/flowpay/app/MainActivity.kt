@@ -840,6 +840,10 @@ class Store(context: Context) {
      * Kept apart from [fxRate], which is the current figure and is overwritten on
      * every refresh. Nothing recorded a series before this, so on every existing
      * phone this starts empty and the screen says so.
+     *
+     * Monobank's sell rate only — [appendRate] turns the NBU's figure away. A
+     * history written before that rule may still hold a day the NBU stood in, and
+     * nothing on a point says which; the cap pushes those out within a month.
      */
     fun rateHistory(): List<PricePoint> =
         jsonList("fxh") { PricePoint(it.optDouble("p", 0.0), it.optLong("d", 0L)) }
@@ -1530,6 +1534,10 @@ data class UpdateInfo(val versionCode: Int, val versionName: String, val downloa
  * second time you open it is not a rate tracker. The National Bank publishes the
  * official rate with no key and no limit, so it takes over — and the figure is
  * labelled with where it came from, because the two are not the same number.
+ *
+ * Callers go through [refreshUsdRate], which decides what of the answer is kept:
+ * the official figure never replaces a bank reading taken minutes before, and never
+ * reaches the rate chart or the threshold.
  */
 suspend fun usdRate(): FxRate = withContext(Dispatchers.IO) {
     val market = runCatching { monobankRate() }.getOrNull()
@@ -1557,6 +1565,33 @@ private fun nbuRate(): FxRate {
     if (connection.responseCode !in 200..299) return FxRate()
     val body = connection.inputStream.bufferedReader().use { it.readText() }
     return parseNbuRate(body)
+}
+
+/**
+ * Asks for the rate and keeps what is worth keeping: the figure on the phone, and
+ * the day's point on the chart.
+ *
+ * One function for the currency screen and the background pass. The two used to
+ * do this each on their own, and both saved [usdRate]'s NBU fallback over a
+ * Monobank reading taken a minute earlier — a second tap on refresh was enough —
+ * so the bank's sell rate gave way to the official one on the screen, in every
+ * dollar conversion, on the chart and in the threshold. [rateToKeep] decides what
+ * the phone holds and [appendRate] what the chart records; this only asks and saves.
+ *
+ * What is held is read after the answer arrives rather than before the question,
+ * so a reading the other caller saved meanwhile is what the decision compares with.
+ *
+ * Returns the reading now held, or null when nothing new was kept: neither source
+ * answered, or only the NBU did while a recent bank reading was already here.
+ */
+suspend fun refreshUsdRate(store: Store): FxRate? {
+    val fresh = usdRate()
+    val (held, heldAt) = store.fxRate()
+    val now = System.currentTimeMillis()
+    val kept = rateToKeep(held, heldAt, fresh, now) ?: return null
+    store.saveFxRate(kept, now)
+    store.saveRateHistory(appendRate(store.rateHistory(), kept, LocalDate.now().toEpochDay()))
+    return kept
 }
 
 suspend fun latestUpdate(): UpdateInfo? = withContext(Dispatchers.IO) {
@@ -5128,22 +5163,21 @@ fun CalculatorScreen(store: Store) {
         scope.launch {
             loading = true
             rateError = false
-            runCatching { usdRate() }
-                .onSuccess { fresh ->
-                    if (fresh.sell > 0) {
-                        rate = fresh
-                        fetchedAt = System.currentTimeMillis()
-                        store.saveFxRate(fresh, fetchedAt)
-                        // The series the chart draws. Recorded here rather than only
-                        // on a schedule, so a phone that is opened daily builds a
-                        // month of history whether or not background work ran.
-                        history = appendRate(history, fresh.sell, LocalDate.now().toEpochDay())
-                        store.saveRateHistory(history)
-                    } else {
-                        rateError = true
-                    }
-                }
-                .onFailure { rateError = true }
+            // Recorded here as well as on a schedule, so a phone that is opened daily
+            // builds a month of chart whether or not background work ran. What is
+            // kept, and what reaches the chart, is the same decision the background
+            // pass makes — see refreshUsdRate.
+            val kept = runCatching { refreshUsdRate(store) }.getOrNull()
+            // Shown as the phone now holds it, which can be newer than this screen's
+            // copy: the background pass may have saved a reading meanwhile.
+            val (held, heldAt) = store.fxRate()
+            rate = kept ?: held
+            fetchedAt = heldAt
+            history = store.rateHistory()
+            // Nothing new kept is a refresh that failed — including the NBU answering
+            // while a bank reading from minutes ago is on the phone. The figure and
+            // its time stay as they were, and the line under them says so.
+            rateError = kept == null
             if (rateError && asked) touch.refused()
             loading = false
         }
@@ -5347,7 +5381,8 @@ fun CalculatorScreen(store: Store) {
                                 // A straight line here rather than a step, and the
                                 // difference is not cosmetic: appendRate records a
                                 // point every day whether or not the rate moved, so
-                                // the gaps are days the phone was off, not days the
+                                // the gaps are days without a bank reading — the
+                                // phone off, or Monobank not answering — not days the
                                 // rate stood still. A step would claim it held for a
                                 // week and then jumped.
                                 PriceChart(
@@ -5379,7 +5414,7 @@ fun CalculatorScreen(store: Store) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    rateTargetNote(rateTarget, rate.sell),
+                                    rateTargetNote(rateTarget, rate),
                                     Modifier.weight(1f),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
@@ -5464,10 +5499,11 @@ fun CalculatorScreen(store: Store) {
                     )
                     Spacer(Modifier.height(Space.md))
                     NumberField("Курс", targetInput) { targetInput = it }
-                    if (rate.sell <= 0) {
+                    // No rate at all, or only the NBU's: the threshold is watched on
+                    // Monobank's figure, and its direction is read off it.
+                    rateTargetBlocked(rate)?.let {
                         Text(
-                            "Спершу має завантажитись курс — без нього не видно, " +
-                                "з якого боку чекати",
+                            it,
                             color = Negative,
                             fontSize = Type.captionSize,
                             lineHeight = Type.captionLine,
@@ -5479,13 +5515,13 @@ fun CalculatorScreen(store: Store) {
             confirmButton = {
                 Button(
                     onClick = {
-                        armRateTarget(parseAmount(targetInput), rate.sell)?.let {
+                        armRateTarget(parseAmount(targetInput), rate)?.let {
                             rateTarget = it
                             store.saveRateTarget(it)
                         }
                         askingTarget = false
                     },
-                    enabled = rate.sell > 0
+                    enabled = rateTargetBlocked(rate) == null
                 ) { Text("Стежити") }
             },
             dismissButton = {

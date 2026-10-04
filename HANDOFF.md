@@ -66,7 +66,8 @@ composable would have shipped it untested.
    be careless.
 3. **The `Store`** — one `SharedPreferences` file called `flowpay`. Keys in use:
    `w` (wishes), `pay`, `orders`, `bin`, `paid` (paid marks), `income`,
-   `wish_sort`, `fx_*` (rate, its day, source, buy/sell), `fxh` (rate history),
+   `wish_sort`, `fx_*` (rate, its day, source, buy/sell), `fxh` (rate history,
+   Monobank readings only — §11),
    `fxt*` (rate threshold), `hol` (holidays), `digest_h` (digest hour),
    `reminded`, `recap`, `pill`/`pill_day` (dismissed status note), `bk_dir`/`bk_at`
    (backup folder and time), `tile`.
@@ -106,7 +107,7 @@ composable would have shipped it untested.
   `appendPrice` (writes **only on a change**, which is why charts must be stepped —
   see §11), `priceInsight`/`PriceInsight` (the 30-day reference window, the
   all-time low, `position` behind the range bar), `priorLow`, `inDollars`,
-  `currencyMoveNote`, `appendRate`, `RateTarget`.
+  `currencyMoveNote`, `appendRate`, `rateToKeep`, `RateTarget`.
 
 ### Money and time
 
@@ -561,9 +562,20 @@ second made a parcel that had not moved in a day look freshly updated.
 
 ### Money APIs
 
+- **Monobank** `/bank/currency` — asked first (`usdRate`): the bank's own buy and
+  sell, the figures money changes hands at. Rate-limited to about one call a
+  minute; a second call inside it answers 429.
 - **NBU** `https://bank.gov.ua/NBUStatService/v1/statdirectory/exchangenew?valcode=USD&json`
-  — no key, no rate limit. The primary source.
-- **Monobank** `/bank/currency` — rate-limited to about one call a minute.
+  — no key, no rate limit. The **fallback** when Monobank does not answer, not the
+  primary source: one official figure (buy = sell), shown labelled «НБУ» and used
+  for conversions. It usually sits below the bank's sell rate, so it **never**
+  enters the rate history (`appendRate`), never crosses, arms or promises the rate
+  threshold (`rateTargetLine`, `armRateTarget`, `rateTargetNote`), and does not
+  replace a Monobank reading under six hours old (`rateToKeep`). Both callers —
+  the Курс screen and `PriceWorker` — go through `refreshUsdRate`. Before this a
+  second refresh inside a minute swapped the bank's figure for the NBU's in the
+  chart and the threshold; chart points from before it may still hold an NBU day
+  until they age out (30 days).
 - Monobank's **personal API** (`client-info`, `statement`, `currency`) is read-only
   by construction and cannot move money; statement is 1 request per 60 s, window
   31 days + 1 hour. Not integrated — the owner declined for now.

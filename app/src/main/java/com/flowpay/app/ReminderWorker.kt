@@ -56,10 +56,6 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             ?.let { Instant.ofEpochMilli(it).atZone(ZoneId.systemDefault()).toLocalDate().toEpochDay() }
             ?: 0L
         val rateTarget = store.rateTarget()
-        // Worked out once and used for both the telling and the disarming, because
-        // the two asking the store separately is how a crossing gets stamped as
-        // said on a morning the message never carried it.
-        val crossing = rateTargetLine(rateTarget, rate, rateDay, today.toEpochDay())
         val summary = digest(
             wishes = store.wishes(),
             pays = store.pays(),
@@ -70,6 +66,9 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             holidays = store.holidaysAround(today),
             rateTarget = rateTarget,
             rateDay = rateDay,
+            // The phone holds the NBU's figure whenever Monobank did not answer, and
+            // only the bank's can cross the threshold — see [rateTargetLine].
+            rateSource = cachedRate.first.source,
             // Read here rather than defaulted, because a default of "nothing was
             // ever paid" is the behaviour this call is being fixed out of: the
             // morning message named bills that had been ticked off on the payments
@@ -82,10 +81,13 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // news is a daily interruption carrying no information.
         if (!summary.empty) notify(summary.title, summary.body)
 
-        // Disarmed after the message rather than before it, and on exactly the
-        // condition that produced the line: a threshold silenced for a stale rate
-        // is still waiting, not still spent.
-        if (rateTarget != null && crossing != null) {
+        // Disarmed after the message rather than before it, and only when the message
+        // carried the line — asked of the message itself rather than worked out a
+        // second time beside it, because two answers to one question is how a
+        // crossing gets stamped as said on a morning that never said it. A
+        // threshold silenced for a stale rate, or for the NBU's figure, is still
+        // waiting, not still spent.
+        if (rateTarget != null && summary.rateTargetSaid) {
             store.saveRateTarget(disarmRateTarget(rateTarget, today.toEpochDay()))
         }
 

@@ -225,6 +225,61 @@ class CurrencyTest {
         assertNull(staleRateNote(converted, rateDay = 19_000L, today = 20_000L))
     }
 
+    // ------------------------------------------ which reading the phone keeps
+
+    private val now = 1_790_000_000_000L
+    private val minute = 60_000L
+    private val nbu = FxRate(41.25, 41.25, SOURCE_NBU, "15.09.2026")
+
+    @Test
+    fun `the official rate does not replace a bank reading from a minute ago`() {
+        // A second tap on refresh: Monobank refuses, the NBU answers. Dollars must
+        // go on converting at the bank's sell rate, not at the official one.
+        assertNull(rateToKeep(rate, now - minute, nbu, now))
+    }
+
+    @Test
+    fun `the official rate takes over from a bank reading hours old`() {
+        // Pinned at the boundary rather than left to drift with the constant.
+        assertNull(rateToKeep(rate, now - BANK_RATE_KEPT_MS + 1, nbu, now))
+        assertEquals(nbu, rateToKeep(rate, now - BANK_RATE_KEPT_MS, nbu, now))
+    }
+
+    @Test
+    fun `a bank reading always replaces what the phone holds`() {
+        val fresh = FxRate(41.20, 41.62, SOURCE_MONOBANK)
+
+        assertEquals(fresh, rateToKeep(rate, now - minute, fresh, now))
+        assertEquals(fresh, rateToKeep(nbu, now - minute, fresh, now))
+        assertEquals(fresh, rateToKeep(FxRate(), 0L, fresh, now))
+    }
+
+    @Test
+    fun `the official rate replaces an older official rate, or nothing at all`() {
+        val yesterday = FxRate(41.10, 41.10, SOURCE_NBU, "14.09.2026")
+
+        assertEquals(nbu, rateToKeep(yesterday, now - minute, nbu, now))
+        assertEquals(nbu, rateToKeep(FxRate(), 0L, nbu, now))
+    }
+
+    @Test
+    fun `a bank reading with no time on it is not taken for a recent one`() {
+        assertEquals(nbu, rateToKeep(rate, 0L, nbu, now))
+    }
+
+    @Test
+    fun `a bank reading stamped ahead of the clock still counts as recent`() {
+        // A clock moved back, not a reading from the future — the call rateIsFresh
+        // makes about the same thing.
+        assertNull(rateToKeep(rate, now + minute, nbu, now))
+    }
+
+    @Test
+    fun `nothing is kept when neither source answered`() {
+        assertNull(rateToKeep(rate, now - minute, FxRate(), now))
+        assertNull(rateToKeep(FxRate(), 0L, FxRate(), now))
+    }
+
     @Test
     fun `a dollar page becomes a wish priced in hryvnia`() {
         val html = """

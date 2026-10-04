@@ -81,7 +81,16 @@ fun recentChange(
     return change.takeIf { it != 0.0 }
 }
 
-data class Digest(val title: String, val lines: List<String>) {
+data class Digest(
+    val title: String,
+    val lines: List<String>,
+    /**
+     * This message carries the rate threshold's line. The worker marks the
+     * threshold as said on exactly this, so it cannot be stamped as said on a
+     * morning whose message did not carry it.
+     */
+    val rateTargetSaid: Boolean = false
+) {
     /** Nothing happened. The caller sends no notification at all. */
     val empty: Boolean get() = title.isBlank()
 
@@ -118,6 +127,12 @@ fun digest(
      */
     rateDay: Long = 0L,
     /**
+     * Which feed [usdSellRate] came from. Only Monobank's figure can cross a
+     * threshold — see [rateTargetLine]. Empty reads as unknown and says nothing,
+     * the safe way round for the same reason as [rateDay].
+     */
+    rateSource: String = "",
+    /**
      * What has already been ticked off, month by month.
      *
      * The digest is rebuilt from state every morning, which is what makes it
@@ -131,6 +146,14 @@ fun digest(
     /** Each wish's price as the previous message saw it, by id. See [recentChange]. */
     lastSaid: Map<String, Double> = emptyMap()
 ): Digest {
+    // The rate and its source arrive apart, as the rest of the message needs only
+    // the figure; the threshold needs both, so they are put back together for it.
+    val rateLine = rateTargetLine(
+        rateTarget,
+        FxRate(sell = usdSellRate, source = rateSource),
+        rateDay,
+        today.toEpochDay()
+    )
     val news = buildList {
         // Leads, because it is the only line here the user asked for by name. The
         // rest is the app deciding something was worth saying.
@@ -143,7 +166,7 @@ fun digest(
         // would ring, since the rate is read twice a day and the exchange is shut
         // at three in the morning. So the crossing is worth exactly one line in
         // the message that arrives when something could be done about it.
-        rateTargetLine(rateTarget, usdSellRate, rateDay, today.toEpochDay())?.let { add(it) }
+        rateLine?.let { add(it) }
         // Above the waiting parcel: one that is going back to the sender has a
         // deadline you cannot see and an outcome you have to act to change.
         problemLine(orders)?.let { add(it) }
@@ -165,9 +188,9 @@ fun digest(
     // it is only when there are several that a name for the collection earns the
     // line it takes.
     return if (news.size == 1) {
-        Digest(news.first(), listOf(trailer))
+        Digest(news.first(), listOf(trailer), rateTargetSaid = rateLine != null)
     } else {
-        Digest("Зведення за день", news + trailer)
+        Digest("Зведення за день", news + trailer, rateTargetSaid = rateLine != null)
     }
 }
 

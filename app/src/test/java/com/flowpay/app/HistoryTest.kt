@@ -400,11 +400,17 @@ class HistoryTest {
 
     // --------------------------------------------------------- exchange rate
 
+    /** A Monobank reading: the sell rate, and a buy rate a little under it. */
+    private fun bank(sell: Double) = FxRate(sell - 0.40, sell, SOURCE_MONOBANK)
+
+    /** The NBU's one official figure, as [parseNbuRate] reads it. */
+    private fun official(rate: Double) = FxRate(rate, rate, SOURCE_NBU, "15.09.2026")
+
     @Test
     fun `a rate is recorded even when it has not moved`() {
         // The opposite rule to a price. A week in which the rate held still is a flat
         // week on the chart, and skipping those days would draw it as a single bar.
-        val history = appendRate(listOf(PricePoint(41.2, day)), 41.2, day + 1)
+        val history = appendRate(listOf(PricePoint(41.2, day)), bank(41.2), day + 1)
 
         assertEquals(2, history.size)
         assertEquals(day + 1, history.last().day)
@@ -412,8 +418,8 @@ class HistoryTest {
 
     @Test
     fun `a second reading on the same day corrects it instead of adding a bar`() {
-        val morning = appendRate(emptyList(), 41.2, day)
-        val evening = appendRate(morning, 41.6, day)
+        val morning = appendRate(emptyList(), bank(41.2), day)
+        val evening = appendRate(morning, bank(41.6), day)
 
         assertEquals(1, evening.size)
         assertEquals(41.6, evening.single().price, 0.001)
@@ -424,20 +430,56 @@ class HistoryTest {
     fun `a rate that failed to load is not recorded as zero`() {
         val start = listOf(PricePoint(41.2, day))
 
-        assertEquals(start, appendRate(start, 0.0, day + 1))
-        assertEquals(start, appendRate(start, -1.0, day + 1))
+        assertEquals(start, appendRate(start, FxRate(), day + 1))
+        assertEquals(start, appendRate(start, bank(-1.0), day + 1))
         // No date is as useless as no rate: a bar has to sit somewhere on the axis.
-        assertEquals(start, appendRate(start, 41.5, 0L))
+        assertEquals(start, appendRate(start, bank(41.5), 0L))
     }
 
     @Test
     fun `the rate history stops at a month and drops the oldest day first`() {
         var history = emptyList<PricePoint>()
-        repeat(40) { index -> history = appendRate(history, 41.0 + index, day + index) }
+        repeat(40) { index -> history = appendRate(history, bank(41.0 + index), day + index) }
 
         assertEquals(RATE_HISTORY_CAP, history.size)
         assertEquals(day + 10, history.first().day)
         assertEquals(day + 39, history.last().day)
+    }
+
+    @Test
+    fun `an official answer later the same day leaves the bank's point alone`() {
+        // Monobank refuses a second request inside a minute and the app then takes
+        // the NBU's figure. That used to replace the morning's bank point with an
+        // official one that sits below the bank's sell rate.
+        val morning = appendRate(emptyList(), bank(41.60), day)
+        val minuteLater = appendRate(morning, official(41.25), day)
+
+        assertEquals(morning, minuteLater)
+        assertEquals(41.60, minuteLater.single().price, 0.001)
+    }
+
+    @Test
+    fun `a day only the official rate answered is a gap, not a point`() {
+        val start = listOf(PricePoint(41.60, day))
+
+        // Like a day the phone was off: the line runs straight across it.
+        assertEquals(start, appendRate(start, official(41.25), day + 1))
+        // Nothing but a bank reading is recorded, whatever the figure.
+        assertEquals(start, appendRate(start, FxRate(41.20, 41.62, ""), day + 1))
+    }
+
+    @Test
+    fun `a chart on one source draws no jump the dollar never made`() {
+        // Bank, official, bank on three days. The middle day used to drop by the gap
+        // between the two sources, and the chart drew a dip and a recovery.
+        var history = appendRate(emptyList(), bank(41.60), day)
+        history = appendRate(history, official(41.25), day + 1)
+        history = appendRate(history, bank(41.62), day + 2)
+
+        assertEquals(listOf(41.60, 41.62), history.map { it.price })
+        assertEquals(listOf(day, day + 2), history.map { it.day })
+        // And the span under the chart is the bank's own.
+        assertEquals("${rateFigure(41.60)} – ${rateFigure(41.62)}", rateRangeNote(history))
     }
 
     @Test
@@ -447,7 +489,7 @@ class HistoryTest {
 
     @Test
     fun `the first day says so instead of claiming a span`() {
-        val history = appendRate(emptyList(), 41.2, day)
+        val history = appendRate(emptyList(), bank(41.2), day)
 
         assertEquals("Записую курс щодня, поки що 1 запис", rateHistoryNote(history, day))
     }

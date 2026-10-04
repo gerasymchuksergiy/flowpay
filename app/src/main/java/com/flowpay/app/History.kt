@@ -405,7 +405,7 @@ fun stalenessDays(checkedDay: Long, today: Long): Int? {
 const val RATE_HISTORY_CAP = 30
 
 /**
- * Records the day's exchange rate.
+ * Records the day's exchange rate — Monobank's sell rate, and nothing else.
  *
  * Deliberately unlike [appendPrice], which skips an unchanged value. A rate chart
  * is a shape over time, and a week where the rate held still is information — drop
@@ -413,11 +413,51 @@ const val RATE_HISTORY_CAP = 30
  *
  * A second reading on a day already recorded replaces it rather than adding to it,
  * so opening the screen five times in an afternoon still leaves one point per day.
+ *
+ * The NBU's official rate is never recorded, not even on a day Monobank did not
+ * answer. [usdRate] falls back to it whenever Monobank refuses — and Monobank
+ * refuses a second request inside a minute — so a second tap on refresh used to
+ * replace the morning's bank point with the official figure, which usually sits
+ * below the bank's sell rate, and a day on one source beside a day on the other
+ * drew a jump the dollar never made. A day without a bank reading is a gap, like
+ * a day the phone was off.
  */
-fun appendRate(history: List<PricePoint>, rate: Double, today: Long): List<PricePoint> {
-    if (rate <= 0.0 || today <= 0L) return history
+fun appendRate(history: List<PricePoint>, rate: FxRate, today: Long): List<PricePoint> {
+    if (rate.source != SOURCE_MONOBANK || rate.sell <= 0.0 || today <= 0L) return history
     val base = if (history.lastOrNull()?.day == today) history.dropLast(1) else history
-    return (base + PricePoint(rate, today)).takeLast(RATE_HISTORY_CAP)
+    return (base + PricePoint(rate.sell, today)).takeLast(RATE_HISTORY_CAP)
+}
+
+/**
+ * How long a Monobank reading outranks a fresh official one.
+ *
+ * Monobank refuses a second request inside about a minute, so the case this exists
+ * for is a bank reading minutes old; a few hours also rides out a short outage.
+ * Past that the bank's own figure has had time to move, and the official rate,
+ * labelled as the NBU's, is the more honest thing to show.
+ */
+const val BANK_RATE_KEPT_MS = 6 * 60 * 60_000L
+
+/**
+ * What the phone should hold after asking for the rate, or null to keep what it has.
+ *
+ * [usdRate] asks Monobank first and takes the NBU's official rate when Monobank
+ * does not answer. Saving that fallback over a bank reading from a minute before
+ * swapped the bank's sell rate for the official one on the screen and in every
+ * dollar conversion. So a recent bank reading stays where it is, and the official
+ * rate takes over only from a bank reading old enough to have moved, or when there
+ * is none. A bank reading always replaces whatever is held.
+ *
+ * Null as well when neither source answered: there is then nothing new to keep.
+ */
+fun rateToKeep(held: FxRate, heldAt: Long, fresh: FxRate, now: Long): FxRate? {
+    if (fresh.sell <= 0.0) return null
+    if (fresh.source == SOURCE_MONOBANK) return fresh
+    // A reading stamped ahead of the clock is a clock that moved back, and counts
+    // as recent here for the reason [rateIsFresh] gives.
+    val bankIsRecent = held.source == SOURCE_MONOBANK && held.sell > 0.0 &&
+        heldAt > 0L && now - heldAt < BANK_RATE_KEPT_MS
+    return if (bankIsRecent) null else fresh
 }
 
 /** Ukrainian plural for how many readings the rate history holds. */
@@ -564,15 +604,36 @@ data class RateTarget(
  *
  * Null without a rate on the phone, because there is then no side to watch from
  * and a guessed direction is a coin toss the user never sees being tossed.
+ *
+ * Null on the NBU's official rate too. The threshold is watched on Monobank's sell
+ * rate, which usually sits above the official one, so a direction read off the
+ * official figure can be the wrong one: «підніметься до 41,50», set while the
+ * official 41,25 was on the screen, would be announced as crossed on the first
+ * morning the bank's 41,70 came back — a move that never happened.
  */
-fun armRateTarget(value: Double, current: Double): RateTarget? {
-    if (value <= 0.0 || current <= 0.0) return null
+fun armRateTarget(value: Double, current: FxRate): RateTarget? {
+    if (rateTargetBlocked(current) != null || value <= 0.0) return null
     // A number set to the rate it already is counts as a rise, and so reads as
     // reached rather than waiting for ever on a rise that has already happened.
-    return RateTarget(value, above = value >= current)
+    return RateTarget(value, above = value >= current.sell)
 }
 
-/** Whether a target that is still waiting has been reached by [rate]. */
+/**
+ * Why a threshold cannot be set against [rate], or null when it can. Said in the
+ * dialog under the number, beside a button that will not press.
+ */
+fun rateTargetBlocked(rate: FxRate): String? = when {
+    rate.sell <= 0.0 -> "Спершу має завантажитись курс — без нього не видно, з якого боку чекати"
+    rate.source != SOURCE_MONOBANK ->
+        "Поріг стежить за курсом Monobank, а зараз є лише курс НБУ — оновіть курс трохи пізніше"
+    else -> null
+}
+
+/**
+ * Whether a target that is still waiting has been reached by [rate], Monobank's
+ * sell rate. A whole reading goes through [rateTargetLine] or [rateTargetNote],
+ * which turn the NBU's figure away before it gets here.
+ */
 fun rateTargetReached(target: RateTarget?, rate: Double): Boolean {
     if (target == null || target.hitDay > 0L || target.rate <= 0.0 || rate <= 0.0) return false
     return if (target.above) rate >= target.rate else rate <= target.rate
@@ -614,11 +675,18 @@ fun rateIsFresh(rateDay: Long, today: Long): Boolean =
  * last week's figure — and spend the one telling this threshold gets on it. Going
  * quiet costs nothing instead: the target stays armed and says it properly on the
  * first morning there is a real rate to say it about.
+ *
+ * And null on the NBU's official rate, which the phone holds whenever Monobank did
+ * not answer. It usually sits below the bank's sell rate, so a fall to 41,30 would
+ * have been announced on the official 41,25 while a dollar still cost 41,70 at the
+ * bank — and, once said, the real crossing would never have been said at all. The
+ * same quiet as for a stale rate: the target waits for a bank reading.
  */
-fun rateTargetLine(target: RateTarget?, rate: Double, rateDay: Long, today: Long): String? {
-    if (target == null || !rateTargetReached(target, rate)) return null
+fun rateTargetLine(target: RateTarget?, rate: FxRate, rateDay: Long, today: Long): String? {
+    if (rate.source != SOURCE_MONOBANK) return null
+    if (target == null || !rateTargetReached(target, rate.sell)) return null
     if (!rateIsFresh(rateDay, today)) return null
-    return "Долар ${rateFigure(rate)} ₴ — курс перетнув ${rateFigure(target.rate)}"
+    return "Долар ${rateFigure(rate.sell)} ₴ — курс перетнув ${rateFigure(target.rate)}"
 }
 
 /**
@@ -628,12 +696,22 @@ fun rateTargetLine(target: RateTarget?, rate: Double, rateDay: Long, today: Long
  * alternative is a screen showing the rate past the number while the phone has
  * said nothing, which reads as the feature being broken rather than as a message
  * that is due at nine.
+ *
+ * Under the NBU's official figure it says neither: only Monobank's rate can cross
+ * the threshold, so «уже досягнуто, скажу вранці» would be a promise the morning
+ * then breaks. It names the bank instead, so a waiting line under an official
+ * figure already past the number does not read as the app being wrong.
  */
-fun rateTargetNote(target: RateTarget?, rate: Double): String = when {
-    target == null -> "Скажу один раз, коли курс дійде до вашого числа"
-    target.hitDay > 0L ->
-        "${rateFigure(target.rate)} — досягнуто ${formatDate(LocalDate.ofEpochDay(target.hitDay))}"
-    rateTargetReached(target, rate) -> "${rateFigure(target.rate)} — уже досягнуто, скажу вранці"
-    target.above -> "Скажу, коли курс підніметься до ${rateFigure(target.rate)}"
-    else -> "Скажу, коли курс опуститься до ${rateFigure(target.rate)}"
+fun rateTargetNote(target: RateTarget?, rate: FxRate): String {
+    val bank = rate.source == SOURCE_MONOBANK
+    val watched = if (bank) "курс" else "курс Monobank"
+    return when {
+        target == null -> "Скажу один раз, коли курс дійде до вашого числа"
+        target.hitDay > 0L ->
+            "${rateFigure(target.rate)} — досягнуто ${formatDate(LocalDate.ofEpochDay(target.hitDay))}"
+        bank && rateTargetReached(target, rate.sell) ->
+            "${rateFigure(target.rate)} — уже досягнуто, скажу вранці"
+        target.above -> "Скажу, коли $watched підніметься до ${rateFigure(target.rate)}"
+        else -> "Скажу, коли $watched опуститься до ${rateFigure(target.rate)}"
+    }
 }

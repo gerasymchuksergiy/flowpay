@@ -26,16 +26,13 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         // Fetched before the prices rather than after, because every price recorded
         // in this pass has to carry the rate of the day it was read. A rate fetched
         // afterwards would be stamped onto readings taken before it.
-        val rate = runCatching { usdRate() }.getOrNull()?.takeIf { it.sell > 0 }
-        if (rate != null) {
-            store.saveFxRate(rate, System.currentTimeMillis())
-            // The rate chart needs a point a day. Recording it only when the currency
-            // screen is opened would leave the axis full of holes on every day the app
-            // was not used, and the cached rate the expenses screen converts with would
-            // go stale in exactly the same way.
-            store.saveRateHistory(appendRate(store.rateHistory(), rate.sell, today))
-        }
-        val stamp = rate ?: store.fxRate().first
+        //
+        // And recorded here, not only when the currency screen is opened: the rate
+        // chart needs a point a day, and recording it only on a visit would leave the
+        // axis full of holes on every day the app was not used, and the cached rate
+        // the expenses screen converts with would go stale in exactly the same way.
+        // What is kept, and what reaches the chart, is refreshUsdRate's decision.
+        val stamp = runCatching { refreshUsdRate(store) }.getOrNull() ?: store.fxRate().first
 
         // WorkManager stops a worker at ten minutes, and nothing is saved until the
         // end — so on a bad network a long list used to lose the whole pass. Past
