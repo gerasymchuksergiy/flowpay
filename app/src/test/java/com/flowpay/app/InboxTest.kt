@@ -309,6 +309,39 @@ class InboxTest {
     }
 
     @Test
+    fun `several links in one message add the first and say the rest were not`() {
+        val text = "Глянь https://rozetka.com.ua/ua/a/p1/ і ще https://comfy.ua/b.html та https://allo.ua/c/"
+
+        val step = step(text) as InboxStep.AddWish
+
+        assertEquals("https://rozetka.com.ua/ua/a/p1/", step.url)
+        assertEquals("Інших посилань із цього повідомлення не додано — надсилайте по одному", step.note)
+        assertEquals(listOf("https://comfy.ua/b.html", "https://allo.ua/c/"), otherLinks(text))
+        assertEquals("✅ Бажання: X\n${step.note}", withNote("✅ Бажання: X", step.note))
+    }
+
+    @Test
+    fun `the same page twice is one link, and one link has no note`() {
+        val twice = "$rozetkaUrl і ще раз $rozetkaUrl?utm_source=telegram"
+
+        assertTrue(otherLinks(twice).isEmpty())
+        assertNull((step(twice) as InboxStep.AddWish).note)
+        assertNull((step(rozetkaUrl) as InboxStep.AddWish).note)
+        assertEquals("✅ Бажання: X", withNote("✅ Бажання: X", null))
+    }
+
+    @Test
+    fun `a watched link with others beside it says both`() {
+        val wishes = listOf(wish("w1", "Навушники JBL Tune 520BT", rozetkaUrl, 1_599.0))
+
+        assertEquals(
+            "👀 Уже стежу: Навушники JBL Tune 520BT — зараз ${money(1_599.0)}\n" +
+                "Інших посилань із цього повідомлення не додано — надсилайте по одному",
+            said(step("$rozetkaUrl https://comfy.ua/b.html", wishes))
+        )
+    }
+
+    @Test
     fun `a watched thing with no fresh price says so`() {
         assertEquals("👀 Уже стежу: Кросівки — ціни поки немає", knownWishReply(wish("w", "Кросівки", rozetkaUrl, 0.0)))
         assertEquals(
@@ -394,6 +427,22 @@ class InboxTest {
         val step = step(internetLetter, pays = listOf(internet), hide = true) as InboxStep.NewPrice
 
         assertEquals("✏️ «Інтернет»: ••• → ••• ₴ з 1 листопада", step.reply)
+        val late = step(internetLetter, pays = listOf(Pay("Інтернет", 200.0, day = 25)), hide = true) as InboxStep.NewPrice
+        assertEquals("✏️ «Інтернет»: ••• → ••• ₴ з 1 листопада. Списання 25 жовтня ще за старою ціною, ••• ₴", late.reply)
+    }
+
+    @Test
+    fun `replies with no sum in them read the same with sums hidden`() {
+        val parcel = parcelOrder("20450000000001", "o1")
+        listOf<Triple<String, List<Pay>, List<Order>>>(
+            Triple(netflixLetter, listOf(netflix), emptyList()),
+            Triple("Ваш пробний період Netflix закінчується 12 листопада.", emptyList(), emptyList()),
+            Triple(waybillSms, emptyList(), listOf(parcel)),
+            Triple(hotlineUrl, emptyList(), emptyList()),
+            Triple("Привіт!", emptyList(), emptyList())
+        ).forEach { (text, pays, orders) ->
+            assertEquals(said(step(text, pays = pays, orders = orders)), said(step(text, pays = pays, orders = orders, hide = true)))
+        }
     }
 
     @Test

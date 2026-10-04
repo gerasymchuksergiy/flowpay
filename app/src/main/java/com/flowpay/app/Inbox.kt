@@ -354,9 +354,42 @@ sealed interface InboxStep {
     /** A parcel not on the list yet: added, then asked about once. */
     data class AddParcel(val number: String) : InboxStep
 
-    /** A shop's page not on the list yet: the placeholder first, then the page. */
-    data class AddWish(val url: String) : InboxStep
+    /**
+     * A shop's page not on the list yet: the placeholder first, then the page. [note]
+     * goes under the reply — the other links the message carried ([otherLinksNote]).
+     */
+    data class AddWish(val url: String, val note: String? = null) : InboxStep
 }
+
+private val ANY_URL = Regex("""https?://[^\s<>"']+""", RegexOption.IGNORE_CASE)
+
+/** What [extractUrl] trims off a link's end: the sentence's punctuation, not the address's. */
+private const val LINK_TAIL = ".,;:!?)]}»’”"
+
+/**
+ * The links in [text] after the first, each a different page. The share router takes
+ * one thing per message — a share on the phone carries one — so these are left out;
+ * the same page twice (with a tracking parameter, say) counts once, by the router's
+ * own comparison ([hasSource]).
+ */
+fun otherLinks(text: String): List<String> {
+    val pages = mutableListOf<Wish>()
+    ANY_URL.findAll(text)
+        .map { match -> match.value.trimEnd { it in LINK_TAIL } }
+        .filter { isSupportedWebUrl(it) }
+        .forEach { url -> if (pages.none { hasSource(it, url) }) pages += placeholderWish(url, "", 0L) }
+    return pages.drop(1).map { it.url }
+}
+
+/**
+ * Said under a link's reply when the message held more than one: on the PC several
+ * links pasted at once would otherwise be dropped without a word.
+ */
+fun otherLinksNote(text: String): String? =
+    if (otherLinks(text).isEmpty()) null else "Інших посилань із цього повідомлення не додано — надсилайте по одному"
+
+/** A reply with a line under it, when there is one. */
+fun withNote(reply: String, note: String?): String = if (note == null) reply else "$reply\n$note"
 
 /**
  * The share router's decision for a message from the owner, as a step the inbox can
@@ -395,9 +428,9 @@ fun inboxStep(
         is ShareRoute.Parcel ->
             knownParcel(orders, route.number)?.let { InboxStep.Say(knownParcelReply(it, route.number, today.toEpochDay())) }
                 ?: InboxStep.AddParcel(route.number)
-        is ShareRoute.Known -> InboxStep.Say(knownWishReply(route.link.wish))
-        is ShareRoute.Market -> InboxStep.Say(INBOX_HOTLINE)
-        is ShareRoute.NewLink -> InboxStep.AddWish(route.url)
+        is ShareRoute.Known -> InboxStep.Say(withNote(knownWishReply(route.link.wish), otherLinksNote(text)))
+        is ShareRoute.Market -> InboxStep.Say(withNote(INBOX_HOTLINE, otherLinksNote(text)))
+        is ShareRoute.NewLink -> InboxStep.AddWish(route.url, otherLinksNote(text))
         ShareRoute.Unclear -> InboxStep.Say(INBOX_UNCLEAR)
     }
 }
@@ -588,8 +621,8 @@ fun inboxFault(code: Int): String? = when (code) {
 
 /** What «Підключити» says when getMe refused the token. */
 fun connectProblem(code: Int): String = when (code) {
-    401, 404 -> "Telegram не прийняв цей токен. Скопіюйте його в @BotFather ще раз — увесь рядок «123456789:AA…»"
-    else -> "Telegram відповів помилкою $code. Спробуйте ще раз за хвилину"
+    401, 404 -> "Цей токен Telegram не приймає. Скопіюйте його в @BotFather ще раз — увесь рядок «123456789:AA…»"
+    else -> "Відповідь Telegram — помилка $code. Спробуйте ще раз за хвилину"
 }
 
 /** What «Підключити» says when Telegram did not answer at all. */
@@ -604,7 +637,7 @@ const val INBOX_STEPS = "1. Відкрийте в Telegram @BotFather → /newbo
 
 /** HyperOS stops background work of an app left on the default battery setting. */
 const val INBOX_BATTERY_LINE =
-    "Щоб скринька працювала, коли FlowPay закритий, у налаштуваннях батареї для FlowPay оберіть «Без обмежень»"
+    "Щоб скринька працювала, коли FlowPay закритий, у налаштуваннях батареї для FlowPay оберіть «Без обмежень»"
 
 /** The row under Налаштування: connected or not, and when Telegram last answered. */
 data class InboxRow(val connected: Boolean, val line: String, val alarm: Boolean)

@@ -52,7 +52,10 @@ fun InboxSettingsItem(onOpen: () -> Unit) {
     }
     ListItem(
         leadingContent = { EmojiGlyph("📥", 28.dp) },
-        headlineContent = { Text("Telegram-скринька", fontWeight = FontWeight.Bold) },
+        // A zero-width space after the hyphen: beside «Налаштувати» the name does not
+        // fit one line at 393 dp, and without a break there it split as «скриньк / а»
+        // (screens/InboxShots, i4).
+        headlineContent = { Text("Telegram-​скринька", fontWeight = FontWeight.Bold) },
         supportingContent = { Text(row.line, color = if (row.alarm) Negative else TextSecondary) },
         trailingContent = {
             OutlinedButton(
@@ -205,9 +208,13 @@ private fun InboxSetup(token: String, busy: Boolean, onToken: (String) -> Unit) 
     if (busy) BusyMark(Modifier.padding(top = Space.sm))
 }
 
-/** Connected: waiting for Start, or bound — the bot, the last check, and the two actions. */
+/**
+ * Connected: waiting for Start, or bound — the bot, the last check, and the two
+ * actions. Internal, not private, so the JVM screenshots can draw the waiting state
+ * without the sheet's polling (screens/InboxShots.kt).
+ */
 @Composable
-private fun InboxConnected(inbox: InboxStore, version: Int, bound: Boolean, waitedOut: Boolean, onDisconnect: () -> Unit) {
+internal fun InboxConnected(inbox: InboxStore, version: Int, bound: Boolean, waitedOut: Boolean, onDisconnect: () -> Unit) {
     val context = LocalContext.current
     val username = remember(version) { inbox.username() }
     val code = remember(version) { inbox.code() }

@@ -428,7 +428,7 @@ object InboxSync {
                 step.reply
             }
             is InboxStep.AddParcel -> addParcel(context, store, step.number, today.toEpochDay())
-            is InboxStep.AddWish -> addWish(context, store, step.url, today.toEpochDay())
+            is InboxStep.AddWish -> withNote(addWish(context, store, step.url, today.toEpochDay()), step.note)
         }
     }
 
