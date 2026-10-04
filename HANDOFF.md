@@ -443,6 +443,24 @@ Parallel worktree agents built most of this. What was learned:
   changed, work in `git worktree add --detach .claude/worktrees/<name>` (it needs
   its own `local.properties`), commit there and hand over the hash to
   cherry-pick. Never a bare `git stash` — the stash stack is shared.
+- **Five builders at once (4 October, 3.17–3.21) — what made it work:** create
+  each worktree yourself at the current commit (`git worktree add -b feat/<x>
+  .claude/worktrees/<x> <hash>`, copy `local.properties`); give each builder a
+  JSON/prefs key prefix (`pk`, `pl`, `tc`, `wp`, `mp`) so their new keys never
+  collide; tell them to put UI in new files and keep MainActivity edits to call
+  sites; Gradle with `--no-daemon -Pkotlin.compiler.execution.strategy=in-process`
+  (five builds on 32 GB); and run the full trio as a **background** command — a
+  builder that ran it in the foreground stalled on the 10-minute stream watchdog
+  and had to be finished by hand. Decide shared plumbing up front: two builders
+  each invented a «say once in the digest» memory and they had to be folded into
+  one at the merge (§21), and two others each wanted the notification's three
+  button slots (§22). Merge one at a time, run the trio on every merge, release
+  after each.
+- Old, unregistered agent folders from September sit in `.claude/worktrees/`
+  (`agent-a6b4…`, `agent-a6e3…`, `agent-a89d…`, `agent-af1c…`); `git worktree
+  list` does not know them. Safe to delete. A worktree path can exceed Windows'
+  path limit: delete with PowerShell `Remove-Item -LiteralPath ('\?' + $p)
+  -Recurse -Force`.
 - **Do not start Edge or Chrome from a script on the owner's PC.** A headless
   Edge render on 4 October popped an error dialog («Не вдалося створити каталог
   даних») on the owner's screen, and they asked what had broken. Use the built-in
