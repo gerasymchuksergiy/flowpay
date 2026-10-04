@@ -360,6 +360,56 @@ fun gapsOf(array: JSONArray?): List<StockGap> {
     }.filter { it.from > 0L }
 }
 
+// ------------------------------------------------- Black Friday in the November recap
+
+/**
+ * Whether the price standing on Black Friday ([friday]) was a real cut made for the
+ * season — set in November ([seasonStart] on) and below the lowest price of the
+ * thirty days before it was set — or null when the app was not watching long enough
+ * to say: from thirty days before the season, so any November cut can be checked.
+ *
+ * The same measure as [discountIsReal], without the shop's crossed-out claim, which
+ * is not kept day by day: [lowBeforeCurrent] on the history as it stood that Friday.
+ * A price that has not moved since October did not get cheaper for Black Friday,
+ * and a price raised in early November and «cut» back is caught as what it is.
+ */
+fun blackFridayVerdict(history: List<PricePoint>, friday: Long, seasonStart: Long): Boolean? {
+    val upTo = history.filter { it.price > 0.0 && it.day in 1..friday }.sortedBy { it.day }
+    val standing = upTo.lastOrNull() ?: return null
+    if (upTo.first().day > seasonStart - DISCOUNT_WINDOW_DAYS) return null
+    if (standing.day < seasonStart) return false
+    val low = lowBeforeCurrent(upTo, standing.price, friday) ?: return null
+    return standing.price < low
+}
+
+/**
+ * «Чорна п'ятниця для твого списку: справді подешевшали N з M» — one card in the
+ * recap of November, or null in every other month and when nothing on the list was
+ * watched long enough to check. Only the shops are judged here, never the owner.
+ */
+fun blackFridayCard(wishes: List<Wish>, month: String): RecapCard? {
+    val start = monthKeyDate(month) ?: return null
+    if (start.monthValue != 11) return null
+    val friday = blackFriday(start.year).toEpochDay()
+    val verdicts = wishes.mapNotNull { blackFridayVerdict(it.history, friday, start.toEpochDay()) }
+    if (verdicts.isEmpty()) return null
+    val real = verdicts.count { it }
+    return RecapCard(
+        kind = RecapKind.BLACK_FRIDAY,
+        overline = "Чорна п'ятниця для твого списку",
+        headline = if (real > 0) {
+            "Справді подешевшали: $real з ${verdicts.size}"
+        } else {
+            "Справжніх знижок: 0 з ${verdicts.size}"
+        },
+        detail = if (real > 0) {
+            "Нижче за найнижчу ціну 30 днів до знижки — за перевірками FlowPay"
+        } else {
+            "У п'ятницю ніщо не було дешевшим за найнижчу ціну 30 днів до того — за перевірками FlowPay"
+        }
+    )
+}
+
 // ------------------------------------------------------------ the market on Hotline
 
 /**

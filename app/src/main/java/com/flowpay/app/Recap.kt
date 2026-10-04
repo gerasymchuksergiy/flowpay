@@ -93,7 +93,10 @@ enum class RecapKind {
     SUBS_STEADY,
 
     /** The reveal: the most specific label that fired. */
-    LABEL
+    LABEL,
+
+    /** November only: how many of the list really got cheaper for Black Friday. PricesMore.kt. */
+    BLACK_FRIDAY
 }
 
 data class RecapCard(
@@ -216,16 +219,19 @@ fun monthlyRecap(
     val firstDay = start.toEpochDay()
     val lastDay = start.plusMonths(1).minusDays(1).toEpochDay()
 
+    // The label is always last and always there, so it is added after the cut
+    // rather than being the card a ninth one pushes off the end.
     val cards = listOfNotNull(
         opening(wishes, pays, month),
         whatTheWatchingCaught(wishes, firstDay, lastDay),
+        // November only: Black Friday, checked against the list's own history.
+        blackFridayCard(wishes, month),
         superlative(wishes, lastDay),
         purchase(orders, firstDay, lastDay),
         theMonthItself(pays, marks, month, today, income, usdSellRate),
         conversion(wishes, pays, today, usdSellRate),
-        subscriptions(pays, firstDay, lastDay),
-        label(wishes, pays, orders, marks, month, firstDay, lastDay)
-    ).take(MAX_RECAP_CARDS)
+        subscriptions(pays, firstDay, lastDay)
+    ).take(MAX_RECAP_CARDS - 1) + label(wishes, pays, orders, marks, month, firstDay, lastDay)
 
     return Recap(month = month, title = monthTitle(month), cards = cards)
 }

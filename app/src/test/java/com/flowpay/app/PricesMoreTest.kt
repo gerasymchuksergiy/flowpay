@@ -535,6 +535,70 @@ class PricesMoreTest {
         assertNull(wishOf(wishJson(rozetkaWish())).market)
     }
 
+    // ------------------------------------------------- Black Friday in the November recap
+
+    private val friday = blackFriday(2026).toEpochDay()
+    private val november = java.time.LocalDate.of(2026, 11, 1).toEpochDay()
+
+    private fun day(month: Int, dayOfMonth: Int) = java.time.LocalDate.of(2026, month, dayOfMonth).toEpochDay()
+
+    private fun listed(id: String, vararg points: PricePoint) =
+        Wish(id, "Річ $id", "https://shop.example/$id", "", points.last().price, history = points.toList())
+
+    /** Cut in November below everything of the thirty days before: really cheaper. */
+    private val realCut = listed("a", PricePoint(1000.0, day(9, 1)), PricePoint(850.0, day(11, 20)))
+
+    /** Raised at the start of November and «cut» back to above where it was. */
+    private val inflated = listed(
+        "b", PricePoint(1000.0, day(9, 1)), PricePoint(1300.0, day(11, 5)), PricePoint(1100.0, day(11, 25))
+    )
+
+    /** Not touched since September: it did not get cheaper for Black Friday. */
+    private val untouched = listed("c", PricePoint(700.0, day(9, 1)))
+
+    /** Added in November: too little seen to say. */
+    private val late = listed("d", PricePoint(500.0, day(11, 10)), PricePoint(400.0, day(11, 26)))
+
+    @Test
+    fun `Black Friday is judged against the list's own thirty days`() {
+        assertEquals(true, blackFridayVerdict(realCut.history, friday, november))
+        assertEquals(false, blackFridayVerdict(inflated.history, friday, november))
+        assertEquals(false, blackFridayVerdict(untouched.history, friday, november))
+        assertNull(blackFridayVerdict(late.history, friday, november))
+    }
+
+    @Test
+    fun `the November recap says how many of the list really got cheaper`() {
+        val card = blackFridayCard(listOf(realCut, inflated, untouched, late), "2026-11")!!
+
+        assertEquals(RecapKind.BLACK_FRIDAY, card.kind)
+        assertEquals("Чорна п'ятниця для твого списку", card.overline)
+        assertEquals("Справді подешевшали: 1 з 3", card.headline)
+        assertEquals("Справжніх знижок: 0 з 2", blackFridayCard(listOf(inflated, untouched), "2026-11")!!.headline)
+        // Any other month, or nothing watched long enough: no card at all.
+        assertNull(blackFridayCard(listOf(realCut), "2026-10"))
+        assertNull(blackFridayCard(listOf(late), "2026-11"))
+    }
+
+    @Test
+    fun `the card joins the November deck and the label stays last`() {
+        val deck = monthlyRecap(
+            wishes = listOf(realCut, inflated, untouched, late),
+            pays = listOf(Pay("Інтернет", 300.0, day = 1)),
+            orders = emptyList(),
+            marks = emptyList(),
+            month = "2026-11",
+            today = java.time.LocalDate.of(2026, 12, 2),
+            income = 40_000.0,
+            usdSellRate = 41.5
+        )
+
+        assertTrue(deck.cards.any { it.kind == RecapKind.BLACK_FRIDAY })
+        assertEquals(RecapKind.LABEL, deck.cards.last().kind)
+        assertTrue(deck.cards.size <= MAX_RECAP_CARDS)
+        assertTrue(recapEmoji(RecapKind.BLACK_FRIDAY).isNotBlank())
+    }
+
     @Test
     fun `the card fields survive the round trip through storage`() {
         val source = rozetkaWish().sources.single()
