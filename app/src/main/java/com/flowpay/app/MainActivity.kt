@@ -299,7 +299,14 @@ data class Wish(
      * The monobank jar this wish is saved in. Empty when none. While set, [saved]
      * follows the jar's balance on every monobank pass — see MonoSync.kt.
      */
-    val jar: String = ""
+    val jar: String = "",
+    /**
+     * «Пропустити цього місяця»: the month, "2026-10", whose contribution the plan
+     * does not ask for. Empty when none. Unlike [holdUntil] the wish stays in view
+     * and its prices keep being watched; from the 1st the plan asks again by
+     * itself. See MoneyPlan.kt.
+     */
+    val skipMonth: String = ""
 )
 
 data class Pay(
@@ -615,6 +622,13 @@ class Store(context: Context) {
                 BIN_ORDER -> orderOf(json).let { back ->
                     if (orders().none { it.id == back.id }) saveOrders(orders() + back)
                 }
+                // A fund (MoneyPlan.kt), kept beside the other lists under its own key.
+                BIN_FUND -> fundOf(json).let { back ->
+                    val now = fundsOf(prefs.getString(PlanStore.FUNDS_KEY, "[]"))
+                    if (now.none { it.id == back.id }) {
+                        prefs.edit { putString(PlanStore.FUNDS_KEY, fundsJson(now + back)) }
+                    }
+                }
                 // An entry of a kind this version does not know is left in the bin
                 // rather than dropped: a newer build may be able to restore it.
                 else -> return
@@ -896,6 +910,9 @@ class Store(context: Context) {
         .put("orders", JSONArray(prefs.getString("orders", "[]")))
         .put("paid", JSONArray(prefs.getString("paid", "[]")))
         .put("bin", JSONArray(prefs.getString("bin", "[]")))
+        // The funds — money the owner says he put aside — are his data like the
+        // wishes. «На життя» and the payday are preferences, like the income.
+        .put("mpFunds", JSONArray(prefs.getString(PlanStore.FUNDS_KEY, "[]")))
         .toString(2)
 
     fun importJson(text: String) {
@@ -909,12 +926,14 @@ class Store(context: Context) {
         // payment records that the file never claimed to replace.
         val paid = root.optJSONArray("paid")
         val bin = root.optJSONArray("bin")
+        val funds = root.optJSONArray("mpFunds")
         prefs.edit {
             putString("w", wishes.toString())
             putString("pay", payments.toString())
             putString("orders", orders.toString())
             paid?.let { putString("paid", it.toString()) }
             bin?.let { putString("bin", it.toString()) }
+            funds?.let { putString(PlanStore.FUNDS_KEY, it.toString()) }
         }
     }
 
@@ -957,6 +976,8 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     // The duel record is the owner's own answers, so it travels with the wish.
     .put("dw", wish.duelWins).put("dp", wish.duelsPlayed)
     .put("jr", wish.jar)
+    // «Пропустити»: the owner's own decision about a month, so it travels too.
+    .put("mpsk", wish.skipMonth)
     .put("ab", aboutJson(wish.about))
     // Written exactly as held, empty included, so that what comes back out of the
     // bin is what went in. A wish that predates the list is not filled in here:
@@ -1166,6 +1187,8 @@ fun wishOf(o: JSONObject): Wish {
         duelsPlayed = o.optInt("dp", 0).coerceAtLeast(0),
         // Absent on every wish not tied to a monobank jar.
         jar = o.optString("jr"),
+        // Absent on every wish whose plan was never skipped.
+        skipMonth = o.optString("mpsk"),
         about = aboutOf(o.optJSONObject("ab")),
         // A wish saved with only `u` has no array here at all, and stays empty
         // rather than being filled in on the way past: [wishSources] is the one

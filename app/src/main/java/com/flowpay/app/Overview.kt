@@ -39,7 +39,11 @@ data class Overview(
     val plansOverBudget: Double,
     val plansConflict: Boolean,
     /** What the watched prices have done since tracking began. */
-    val movement: PriceMovement
+    val movement: PriceMovement,
+    /** «На життя» taken from [freeCash]; nought when switched off. */
+    val lifeCost: Double = 0.0,
+    /** What the funds hold of this month's annual charges, counted back into [freeCash]. */
+    val fundsCovered: Double = 0.0
 )
 
 /**
@@ -49,8 +53,21 @@ data class Overview(
  * demands, and a wish already fully saved for asks nothing. Summing the stored
  * monthly figure instead counted «Знаю дату» wishes as nought — so «Плани не
  * сходяться» could never fire for them — and kept paying into wishes already paid.
+ *
+ * A wish put aside until a date asks nothing while it waits: the rule is that the
+ * app does not nag about what was decided (HANDOFF §12), and a held wish's plan
+ * kept «Плани не сходяться» lit and the treat's budget short (found by the
+ * research, 4 October 2026). A month «Пропустити» was pressed for asks nothing
+ * either, and the 1st of the next month brings the plan back by itself.
  */
 fun plannedMonthly(wish: Wish, today: LocalDate): Double {
+    if (onHold(wish, today.toEpochDay())) return 0.0
+    if (wish.skipMonth == monthKey(today)) return 0.0
+    return wishAsk(wish, today)
+}
+
+/** What the wish's plan would ask this month, a hold or a skip aside. */
+fun wishAsk(wish: Wish, today: LocalDate): Double {
     val goal = wishGoal(wish)
     if (goal > 0.0 && wish.saved >= goal) return 0.0
     if (wish.deadline > 0L) {
@@ -67,14 +84,23 @@ fun overview(
     income: Double,
     usdSellRate: Double,
     /** Needed only to know which subscriptions are still inside a free trial. */
-    today: LocalDate
+    today: LocalDate,
+    /**
+     * The month and its plans as MoneyPlan.kt works them out — life, funds and
+     * skips included. Absent, they are worked out from the lists above alone,
+     * which is what the overview always was.
+     */
+    plan: MoneyPlan? = null
 ): Overview {
     val goals = wishes.sumOf { wishGoal(it) }
     val saved = wishes.sumOf { it.saved.coerceAtLeast(0.0) }
-    val expenses = monthlyTotal(pays, usdSellRate, today)
-    val month = budget(income, expenses)
+    val money = plan ?: moneyPlan(MoneyInputs(today, income, pays, wishes = wishes, usdSell = usdSellRate))
+    val month = money.month.asBudget()
     val remaining = (goals - saved).coerceAtLeast(0.0)
-    val planned = wishes.sumOf { plannedMonthly(it, today) }
+    val planned = money.planned
+    // What the wishes can count on each month: the free money less what the funds
+    // take first — a fund saves for a bill that will come whatever is wanted.
+    val forWishes = month.free - money.fundPlanned
     return Overview(
         movement = priceMovement(wishes),
         wishCount = wishes.size,
@@ -83,7 +109,7 @@ fun overview(
         savedProgress = if (goals > 0) (saved / goals).coerceIn(0.0, 1.0).toFloat() else 0f,
         readyCount = wishes.count { wishGoal(it) > 0 && it.saved >= wishGoal(it) },
         income = month.income,
-        monthlyExpenses = expenses.total,
+        monthlyExpenses = money.month.payments.total,
         freeCash = month.free,
         budgetUnknown = month.unknown,
         overspent = month.overspent,
@@ -96,15 +122,17 @@ fun overview(
         parcelsDone = orders.count { it.status == RECEIVED },
         monthsToFundAll = when {
             remaining <= 0.0 -> 0
-            month.free > 0.0 -> savingsPlan(goals, saved, month.free).months
+            !month.unknown && forWishes > 0.0 -> savingsPlan(goals, saved, forWishes).months
             // No income entered, or the month does not fit: there is no rate to divide by.
             else -> null
         },
         plannedMonthly = planned,
-        plansOverBudget = (planned - month.free).coerceAtLeast(0.0),
+        plansOverBudget = money.over,
         // Each wish plans in isolation, so their sum can quietly exceed the month.
         // Nothing else in the app is in a position to notice that.
-        plansConflict = !month.unknown && planned > 0.0 && planned > month.free
+        plansConflict = money.conflict,
+        lifeCost = money.month.life,
+        fundsCovered = money.month.covered
     )
 }
 
@@ -141,10 +169,16 @@ fun widgetSummary(
      * through [stillOwing], and the widget kept announcing it — three surfaces
      * that must agree, and one of them did not.
      */
-    marks: List<PaidMark> = emptyList()
+    marks: List<PaidMark> = emptyList(),
+    /**
+     * The month as MoneyPlan.kt works it out — «На життя» and the funds included —
+     * so the widget says the same «Вільно» as Огляд. Absent, income less payments.
+     */
+    month: Budget? = null
 ): WidgetSummary {
     val next = nextPayment(stillOwing(pays, marks, today), today, usdSellRate)
-    val month = budget(income, monthlyTotal(pays, usdSellRate, today))
+    @Suppress("NAME_SHADOWING")
+    val month = month ?: budget(income, monthlyTotal(pays, usdSellRate, today))
     return WidgetSummary(
         paymentName = next?.let { dueSummary(it.items) } ?: "Платежів не заплановано",
         paymentDate = next?.let { dayMonth(it.date) }.orEmpty(),
