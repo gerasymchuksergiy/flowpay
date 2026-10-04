@@ -70,7 +70,9 @@ const val FUND_EMOJI = "🫙"
 data class FundPreset(val name: String, val emoji: String, val cushion: Boolean = false)
 
 val FUND_PRESETS = listOf(
-    FundPreset("Подушка", "🛟", cushion = true),
+    // An umbrella — «на чорний день». The lifebuoy would say it better, but it is
+    // missing from the owner's Apple pack and would be drawn in the phone's font.
+    FundPreset("Подушка", "☂️", cushion = true),
     FundPreset("ТО авто", "🚗"),
     FundPreset("Подарунки", "🎁"),
     FundPreset("Ліки", "💊"),

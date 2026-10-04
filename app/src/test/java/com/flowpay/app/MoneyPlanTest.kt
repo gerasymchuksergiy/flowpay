@@ -406,7 +406,7 @@ class MoneyPlanTest {
             "Листопад дорожчий на 6 300 ₴: закінчується пробний період «Netflix», річний платіж «Страховка»",
             plain(dearerLine(ahead))
         )
-        assertEquals("подушка 8 000 ₴ з 17 300 ₴", plain(monthAheadDetail(ahead)))
+        assertEquals("подушка 8 000 ₴ з 17 300 ₴ платежів", plain(monthAheadDetail(ahead)))
     }
 
     @Test
@@ -420,6 +420,7 @@ class MoneyPlanTest {
         assertEquals("Листопад покрито на 27%", monthAheadHeadline(ahead))
         // 29 300 over 30 days is 976,67 a day: 8 000 lasts 8 days.
         assertEquals("Подушка = 8 днів", cushionDaysLine(ahead))
+        assertEquals("подушка 8 000 ₴ з 29 300 ₴: платежі 17 300 ₴ + життя 12 000 ₴", plain(monthAheadDetail(ahead)))
     }
 
     @Test
@@ -433,7 +434,7 @@ class MoneyPlanTest {
         val ahead = monthAhead(input, moneyPlan(input))!!
         assertEquals(6_000.0, ahead.covered, 0.0)
         assertEquals(64, ahead.percent)
-        assertEquals("подушка 5 000 ₴ + фонди 6 000 ₴ з 17 000 ₴", plain(monthAheadDetail(ahead)))
+        assertEquals("подушка 5 000 ₴ + фонди 6 000 ₴ з 17 000 ₴ платежів", plain(monthAheadDetail(ahead)))
     }
 
     @Test
@@ -462,7 +463,11 @@ class MoneyPlanTest {
         val insured = Pay("Автоцивілка", 6_400.0, day = 20, billingMonth = 10)
         val fund = Fund("f", "Автоцивілка", payName = "Автоцивілка", saved = 6_400.0, dueMonth = "2026-10")
         val covered = honestMonth(inputs(pays = listOf(rent, internet, insured), funds = listOf(fund)))
-        assertEquals("Постійні витрати 11 300 ₴ з 40 000 ₴ · з фондів 6 400 ₴", plain(heroCaption(covered, null)))
+        assertEquals("Постійні витрати 11 300 ₴ з 40 000 ₴\nЗ фондів 6 400 ₴", plain(heroCaption(covered, null)))
+        assertEquals(
+            "Постійні витрати 11 300 ₴ з 40 000 ₴\nЗ фондів 6 400 ₴ · до зарплати ще 19 днів",
+            plain(heroCaption(covered, paydayCountdown(Payday(25), today, emptySet())))
+        )
     }
 
     @Test
@@ -496,7 +501,7 @@ class MoneyPlanTest {
         val input = inputs(pays = listOf(rent, june), funds = funds)
         val plan = moneyPlan(input)
         // 609 for the insurance (4 260 over 7 months), 1 000 for the cushion.
-        assertEquals("Зібрано 5 140 з 16 400 ₴ · цього місяця відкласти 1 609 ₴", plain(fundsSummary(plan, listOf(rent, june), today, 41.6)))
+        assertEquals("У фондах 5 140 ₴ · цього місяця відкласти 1 609 ₴", plain(fundsSummary(plan)))
     }
 
     @Test

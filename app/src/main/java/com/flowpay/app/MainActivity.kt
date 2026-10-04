@@ -4869,7 +4869,9 @@ fun SharedTransitionScope.WishDetailScreen(
                 }
                 // What buying it now would do to the money — before it is done.
                 if (moneyHost != null && wish.price > 0.0) {
-                    TextButton({ affording = true }, Modifier.fillMaxWidth()) { Text("А якщо куплю зараз?") }
+                    TextButton({ affording = true }, Modifier.fillMaxWidth()) {
+                        Text("А якщо куплю зараз?", color = TextPrimary)
+                    }
                 }
                 Spacer(Modifier.height(Space.md))
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
@@ -6527,7 +6529,9 @@ fun PaymentTile(
         )
         // The annual figure is the one that changes minds about a subscription;
         // an annual charge says both denominators. See [billingLine].
-        TileCaption(instalmentLine(pay, today) ?: billingLine(pay), shown)
+        // With a fund, its ring says what goes in a month, so the smoothed
+        // «≈…/міс» steps back: one payment, one sum a month.
+        TileCaption(instalmentLine(pay, today) ?: if (extra != null && isAnnual(pay)) "раз на рік" else billingLine(pay), shown)
         if (isInstalment(pay)) {
             InstalmentBar(instalmentsBehind(pay, today), pay.instalments, inkOn(shown), Modifier.padding(top = Space.xs))
         }

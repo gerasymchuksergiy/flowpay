@@ -72,7 +72,7 @@ class PlanShots {
                 com.flowpay.app.monoClientJson(
                     com.flowpay.app.MonoClient(
                         "Власник",
-                        listOf(com.flowpay.app.MonoAccount("acc", com.flowpay.app.UAH_CODE, 1_840_000, 0, "black", listOf("537541******1234"), "")),
+                        listOf(com.flowpay.app.MonoAccount("acc", com.flowpay.app.UAH_CODE, 3_200_000, 0, "black", listOf("537541******1234"), "")),
                         emptyList()
                     )
                 ).toString()
@@ -124,7 +124,7 @@ class PlanShots {
                 listOf(
                     Fund("f1", "Антивірус", payName = "Антивірус", saved = 800.0, dueMonth = monthKey(soon)),
                     Fund("f2", "Автоцивілка", payName = "Автоцивілка", saved = 2_140.0, dueMonth = monthKey(later)),
-                    Fund("f3", "Подушка", emoji = "🛟", saved = 8_000.0, monthly = 2_000.0, cushion = true)
+                    Fund("f3", "Подушка", saved = 8_000.0, monthly = 2_000.0, cushion = true)
                 )
             )
         }
@@ -149,10 +149,12 @@ class PlanShots {
         shoot("p2-payments-whole")
     }
 
-    @Test @Config(qualifiers = "uk-rUA-w393dp-h1400dp-440dpi")
+    // Tall enough that nothing has to be scrolled to: a node under the
+    // translucent navigation bar would take the tap instead.
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h3400dp-440dpi")
     fun afford() {
         open(TAB_OVERVIEW)
-        rule.onAllNodesWithText("Чи потягну?")[0].performScrollTo().performClick()
+        rule.onAllNodesWithText("Чи потягну?")[0].performClick()
         rule.waitForIdle()
         rule.onAllNodesWithText("Ціна, ₴")[0].performTextInput("16500")
         rule.waitForIdle()
@@ -169,18 +171,14 @@ class PlanShots {
         shoot("p4-wish-plan")
     }
 
-    @Test
-    fun incomeDialog() {
-        open(TAB_PAYMENTS)
-        rule.onAllNodesWithText("Лишається")[0].performClick()
-        rule.waitForIdle()
-        shoot("p5-income")
-    }
+    // No income dialog here: an AlertDialog never lets Compose go idle under
+    // Robolectric — the dialog exactly as it was before the payday was added
+    // hangs the same way, with the clock driven by hand too — so it is not drawn.
 
-    @Test @Config(qualifiers = "uk-rUA-w393dp-h1400dp-440dpi")
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h2600dp-440dpi")
     fun fundSheet() {
         open(TAB_PAYMENTS)
-        rule.onAllNodesWithText("+ Фонд")[0].performScrollTo().performClick()
+        rule.onAllNodesWithText("+ Фонд")[0].performClick()
         rule.waitForIdle()
         shoot("p6-fund-sheet")
     }

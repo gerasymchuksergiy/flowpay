@@ -313,7 +313,7 @@ class FundsTest {
         val cushion = Fund("f3", "Подушка", monthly = 2_000.0, cushion = true, saved = 8_000.0)
         assertEquals("по 2 000 ₴/міс", plain(fundPlanLine(cushion, null, today, 41.6)))
         assertEquals("8 000 ₴", plain(fundProgressLine(cushion, null, 41.6)))
-        assertEquals("🛟", fundEmoji(cushion, null))
+        assertEquals("☂️", fundEmoji(cushion, null))
         assertEquals("🫙", fundEmoji(Fund("f6", "Ремонт"), null))
     }
 

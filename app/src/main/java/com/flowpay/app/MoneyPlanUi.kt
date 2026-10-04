@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -31,6 +32,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
@@ -188,10 +190,21 @@ fun PaydayFields(payday: Payday, today: LocalDate, holidays: Set<Long>, set: (Pa
     }
     Column(Modifier.fillMaxWidth().padding(top = Space.lg)) {
         Text("День зарплати", color = TextSecondary, fontSize = Type.captionSize)
-        LazyRow(Modifier.padding(top = Space.xs), horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
-            items(listOf("Не вказано", "Число місяця", "Останній робочий день")) { label ->
-                val index = listOf("Не вказано", "Число місяця", "Останній робочий день").indexOf(label)
-                FilterChip(mode == index, { emit(index) }, { Text(label, fontSize = Type.captionSize) })
+        // Three plain rows rather than a scrolling row of chips: a lazy row inside
+        // an AlertDialog never settled on the JVM renderer, and three choices
+        // read better one under another in a dialog this narrow anyway.
+        listOf("Не вказано", "Певного числа", "В останній робочий день").forEachIndexed { index, label ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(Radius.sm)
+                    .selectable(selected = mode == index, role = Role.RadioButton) { emit(index) }
+                    .padding(vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RadioButton(selected = mode == index, onClick = null)
+                Spacer(Modifier.width(Space.sm))
+                Text(label, fontSize = Type.bodySize)
             }
         }
         if (mode == 1) {
@@ -260,7 +273,7 @@ fun AllowanceTile(allowance: Allowance, updatedAt: Long, modifier: Modifier = Mo
                 fontWeight = Type.strong
             )
         }
-        TileCaption(allowanceWhen(allowance), colour)
+        TileCaption(if (allowance.left >= 0.0) allowanceWhen(allowance) else "ще ${daysLabel(allowance.days)}", colour)
         Spacer(Modifier.height(Space.xs))
         TileCaption(allowanceDetail(allowance, updatedAt), colour, maxLines = 3)
     }
@@ -319,6 +332,7 @@ fun RitualTile(
                     Text(line.ask.name, fontSize = Type.captionSize, fontWeight = Type.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     if (line.ask.jar) TileCaption("банка monobank — оновиться сама", colour, maxLines = 1)
                 }
+                Spacer(Modifier.width(Space.sm))
                 Text(money(sums[index]), fontSize = Type.captionSize, fontWeight = Type.strong, style = Tabular)
                 Spacer(Modifier.width(Space.sm))
                 if (index < on.size) InkSwitch(on[index], colour) { on[index] = it }
@@ -621,7 +635,8 @@ fun WishSkipRow(wish: Wish, today: LocalDate, onChange: (Wish) -> Unit) {
             }
         }
         TextButton({ onChange(skippedWish(wish, today, !ask.skipped)) }) {
-            Text(if (ask.skipped) "Повернути" else "Пропустити")
+            // White, not lime: the lime on this page is «Я купив це».
+            Text(if (ask.skipped) "Повернути" else "Пропустити", color = TextPrimary)
         }
     }
 }
@@ -650,7 +665,7 @@ fun FundsTile(host: MoneyHost, modifier: Modifier = Modifier) {
                 Text("Фонди", fontSize = Type.bodySize, fontWeight = Type.medium)
                 TileCaption(
                     if (host.plan.funds.isEmpty()) "Відкладати потроху на річні платежі й на своє: подушка, ТО авто, подарунки"
-                    else fundsSummary(host.plan, pays, today, host.usdSell),
+                    else fundsSummary(host.plan),
                     colour,
                     maxLines = 3
                 )
@@ -674,7 +689,7 @@ fun FundsTile(host: MoneyHost, modifier: Modifier = Modifier) {
                 Spacer(Modifier.width(Space.md))
                 Column(Modifier.weight(1f)) {
                     Text(
-                        fund.name + if (fund.cushion) " · подушка" else "",
+                        fund.name + if (fund.cushion && !fund.name.contains("подушк", ignoreCase = true)) " · подушка" else "",
                         fontSize = Type.captionSize,
                         fontWeight = Type.medium,
                         maxLines = 1,

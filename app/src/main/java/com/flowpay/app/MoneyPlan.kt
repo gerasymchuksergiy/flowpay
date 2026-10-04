@@ -766,18 +766,22 @@ fun cushionDaysLine(ahead: MonthAhead): String? {
     return "Подушка = ${daysLabel(days.coerceAtLeast(0))}"
 }
 
-/** What the ring is made of: «подушка 8 000 ₴ + фонди 6 400 ₴ з 22 400 ₴». */
+/**
+ * What the ring is made of: «подушка 8 000 ₴ з 17 300 ₴ платежів», or with life
+ * «подушка 8 000 ₴ з 29 300 ₴: платежі 17 300 ₴ + життя 12 000 ₴».
+ */
 fun monthAheadDetail(ahead: MonthAhead): String {
-    val parts = listOfNotNull(
+    val have = listOfNotNull(
         "подушка ${money(kotlin.math.round(ahead.cushion))}",
         ahead.covered.takeIf { it > 0.0 }?.let { "фонди ${money(kotlin.math.round(it))}" }
     ).joinToString(" + ")
-    val of = if (ahead.life > 0.0) {
-        "платежі ${money(kotlin.math.round(ahead.payments))} + життя ${money(kotlin.math.round(ahead.life))}"
+    val need = if (ahead.life > 0.0) {
+        "з ${money(kotlin.math.round(ahead.needed))}: платежі ${money(kotlin.math.round(ahead.payments))} + " +
+            "життя ${money(kotlin.math.round(ahead.life))}"
     } else {
-        money(kotlin.math.round(ahead.payments))
+        "з ${money(kotlin.math.round(ahead.payments))} платежів"
     }
-    return "$parts з $of"
+    return "$have $need"
 }
 
 /** «Листопад дорожчий на 1 800 ₴: річний платіж «Автоцивілка», закінчується пробний період «Megogo»» */
@@ -803,14 +807,17 @@ fun heroLabel(month: HonestMonth): String = when {
  */
 fun heroCaption(month: HonestMonth, countdown: String?): String {
     val own = month.payments.total - month.covered
-    val fromFunds = if (month.covered > 0.0) " · з фондів ${money(month.covered)}" else ""
     val made = when {
         month.unknown -> committedDetail(committedOf(month.asBudget()))
-        month.life > 0.0 -> "Платежі ${money(own)} · на життя ${money(month.life)}$fromFunds · змінити"
-        month.covered > 0.0 -> "Постійні витрати ${money(own)} з ${money(month.income)}$fromFunds"
+        month.life > 0.0 -> "Платежі ${money(own)} · на життя ${money(month.life)} · змінити"
+        month.covered > 0.0 -> "Постійні витрати ${money(own)} з ${money(month.income)}"
         else -> committedDetail(committedOf(month.asBudget()))
     }
-    return listOfNotNull(made, countdown?.replaceFirstChar { it.uppercase() }).joinToString("\n")
+    val second = listOfNotNull(
+        month.covered.takeIf { !month.unknown && it > 0.0 }?.let { "з фондів ${money(it)}" },
+        countdown
+    ).joinToString(" · ").takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() }
+    return listOfNotNull(made, second).joinToString("\n")
 }
 
 /** The caption under «Лишається» on Платежі, with life and the funds when they are in it. */
@@ -844,14 +851,15 @@ fun nextPaydayNote(payday: Payday, today: LocalDate, holidays: Set<Long>): Strin
     return "Найближча ${if (next.salary) "зарплата" else "виплата авансу"} — ${dayMonth(next.date)}"
 }
 
-/** «Зібрано 2 140 з 7 600 ₴ · цього місяця відкласти 1 240 ₴» — the funds tile's heading line. */
-fun fundsSummary(plan: MoneyPlan, pays: List<Pay>, today: LocalDate, usdSell: Double): String {
-    val funds = plan.funds
-    val saved = funds.sumOf { it.saved }
-    val goals = funds.sumOf { fundGoal(it, fundPay(it, pays), usdSell) }
+/**
+ * «У фондах 10 940 ₴ · цього місяця відкласти 1 240 ₴» — the funds tile's heading
+ * line. One sum, not «з»: a cushion has no goal, so the goals do not add up to
+ * anything the saved sum could be a share of.
+ */
+fun fundsSummary(plan: MoneyPlan): String {
+    val saved = plan.funds.sumOf { it.saved }
     val due = plan.pending.filter { it.kind == PlanKind.FUND }.sumOf { askRounded(it.left) }
-    val head = if (goals > 0.0) "Зібрано ${bareAmount(kotlin.math.round(saved))} з ${money(kotlin.math.round(goals))}"
-    else "Зібрано ${money(kotlin.math.round(saved))}"
+    val head = "У фондах ${money(kotlin.math.round(saved))}"
     return if (due > 0.0) "$head · цього місяця відкласти ${money(due)}" else head
 }
 
