@@ -255,6 +255,9 @@ fun readSource(
                 )
             )
         } else {
+            // Read every visit like the crossed-out price beside it, and cleared when
+            // the page stops stating it: a card price is also a claim made on a day.
+            val member = memberOfferIn(html, match.offer, rate)
             SourceReading.Priced(
                 previous.copy(
                     price = converted.uah,
@@ -269,7 +272,9 @@ fun readSource(
                     // Rewritten every read, not merely set when it is bad news, so
                     // that a shop which stocks the thing again cannot leave "знято
                     // з продажу" sitting under a live price for ever.
-                    availability = match.offer.availability
+                    availability = match.offer.availability,
+                    memberPrice = member?.price ?: 0.0,
+                    memberTier = member?.tier.orEmpty()
                 ),
                 extractAbout(html)
             )

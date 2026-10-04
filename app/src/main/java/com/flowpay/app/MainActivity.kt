@@ -174,7 +174,15 @@ data class WishSource(
      * The crossed-out "was" price the page declares beside [price], in hryvnia.
      * Zero when it declares none. See Discounts.kt.
      */
-    val listPrice: Double = 0.0
+    val listPrice: Double = 0.0,
+    /**
+     * What this shop asks a member of its loyalty programme — Rozetka's card — in
+     * hryvnia. Zero when the page states none. A field of the shop, never an
+     * edition to pick and never the price: see [memberOfferIn] and PricesMore.kt.
+     */
+    val memberPrice: Double = 0.0,
+    /** The programme [memberPrice] is for, as the page names it. Empty with no price. */
+    val memberTier: String = ""
 )
 
 data class Wish(
@@ -1071,6 +1079,8 @@ fun sourceJson(source: WishSource): JSONObject = JSONObject()
     // and adding a value later cannot silently renumber the ones already written.
     .put("av", source.availability.name)
     .put("lp", source.listPrice)
+    // The card member's price and its programme (PricesMore.kt).
+    .put("wpm", source.memberPrice).put("wpt", source.memberTier)
 
 fun sourceOf(o: JSONObject): WishSource = WishSource(
     url = o.optString("u"),
@@ -1088,7 +1098,10 @@ fun sourceOf(o: JSONObject): WishSource = WishSource(
     // data reads back behaving precisely as it did.
     availability = availabilityStored(o.optString("av")),
     // Absent on everything read before the crossed-out price was: nothing declared.
-    listPrice = o.optDouble("lp", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+    listPrice = o.optDouble("lp", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+    // Absent on everything read before member prices were: none stated.
+    memberPrice = o.optDouble("wpm", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+    memberTier = o.optString("wpt")
 )
 
 /**
@@ -3915,6 +3928,9 @@ fun SharedTransitionScope.WishDetailScreen(
     var specsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ABOUT_SPECS)) }
 
     val today = remember { LocalDate.now() }
+    // «У мене є Картка Rozetka» — read on each opening, so a switch flipped in
+    // Налаштування reaches the next wish opened.
+    val hasCard = remember(wish.id) { PriceStore(context).rozetkaCard() }
     // The day the stored rate was fetched, so a converted price can say how old
     // the rate behind it is. Zero until a rate has ever been loaded.
     val rateDay = remember {
@@ -4116,6 +4132,8 @@ fun SharedTransitionScope.WishDetailScreen(
                         )
                     }
                 }
+                // The Rozetka card's price, only for an owner who holds the card.
+                cardLine(wish, hasCard)?.let { PriceAside(it) }
                 // Why the figure above is the colour it is, in one sentence. The
                 // card can only carry a two-word badge; this is where it is explained.
                 freshnessNote(wish.freshness)?.let { note ->
@@ -8381,6 +8399,8 @@ fun SettingsScreen(
                     "Вішлісти й фінанси зберігаються лише на телефоні. Оцінка товару " +
                         "надсилає Google назву й опис товару — без ціни і без ваших сум."
                 )
+                // Off until the owner says they hold the card — PricesMore.kt.
+                RozetkaCardRow(Modifier.padding(top = Space.sm))
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 MonoSettingsItem { monoOpen = true }
                 ListItem(

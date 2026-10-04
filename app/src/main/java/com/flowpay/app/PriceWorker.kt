@@ -39,6 +39,8 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         // this budget the remaining wishes keep what they had and the pass saves
         // what it did read; the next pass starts from the top again.
         val deadline = System.currentTimeMillis() + PASS_BUDGET_MS
+        // «У мене є Картка Rozetka»: the target is then also met by the card's price.
+        val hasCard = PriceStore(applicationContext).rozetkaCard()
         val old = store.wishes()
         var pricesRead = 0
         var pagesAnswered = 0
@@ -68,20 +70,28 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                         // asked for by name, and stock that came back and can go
                         // again by morning. A new low and an ordinary fall are good
                         // news that keeps, so they go into the digest instead.
-                        when (alert.kind) {
-                            AlertKind.TARGET_REACHED -> notify(
+                        when {
+                            alert.kind == AlertKind.TARGET_REACHED -> notify(
                                 previous.name,
                                 "Досягнуто ціль ${money(previous.targetPrice)} — зараз ${money(current.price)}",
                                 CHANNEL_PRICES,
                                 "Зміни цін"
                             )
-                            AlertKind.BACK_IN_STOCK -> notify(
+                            // Reached only with the Rozetka card: said as exactly that,
+                            // with the ordinary price beside it — see PricesMore.kt.
+                            cardTargetReached(previous, current, hasCard) -> notify(
+                                previous.name,
+                                cardTargetText(previous.targetPrice, cardPrice(current, true), current.price),
+                                CHANNEL_PRICES,
+                                "Зміни цін"
+                            )
+                            alert.kind == AlertKind.BACK_IN_STOCK -> notify(
                                 previous.name,
                                 "Знову в наявності — ${money(current.price)}",
                                 CHANNEL_PRICES,
                                 "Зміни цін"
                             )
-                            AlertKind.NEW_LOW, AlertKind.DROP, AlertKind.NONE -> Unit
+                            else -> Unit
                         }
                     }
                     // Still recorded for the falls that are no longer announced: it
