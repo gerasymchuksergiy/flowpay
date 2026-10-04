@@ -3,7 +3,7 @@
 Everything the next session needs to work on this app without relearning it the
 expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
 to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed), and
-again at the end of 4 October 2026 at `v3.22.0` / 1518 tests. **Start with §19**:
+again on 5 October 2026 at `v3.23.0` / 1590 tests. **Start with §19**:
 where things stand and what to do first.
 
 Nearly every rule below exists because breaking it cost something real — a failed
@@ -1035,6 +1035,7 @@ from the tag, the new strings found in the DEX):
 | `v3.21.1` | The eye covers every new sum (§25) |
 | `v3.21.2` | Taken back out at the owner's word: «На життя» and the monobank balance as «your money» (§26) |
 | `v3.22.0` | «Сканувати QR»: a link read with the camera goes the way «Поділитися» does (§27) |
+| `v3.23.0` | Telegram inbox: links, waybills and letters sent from the PC to the owner's own bot (§28) |
 
 How 3.17–3.21 were made: the owner said «додай все» to the research page, five
 builders worked in parallel worktrees (`.claude/worktrees/{parcels,prices,touch,
@@ -1055,7 +1056,15 @@ important ones: a «Подушка» fund; «Мій номер для Нової
 Rozetka card; the sheet over the shop (keep or go back); whether to hide sums in
 the morning notification.
 
+**The Telegram inbox (§28) is the newest thing and was never run against a real
+bot.** The owner made @flowpay_moya_skrynka_bot on 5 October; connecting it is the
+owner's next step (Налаштування → «Telegram-скринька», then «Без обмежень» for the
+battery). Its token was pasted into this chat and not revoked (§28) — never copy
+it anywhere.
+
 **First thing next session:**
+0. Ask whether the Telegram inbox connected and answered a test link; if not, a
+   screenshot of its sheet (the fault line says why).
 1. Ask which version is installed, and for screenshots: Огляд (hero, weather,
    «Чи потягну?», «Розкласти зарплату» near month end), Платежі (monobank
    questions, Фонди), Налаштування → monobank. Everything since 3.17 has only been
@@ -1755,3 +1764,118 @@ Tested: `QrScanTest` (what is handed over; the shortcut's command). **Not seen o
 the phone**; it needs Google Play services (the owner's Redmi has them). Tip for
 the owner: Chrome on the PC makes a QR of the open page (address bar →
 «Поділитися» → «Створити QR-код»).
+
+---
+
+## 28. Telegram inbox (5 October 2026, v3.23.0)
+
+The owner works at a PC and picking up the phone for every find annoyed them
+(«я працюю з пк часто і сіпати телефон постійно коли щось знайшов бісить»). So
+a chat with their **own** Telegram bot became FlowPay's inbox: they paste a link, a
+waybill or a letter about a subscription there on the PC; FlowPay on the phone
+picks it up, adds it and answers in that chat («✅ Бажання: Навушники JBL — 1 599 ₴
+(rozetka.com.ua)»). Logic in `Inbox.kt` (`InboxTest`, 72 tests), the Android half
+in `InboxSync.kt`, screens in `InboxUi.kt`, JVM renders in `screens/InboxShots.kt`
+(`-Pshots`). **Nothing ran against a real bot and nothing was seen on the phone**;
+request and answer shapes were checked against core.telegram.org/bots/api only.
+
+The owner created the bot on 5 October (@flowpay_moya_skrynka_bot, picture =
+`FlowPay-logo.png`, the launcher's lime F on #11130E, rendered at 1024 px) and
+**pasted its token into the chat transcript**; told it could be replaced with
+`/revoke`, they declined («пофіг»). Treat that token as exposed — the same note
+as the Gemini keys in §14. Never write it anywhere.
+
+### New files
+| File | Holds |
+|---|---|
+| `Inbox.kt` | Shared with the share router: `ShareRoute`/`shareRoute`, `filledWish`, `letterPay`, `longNotice`, `parcelOrder`, `freshId`. Telegram: `tgAnswer`, `updatesIn`, `tgMessageOf`, `hiddenLinks`, `botUsername`, `updatesQuery`, `offsetToSend`/`OFFSET_KEEP_MS`, `offsetAfter`, `sendMessageBody`, `botTokenIn`, `startLink`. Binding: `newBindingCode`, `bindingCode`, `isGreeting`, `triage` → `Triage`. `inboxStep` → `InboxStep`; `otherLinks`/`otherLinksNote`; every reply (`INBOX_*`, `newPayReply`, `priceChangeReply`, `knownParcelReply`, `newParcelReply`, `knownWishReply`, `newWishReply`…); the outbox (`TgReply`, `repliesJson`/`repliesOf`); `lastCheckLine`, `inboxRow`, `inboxFault`, `connectProblem` |
+| `InboxSync.kt` | `TgVault` (alias `flowpay-tg-token`; MonoVault's scheme copied, MonoVault untouched), `InboxStore` (prefs `flowpay-tg`), `tgCall`, `InboxSync` (`connect`, `run`, `passNow`, `schedule`, `disconnect`), `TelegramWorker` |
+| `InboxUi.kt` | `InboxSettingsItem` (row under monobank), `InboxSheet` (token → waiting for Start → connected), `InboxConnected` |
+
+### One decision for every way in
+`AppCommand.AddShared` is now one `when (shareRoute(…))`, in the old order: a
+subscription letter → a Nova Poshta waybill anywhere → a link (watched → its page;
+Hotline product page → market; new → placeholder + read + `filledWish`) → no link:
+any tracking number → «немає ні посилання, ні трек-номера». The share sheet, the
+QR scanner (§27, through `ACTION_SEND`) and the Telegram inbox all go through it.
+Also shared instead of copied: `letterPay` (draft → Pay; «Новий платіж»'s `fill`
+takes its fields from it), `parcelOrder` («Додати покупку» with a number and no
+link), `filledWish`. `shopSheetRoute` (§23) is unchanged.
+
+### How it works
+- **Connect** (Налаштування → «Telegram-скринька»): five steps to @BotFather and a
+  masked field; the whole BotFather message may be pasted (`botTokenIn`). `getMe`
+  → username; `deleteWebhook`; token sealed; a 6-digit code (`SecureRandom`); the
+  worker scheduled.
+- **Binding:** «Відкрийте свого бота і натисніть Start» + «Відкрити @bot» →
+  `https://t.me/<bot>?start=<code>` (sends `/start <code>`); on the PC the bare code
+  typed into the chat binds too. Private chats only. Before binding nothing is
+  answered and those messages are dropped for good; after it every other chat is
+  ignored silently; `/start` / `/help` repeat «Готово…». The open, unbound sheet
+  runs a pass every 5 s for 3 min.
+- **A pass** (`InboxSync.run`, `Mutex.tryLock`, `CancellationException`
+  rethrown): send the outbox → `getUpdates?offset&timeout=0&allowed_updates=
+  ["message"]` → per update `triage` → act → offset+1 saved with its time → reply
+  queued → outbox sent. ≤ 10 rounds of 100; past 7 min the rest goes to
+  `telegram-more` 30 s later. Triggers: `TelegramWorker` every 15 min (network,
+  unique `telegram`; scheduled on connect and in `onCreate`), every ON_START
+  (`passNow`), «Перевірити зараз», the sheet's polling. Passes started from a
+  screen run in InboxSync's own scope, so closing the sheet never cuts one between
+  adding and replying.
+- **Offset:** sent only while younger than 24 h (`offsetToSend`) — Telegram keeps
+  updates 24 h, and after a week without updates it may number the next one below
+  a stored offset.
+- **A message** (`inboxStep`, lists re-read from the Store): a letter — new
+  payment saved via `letterPay` (a trial is free: `promoPrice` 0); a price change
+  via `withAmount` dated today, as the dialog does; the same price only said; no
+  price, or a payment in another currency — nothing changes and the reply says so.
+  A waybill — known: its stored status (`parcelStateLine`; a return waybill answers
+  as the return); new: `parcelOrder` saved, then `parcelStatus` once with
+  `phoneFor`. A link — watched: «👀 Уже стежу»; a Hotline product page: «only from
+  the phone»; new: placeholder via `addFromSheet`, then `pricedPageHtml` +
+  `readForAdd`, then `filledWish` on the list as it is then. Several links: the
+  first is taken, the reply adds «Інших посилань … не додано — надсилайте по
+  одному». A photo or file with no words: «Поки що розумію лише текст і
+  посилання». `text_link` addresses are added to the text; edited and service
+  messages ignored; a crash in handling replies `INBOX_FAILED` and moves on.
+- **After a write:** `ShopSheetSignal.bump()` on Main (FlowPayApp reloads on it);
+  `refreshWidget` after payment changes.
+- **Replies:** plain text (no `parse_mode`), previews off, `reply_parameters` to
+  the message, ≤ 4 000 chars; kept in `tg_out` (last 30) until Telegram takes them
+  — 400/403 dropped, 429 waited once (≤ 10 s) or left for the next pass, 401/404
+  stops the pass. With «Ховати суми поза застосунком» payment sums go through
+  `maskSums`; shop prices stay.
+- **Faults shown:** 401/404 «Токен не підходить — його могли відкликати у
+  @BotFather»; a 409 that survives `deleteWebhook` «Цього бота вже читає інша
+  програма…»; a token the keystore can no longer open. No connection or Telegram
+  5xx: nothing shown.
+- **Privacy:** `flowpay-tg` is not in `exportJson`; Android backup is off. Nothing
+  is logged; `tgCall` throws only `TgOffline` / `TgRefused`, never a platform
+  exception (they quote the URL, which holds the token).
+
+### Rules added — do not undo
+- The router, the QR scanner and the inbox decide through `shareRoute`; change the
+  order there, never in one caller.
+- Nothing from the Bot API is logged, and no exception carrying the request URL
+  may leave `tgCall`.
+- Inbox writes re-read the Store immediately before saving and bump
+  `ShopSheetSignal`.
+
+### Keys
+Prefs `flowpay-tg`: `tg_tok tg_user tg_chat tg_code tg_off tg_off_at tg_last
+tg_err tg_out`. Keystore alias `flowpay-tg-token`. Work `telegram`,
+`telegram-more`. ProGuard keeps `TelegramWorker`. No new JSON fields.
+
+### Not verified
+No real bot, no phone. Rendered on the JVM (`screens/InboxShots` i1–i5: setup,
+waiting for Start, waited out, connected, the row). Not seen anywhere: the keystore
+on the phone; the start link opening Telegram; HyperOS running the 15-minute
+worker with FlowPay closed (needs «Без обмежень»); Telegram's flood limits; a fill
+landing while the main screen is open. 409 / 401 / 404 meanings are common
+behaviour, not from the docs read.
+
+### Open with the owner
+- ~15 minutes is WorkManager's shortest period; sooner needs FlowPay opened. Fine?
+- Payment sums in replies hidden only with «Ховати суми поза застосунком» — or
+  always?
+- Several links in one message: «first one + a note», or add them all?
