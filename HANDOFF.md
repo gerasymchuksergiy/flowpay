@@ -1380,3 +1380,114 @@ SharedPreferences (`flowpay`, none in the backup): `tc_digest`, `tc_widget_undo`
 - The widget's undo lasts until the end of the day — fine?
 - A price change from a letter applies at once — or wait for its date (needs a
   future-price field)?
+
+---
+
+## 23. Prices, second pass (4 October 2026, v3.20.0)
+
+The research page's prices/rate part («додай все»), plus the owner's own request
+for a «Hotline ↗» button on every wish page. Logic in `PricesMore.kt` and
+`RateWatch.kt` (tested in `PricesMoreTest`, `RateWatchTest`); drawing in
+`PricesUi.kt` and `ShopSheet.kt`; prefs in `PriceStore.kt` (same `flowpay` file,
+own class, keys `wp_*`, none in the backup); `RateWorker.kt`. JVM renders in
+`screens/PricesShots.kt`. **Nothing seen on the phone.**
+
+### What changed
+- **Rozetka prices by type.** Rozetka's JSON-LD lists regular 1 599,
+  `StrikethroughPrice` 1 799 and a `validForMemberTier #rozetka-card` 1 519 under
+  one name; they used to be three «editions» in «Яка ціна ваша?», and choosing
+  other than the first made the next check jump back. `isSidePrice` skips
+  reference types (Strikethrough/List/MSRP/SRP/MinimumAdvertised) and member tiers
+  in `offersInNode`; the "was" stays `declaredListPrice`; the member price is
+  `WishSource.memberPrice/memberTier` (`memberOfferIn`). `matchOffer` picks among
+  same-named offers by the price followed so far. Setting «У мене є Картка
+  Rozetka» (off): a dim «1 519 ₴ з Карткою Rozetka» under the price and the push
+  «Досягнуто ціль … — … при оплаті Карткою Rozetka (звичайна …)»
+  (`cardTargetReached`). `targetHit`, the pill, the card shape, chart and history
+  stay on the ordinary price — on purpose. Wishes added earlier by picking 1 519
+  take one real step to 1 599 at their next check. Fixture:
+  `app/src/test/resources/rozetka-jbl-tune-520bt.html` (trimmed, no reviews).
+- **A shared link already watched opens its page** (`wishToOpen`); `linkKey` drops
+  utm_/gclid-style parameters and `www.`.
+- **«Схоже на збій».** `glitchCandidates`: >35 % (`GLITCH_SHARE`, a guess) from
+  both neighbours, same side, ≤ 1 day, never the last point. Hint with «Не
+  враховувати» / «Справжня ціна»; a chart scrub ending on a point offers «Це був
+  збій». Set-aside points are MOVED to `Wish.excluded` (with the following point as
+  an anchor), so every reader of `history` stops seeing them; «Повернути» restores
+  exactly. Per wish, not per shop (the history is one series per wish). **Do not
+  change this to "mark and filter in each consumer".**
+- **Sold-out gap.** `mergeSources` records `Wish.stockGaps`; the wish page's
+  hryvnia chart is `WishPriceChart` (PricesUi.kt), which clips them out. The shared
+  `PriceChart` is unchanged (rate screen, dollar view).
+- **Hotline market.** `Wish.market` (product page URL, low, offer count, its own
+  history). Bound only by sharing a hotline PRODUCT page (`hotlineProductUrl`, then
+  `parseMarket` must find an AggregateOffer) — «Прив'язати як ринок до «X»?».
+  Read every 12 h in PriceWorker (`withMarketRead`), the product page only, never
+  `/sr/` (robots.txt) — ≈1.2 MB per bound wish per pass. Line «Ринок: від … · N
+  магазинів · Hotline», chip «на … дешевше» above +5 %. Never the price, never a
+  push; the digest says «… — на Hotline від …, у межах цілі …» once per crossing
+  (`marketTargetLines`, memory `wp_digest_market`). No line on the chart yet; the
+  history is kept for it.
+- **«Hotline ↗» on every wish page** (the owner's request): opens the bound market
+  page, else the Hotline search with the wish's own or owner-corrected query.
+  «До магазину ↗» became «Магазин ↗»; `ActionsRow` keeps three buttons in one row
+  at 360 dp and drops Hotline to a second row when the labels would not fit
+  (checked at font scale 1.15).
+- **Rate corridor + «Сплеск»** replace the single threshold: edges «нижче» /
+  «вище» on Monobank's SELL rate; spike > 1 % against yesterday's bank point in the
+  history. `RateWorker` runs hourly only while something is watched and asks
+  `/bank/currency` only when the stored reading is > 45 min old; `checkRate`
+  ignores the NBU figure (never arms, crosses, re-arms or fills) and readings > 3 h
+  old; one notification per crossing, re-armed after 0.25 % back inside; «Стежити
+  далі» / «Готово» (`RateActionReceiver`, not exported). The old `fxt*` threshold
+  migrates once into an edge and is cleared, so `rateTargetLine` in the digest
+  goes quiet. `RateTarget` & co. remain in History.kt (tested, unused by the UI).
+- **Sheet over the shop.** `ShopSheetActivity` (translucent, excludeFromRecents,
+  noHistory, `taskAffinity=""`) is the SEND target now; MainActivity no longer has
+  the SEND filter. `shopSheetRoute` forwards the whole intent to MainActivity for:
+  a subscription letter (`parseSubscription`, §22) or a Nova Poshta waybill
+  (`sharedParcelNumber`, §20) — the same detectors the app's router asks first,
+  added at the merge so the sheet never takes what the router would send
+  elsewhere — a Hotline page, no link, or > 280 characters around the link. Known
+  item: chart, range bar, verdict + «нижче/вище звичайного» (time-weighted 30-day
+  `usualPrice`), target. New item: today's price, «історії ще нема», «Ціль
+  −10%», «Стежити». It writes via `addFromSheet` (the store as it is now) and bumps
+  `ShopSheetSignal`, which FlowPayApp watches to reload — ON_START alone was shown
+  (JVM) to lose the wish to a later save from a live main screen.
+  `FlowPayOverlayTheme` is the theme without the full-screen ground.
+- **Black Friday card** in the November recap (`blackFridayCard`): wishes watched
+  from 30 days before November; «справді подешевшали» = cut in November and below
+  `lowBeforeCurrent`. The recap label is appended after the cut (§20 did the same
+  thing; one version kept).
+
+### New stored fields (both halves, round-trip tested)
+Wish: `wpx` (set-aside points + anchor), `wpr` (points said real), `wpg` (stock
+gaps), `wpmk` (market, only when bound). WishSource: `wpm` (member price), `wpt`
+(tier). Prefs: `wp_rozetka_card`, `wp_digest_market`, `wp_fx_corridor`.
+
+### Corrections to earlier sections
+- §11 «What cannot be scraped»: hotline.ua's SEARCH (`/ua/sr/?q=`) is JS-rendered
+  and disallowed for all robots — only ever opened in the browser; the dead
+  `/ua/search/?q=` answers 200 with 40 bytes «Legacy home controller has been
+  disabled». **Product pages are not blocked**: on 4 Oct 2026 JBL Tune 520BT
+  answered the app's UA with 200, 1 193 356 bytes, AggregateOffer lowPrice 1316,
+  offerCount 105.
+- §3 «The morning message»: the rate is no longer announced there (the corridor
+  notifies at once); `marketTargetLines` follows `priceLines`.
+- §14: bug 1 (Rozetka three prices) and the share-a-known-link item are fixed;
+  note 4 (hotline 40 bytes) corrected above.
+
+### Not verified
+On the phone: everything — the translucent sheet over another app on HyperOS, its
+absence from recents and the return to the shop; RateWorker's timing under HyperOS
+and the notification buttons; the market bind sheet (needs network); the
+scrub-to-«Це був збій» gesture; Hotline from a mobile network.
+
+### Open with the owner
+- Has a Rozetka card? Then switch on «У мене є Картка Rozetka».
+- The 35 % glitch threshold is a guess — a screenshot when the hint first shows.
+- Hotline: ≈1.2 MB per bound wish twice a day on mobile data — acceptable?
+- The rate is checked hourly while edges or «Сплеск» are set — fine?
+- «До магазину ↗» → «Магазин ↗» to fit «Hotline ↗» — fine?
+- «Поділитися» now opens a sheet over the shop instead of switching to FlowPay —
+  keep, or go back to switching?
