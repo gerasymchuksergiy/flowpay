@@ -144,6 +144,7 @@ fun recapEmoji(kind: RecapKind): String = when (kind) {
     RecapKind.TRIAL_ENDED -> "⌛"
     RecapKind.SUBS_STEADY -> "🧘"
     RecapKind.LABEL -> "✨"
+    RecapKind.BLACK_FRIDAY -> "🛍️"
 }
 
 /** What is drawn for a payment: the one picked by hand, else the guess. */

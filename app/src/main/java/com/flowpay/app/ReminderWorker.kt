@@ -67,6 +67,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         val lead = client?.takeIf { System.currentTimeMillis() - mono.clientAt() < 24 * 3_600_000L }
             ?.let { shortTomorrowLine(pays, marks, today, ownUah(it, mono.accountsToRead(it)), rate) }
         val parcelPrefs = ParcelPrefs(applicationContext)
+        val planInputs = moneyInputs(applicationContext, store, today, rate)
+        val plan = moneyPlan(planInputs)
         val summary = digest(
             wishes = store.wishes(),
             pays = pays,
@@ -93,7 +95,11 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             now = LocalDateTime.now(),
             said = said,
             lead = listOfNotNull(lead),
-            once = once
+            once = once,
+            marketSaid = PriceStore(applicationContext).digestMarket(),
+            // The plan's lines and the one «Вільно» — see MoneyPlan.kt.
+            planLines = planDigestLines(planInputs, plan),
+            month = plan.month.asBudget()
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
@@ -127,6 +133,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // What this message saw, so tomorrow's compares against it rather than
         // against a calendar day — see [recentChange].
         store.saveDigestPrices(store.wishes().filter { it.price > 0.0 }.associate { it.id to it.price })
+        // The same for the Hotline markets, so a crossing is said once.
+        PriceStore(applicationContext).saveDigestMarket(marketSeen(store.wishes()))
         store.saveLastReminderDay(today.toEpochDay())
         store.saveLastRunAt(WORK_DIGEST, System.currentTimeMillis())
         // Pins tomorrow's run to the chosen hour again. A twenty-four-hour period

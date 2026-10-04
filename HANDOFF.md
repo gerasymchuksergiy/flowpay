@@ -1380,3 +1380,219 @@ SharedPreferences (`flowpay`, none in the backup): `tc_digest`, `tc_widget_undo`
 - The widget's undo lasts until the end of the day — fine?
 - A price change from a letter applies at once — or wait for its date (needs a
   future-price field)?
+
+---
+
+## 23. Prices, second pass (4 October 2026, v3.20.0)
+
+The research page's prices/rate part («додай все»), plus the owner's own request
+for a «Hotline ↗» button on every wish page. Logic in `PricesMore.kt` and
+`RateWatch.kt` (tested in `PricesMoreTest`, `RateWatchTest`); drawing in
+`PricesUi.kt` and `ShopSheet.kt`; prefs in `PriceStore.kt` (same `flowpay` file,
+own class, keys `wp_*`, none in the backup); `RateWorker.kt`. JVM renders in
+`screens/PricesShots.kt`. **Nothing seen on the phone.**
+
+### What changed
+- **Rozetka prices by type.** Rozetka's JSON-LD lists regular 1 599,
+  `StrikethroughPrice` 1 799 and a `validForMemberTier #rozetka-card` 1 519 under
+  one name; they used to be three «editions» in «Яка ціна ваша?», and choosing
+  other than the first made the next check jump back. `isSidePrice` skips
+  reference types (Strikethrough/List/MSRP/SRP/MinimumAdvertised) and member tiers
+  in `offersInNode`; the "was" stays `declaredListPrice`; the member price is
+  `WishSource.memberPrice/memberTier` (`memberOfferIn`). `matchOffer` picks among
+  same-named offers by the price followed so far. Setting «У мене є Картка
+  Rozetka» (off): a dim «1 519 ₴ з Карткою Rozetka» under the price and the push
+  «Досягнуто ціль … — … при оплаті Карткою Rozetka (звичайна …)»
+  (`cardTargetReached`). `targetHit`, the pill, the card shape, chart and history
+  stay on the ordinary price — on purpose. Wishes added earlier by picking 1 519
+  take one real step to 1 599 at their next check. Fixture:
+  `app/src/test/resources/rozetka-jbl-tune-520bt.html` (trimmed, no reviews).
+- **A shared link already watched opens its page** (`wishToOpen`); `linkKey` drops
+  utm_/gclid-style parameters and `www.`.
+- **«Схоже на збій».** `glitchCandidates`: >35 % (`GLITCH_SHARE`, a guess) from
+  both neighbours, same side, ≤ 1 day, never the last point. Hint with «Не
+  враховувати» / «Справжня ціна»; a chart scrub ending on a point offers «Це був
+  збій». Set-aside points are MOVED to `Wish.excluded` (with the following point as
+  an anchor), so every reader of `history` stops seeing them; «Повернути» restores
+  exactly. Per wish, not per shop (the history is one series per wish). **Do not
+  change this to "mark and filter in each consumer".**
+- **Sold-out gap.** `mergeSources` records `Wish.stockGaps`; the wish page's
+  hryvnia chart is `WishPriceChart` (PricesUi.kt), which clips them out. The shared
+  `PriceChart` is unchanged (rate screen, dollar view).
+- **Hotline market.** `Wish.market` (product page URL, low, offer count, its own
+  history). Bound only by sharing a hotline PRODUCT page (`hotlineProductUrl`, then
+  `parseMarket` must find an AggregateOffer) — «Прив'язати як ринок до «X»?».
+  Read every 12 h in PriceWorker (`withMarketRead`), the product page only, never
+  `/sr/` (robots.txt) — ≈1.2 MB per bound wish per pass. Line «Ринок: від … · N
+  магазинів · Hotline», chip «на … дешевше» above +5 %. Never the price, never a
+  push; the digest says «… — на Hotline від …, у межах цілі …» once per crossing
+  (`marketTargetLines`, memory `wp_digest_market`). No line on the chart yet; the
+  history is kept for it.
+- **«Hotline ↗» on every wish page** (the owner's request): opens the bound market
+  page, else the Hotline search with the wish's own or owner-corrected query.
+  «До магазину ↗» became «Магазин ↗»; `ActionsRow` keeps three buttons in one row
+  at 360 dp and drops Hotline to a second row when the labels would not fit
+  (checked at font scale 1.15).
+- **Rate corridor + «Сплеск»** replace the single threshold: edges «нижче» /
+  «вище» on Monobank's SELL rate; spike > 1 % against yesterday's bank point in the
+  history. `RateWorker` runs hourly only while something is watched and asks
+  `/bank/currency` only when the stored reading is > 45 min old; `checkRate`
+  ignores the NBU figure (never arms, crosses, re-arms or fills) and readings > 3 h
+  old; one notification per crossing, re-armed after 0.25 % back inside; «Стежити
+  далі» / «Готово» (`RateActionReceiver`, not exported). The old `fxt*` threshold
+  migrates once into an edge and is cleared, so `rateTargetLine` in the digest
+  goes quiet. `RateTarget` & co. remain in History.kt (tested, unused by the UI).
+- **Sheet over the shop.** `ShopSheetActivity` (translucent, excludeFromRecents,
+  noHistory, `taskAffinity=""`) is the SEND target now; MainActivity no longer has
+  the SEND filter. `shopSheetRoute` forwards the whole intent to MainActivity for:
+  a subscription letter (`parseSubscription`, §22) or a Nova Poshta waybill
+  (`sharedParcelNumber`, §20) — the same detectors the app's router asks first,
+  added at the merge so the sheet never takes what the router would send
+  elsewhere — a Hotline page, no link, or > 280 characters around the link. Known
+  item: chart, range bar, verdict + «нижче/вище звичайного» (time-weighted 30-day
+  `usualPrice`), target. New item: today's price, «історії ще нема», «Ціль
+  −10%», «Стежити». It writes via `addFromSheet` (the store as it is now) and bumps
+  `ShopSheetSignal`, which FlowPayApp watches to reload — ON_START alone was shown
+  (JVM) to lose the wish to a later save from a live main screen.
+  `FlowPayOverlayTheme` is the theme without the full-screen ground.
+- **Black Friday card** in the November recap (`blackFridayCard`): wishes watched
+  from 30 days before November; «справді подешевшали» = cut in November and below
+  `lowBeforeCurrent`. The recap label is appended after the cut (§20 did the same
+  thing; one version kept).
+
+### New stored fields (both halves, round-trip tested)
+Wish: `wpx` (set-aside points + anchor), `wpr` (points said real), `wpg` (stock
+gaps), `wpmk` (market, only when bound). WishSource: `wpm` (member price), `wpt`
+(tier). Prefs: `wp_rozetka_card`, `wp_digest_market`, `wp_fx_corridor`.
+
+### Corrections to earlier sections
+- §11 «What cannot be scraped»: hotline.ua's SEARCH (`/ua/sr/?q=`) is JS-rendered
+  and disallowed for all robots — only ever opened in the browser; the dead
+  `/ua/search/?q=` answers 200 with 40 bytes «Legacy home controller has been
+  disabled». **Product pages are not blocked**: on 4 Oct 2026 JBL Tune 520BT
+  answered the app's UA with 200, 1 193 356 bytes, AggregateOffer lowPrice 1316,
+  offerCount 105.
+- §3 «The morning message»: the rate is no longer announced there (the corridor
+  notifies at once); `marketTargetLines` follows `priceLines`.
+- §14: bug 1 (Rozetka three prices) and the share-a-known-link item are fixed;
+  note 4 (hotline 40 bytes) corrected above.
+
+### Not verified
+On the phone: everything — the translucent sheet over another app on HyperOS, its
+absence from recents and the return to the shop; RateWorker's timing under HyperOS
+and the notification buttons; the market bind sheet (needs network); the
+scrub-to-«Це був збій» gesture; Hotline from a mobile network.
+
+### Open with the owner
+- Has a Rozetka card? Then switch on «У мене є Картка Rozetka».
+- The 35 % glitch threshold is a guess — a screenshot when the hint first shows.
+- Hotline: ≈1.2 MB per bound wish twice a day on mobile data — acceptable?
+- The rate is checked hourly while edges or «Сплеск» are set — fine?
+- «До магазину ↗» → «Магазин ↗» to fit «Hotline ↗» — fine?
+- «Поділитися» now opens a sheet over the shop instead of switching to FlowPay —
+  keep, or go back to switching?
+
+---
+
+## 24. One «Вільно», funds and the payday (4 October 2026, v3.21.0)
+
+The planning half of «додай все»: ideas №1 «На життя», №5 «Чи потягну?», №7
+funds, №8 payday, the held-wish quick win, YNAB's true expenses, month ahead and
+snooze, Revolut's and Rocket Money's payday views, Cleo's ritual, Copilot's
+reserve and Monarch's funds — merged into one model. Logic: `MoneyPlan.kt`,
+`Funds.kt`, `Afford.kt` (tests `MoneyPlanTest`, `FundsTest`, `AffordTest`);
+preferences `PlanStore.kt`; tiles and sheets `MoneyPlanUi.kt`; small hooks in
+MainActivity, Overview, Ideas, Digest, ReminderWorker, Widget, Tile, Bin, Savings.
+Rendered on the JVM (`screens/PlanShots.kt`); **not seen on the phone**, and no
+AlertDialog renders under Robolectric (it never goes idle — the old income dialog
+too), so the income/life/skip/put dialogs were never drawn.
+
+### The rule: one «Вільно»
+`income − this month's payments (annual whole, in its own month — §12) + what
+funds hold of this month's annual charges − «На життя»`, computed by
+`honestMonth()`. `.asBudget()` is what «Лишається», the widget, the quick tile
+(`honestBudget`) and the digest's closing line read; `overview(…, plan)` takes the
+same `MoneyPlan`. Plans (wish and fund monthly sums) are **not** subtracted from
+it — they are checked against it («Плани не сходяться») and taken off the treat
+(`MoneyPlan.treatBudget`). With nothing set, every figure is as before (pinned).
+
+### The pieces
+- **«На життя»:** `LifeCost`, prefs `mp_life_on`/`mp_life`, off by default.
+  Settings row on Огляд; the hero says «після платежів і життя … · змінити» (tap
+  the hero); Платежі's bar has a lighter-lime 🛒 part. The widget's and tile's
+  words still say «Вільно на місяць»; only their data changed.
+- **Held and skipped plans:** `plannedMonthly` returns 0 for a held wish (§14 bug
+  3, fixed) and for a skipped month.
+- **«Пропустити»:** `Wish.skipMonth` (JSON `mpsk`) and `Fund.skipMonth`, on the
+  plans card (candidate: lowest duel rating, else farthest date; wishes before
+  funds), the wish page and a fund's sheet. The price is said first (`skipPrice`).
+- **Payday:** `Payday(salary, advance)`, `LAST_WORKING_DAY = -1`, prefs
+  `mp_payday`/`mp_advance`; a weekend/holiday payday moves back to the working
+  day before. Set in the income dialog. The hero says «до зарплати ще N днів».
+- **«Розкласти зарплату»:** 5 days from the salary day (not the advance; the
+  1st–5th with no payday); proportional sums when plans don't fit; «Я відклав»
+  adds to wishes and funds (jar wishes skipped), undo, ✕ hides it for that
+  payday; record in `mp_ritual`. Money put aside this month stays this month's
+  (`PlanAsk.put`), so a goal reached with it does not drop out of the check and
+  feed the treat twice.
+- **Фонди:** `Fund`, prefs `mp_funds`, backup key `mpFunds` (an old file without
+  it keeps the phone's funds), bin kind `mpf`. A payment fund's goal is the
+  payment at the sell rate, its date the charge in `dueMonth`, its monthly sum
+  `deadlinePlan`. **The trap:** in the charge month the payment counts whole and
+  `fundCoverage` adds the fund's part back once (capped at the month's charge) —
+  in «Вільно», `moneyWeather(covered=…)`, the «Чи потягну?»/per-day sums and month
+  ahead. **Settlement is derived (`settledFund`):** when the charge month is
+  marked paid (any way, monobank too) or has ended, the fund pays min(saved,
+  charged) into `coveredMonth`/`covered` and moves `dueMonth` a year on; unticking
+  within the month returns it. A `LaunchedEffect` in FlowPayApp persists it; a
+  tick says «Фонд покрив …». One offer per annual payment ≥ a month away; «Не
+  треба» in `mp_fund_no`. Presets: Подушка ☂️ (the cushion, at most one), ТО авто,
+  Подарунки, Ліки, Відпустка. The 🫙 tile replaces «Далі ніж за місяць»; annual
+  rows and tiles with a fund show «зібрано X з Y». 🫙 and 🛟 are not in the
+  owner's Apple pack (phone font draws 🫙; ☂️ used for Подушка).
+- **Digest:** the eve of a salary «Завтра зарплата — за планом …»; with no payday
+  the 1st says «Час відкласти у фонди: …» (`planDigestLines`, passed to
+  `digest(planLines, month)`).
+- **«Місяць наперед»:** only with a cushion fund. `monthCostAt` judges each charge
+  at its own date's price through `priceOn` (§21) — a free trial still running
+  costs nothing, a promo still running its promo price (fixed at the merge; the
+  branch had counted promo months as free). Numerator = cushion + funds held for
+  next month's annual charges.
+- **«Чи потягну?» (`Afford.kt`):** by balance (monobank `ownUah`, or a typed «Зараз
+  на картці» in `mp_cash`/`mp_cash_day`) before the next payday; otherwise by plan,
+  labelled so. Checks: payments, life (if on), then plans give way (least wanted,
+  farthest, funds last), then «Влазить». Levers: cancel a trial, buy the day after
+  payday. «Купив частинами» creates an instalment `Pay` from the purchase day.
+  `MoneyHost.treat` subtracts the parcels' cash on delivery like Огляд does
+  (merged).
+- **«Скільки можна сьогодні»:** monobank plus a payday only; assumes «Я відклав»
+  money has left the card.
+
+### Merged with §20–§23
+- `markPaid` (fund settlement) now writes through `Store.updatePaidMarks` with
+  `rebaseMarks` (§22) instead of saving the screen's list.
+- The forecast is `weatherWithParcels(moneyWeather(…, covered = weatherCover(…)),
+  cod, …)` — funds and cash on delivery both.
+- The widget reads `honestBudget` inside its composition (§22's stamp), and its
+  hidden-sums line uses the same month.
+- New sums from this section are wrapped in `personal()` where they met a
+  conflict; the rest are in the mask audit (§22 addendum).
+
+### Keys
+Prefs: `mp_life_on mp_life mp_payday mp_advance mp_cash mp_cash_day mp_funds
+mp_ritual mp_fund_no`. JSON: `Wish.mpsk`; Fund `mpi mpn mpe mpg mps mpm mpd mpp
+mpdm mpcm mpc mpq mpsk mppm mppa mpad`; ritual `mpa mpo mpd mpe(mpk mpi mps mpj)`;
+backup `mpFunds`.
+
+### Not built
+Splitting payments into «з авансу / із зарплати» lists; cash or another bank as
+one extra number; a "low per-day" digest line.
+
+### Open with the owner
+- Roughly how much «на життя» a month? (Off until set.)
+- Which day is payday; an advance; or the last working day?
+- Is money put aside kept on the same card, or in jars / another account? (If
+  on the card, «Скільки можна сьогодні» reads too high after «Я відклав».)
+- A «Подушка» fund (turns on «Місяць наперед»)? Which annual payments get funds?
+- Should the widget/tile say «після платежів і життя» when life is on?
+- Phone-font 🫙 for Фонди acceptable?

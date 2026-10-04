@@ -255,6 +255,9 @@ fun readSource(
                 )
             )
         } else {
+            // Read every visit like the crossed-out price beside it, and cleared when
+            // the page stops stating it: a card price is also a claim made on a day.
+            val member = memberOfferIn(html, match.offer, rate)
             SourceReading.Priced(
                 previous.copy(
                     price = converted.uah,
@@ -269,7 +272,9 @@ fun readSource(
                     // Rewritten every read, not merely set when it is bad news, so
                     // that a shop which stocks the thing again cannot leave "знято
                     // з продажу" sitting under a live price for ever.
-                    availability = match.offer.availability
+                    availability = match.offer.availability,
+                    memberPrice = member?.price ?: 0.0,
+                    memberTier = member?.tier.orEmpty()
                 ),
                 extractAbout(html)
             )
@@ -344,13 +349,17 @@ fun mergeSources(
         }
     }
     val best = bestSource(next)
-        ?: return Reading.Stale(
-            previous.copy(
-                sources = next,
-                checkedDay = today,
-                freshness = sourceFreshness(next)
+        ?: return sourceFreshness(next).let { state ->
+            Reading.Stale(
+                previous.copy(
+                    sources = next,
+                    checkedDay = today,
+                    freshness = state,
+                    // The day it was first seen sold out, for the gap in the chart.
+                    stockGaps = stockGapsAfter(previous.stockGaps, state, today)
+                )
             )
-        )
+        }
 
     // The page that produced the winning price is the one whose words belong on
     // the screen: reading a description off Comfy while showing Rozetka's price
@@ -369,7 +378,9 @@ fun mergeSources(
             history = appendPrice(previous.history, best.price, today, rate.sell, rate.source),
             checkedDay = today,
             freshness = Freshness.OK,
-            about = about
+            about = about,
+            // A price again: a sold-out span still open ends today.
+            stockGaps = stockGapsAfter(previous.stockGaps, Freshness.OK, today)
         )
     )
 }
@@ -1059,11 +1070,28 @@ fun sharedLink(text: String?, existing: List<Wish>): SharedLink {
  * that differ only in scheme, case or a trailing slash, and a fragment is never
  * anything but a scroll position.
  */
-private fun linkKey(url: String): String = url.trim().lowercase()
-    .substringBefore('#')
+private fun linkKey(url: String): String = withoutTrackingParams(url.trim().lowercase().substringBefore('#'))
     .removePrefix("https://")
     .removePrefix("http://")
-    .trimEnd('/')
+    .removePrefix("www.")
+    .trimEnd('/', '?')
+
+/**
+ * Query parameters that say who shared a link, never which product it is.
+ *
+ * A shop's app shares its page with `?utm_source=…&utm_medium=share` on the end,
+ * and the browser copy of the same page carries none — so a thing already on the
+ * list came back from the share sheet as a second wish, splitting its history.
+ */
+private val TRACKING_PARAM = Regex("""^(?:utm_[a-z0-9_]*|gclid|fbclid|gad_source|srsltid|_gl|igshid|yclid|mc_cid|mc_eid)$""")
+
+private fun withoutTrackingParams(url: String): String {
+    val start = url.indexOf('?')
+    if (start < 0) return url
+    val kept = url.substring(start + 1).split('&')
+        .filter { it.isNotBlank() && !TRACKING_PARAM.matches(it.substringBefore('=')) }
+    return url.substring(0, start) + if (kept.isEmpty()) "" else "?" + kept.joinToString("&")
+}
 
 /**
  * The wish to keep when a shared page cannot be read.

@@ -916,8 +916,19 @@ sealed interface OfferMatch {
 fun matchOffer(offers: List<Offer>, variant: String, lastPrice: Double): OfferMatch {
     if (offers.isEmpty()) return OfferMatch.None
     if (variant.isNotBlank()) {
-        val named = offers.firstOrNull { it.label == variant }
-        return if (named != null) OfferMatch.Found(named) else OfferMatch.Missing
+        // Every offer carrying the name, not the first of them. A page whose prices
+        // all inherit the product's own name — Rozetka's regular, crossed-out and
+        // card prices did, until [isSidePrice] — offers the same row three times,
+        // and taking the first match sent a wish that followed the third back to
+        // the first on the next check, with an invented step in its history. Where
+        // the name cannot tell them apart, the price followed so far does, exactly
+        // as it does on a page that names nothing.
+        val named = offers.filter { it.label == variant }
+        return when {
+            named.isEmpty() -> OfferMatch.Missing
+            named.size == 1 || lastPrice <= 0 -> OfferMatch.Found(named.first())
+            else -> OfferMatch.Found(named.minByOrNull { kotlin.math.abs(it.price - lastPrice) }!!)
+        }
     }
     if (offers.size == 1 || lastPrice <= 0) return OfferMatch.Found(offers.first())
     return OfferMatch.Found(offers.minByOrNull { kotlin.math.abs(it.price - lastPrice) }!!)
@@ -1010,6 +1021,8 @@ fun wishFromOffer(
         blocked -> Freshness.OUT_OF_STOCK
         else -> Freshness.OK
     }
+    // Read like the crossed-out price: only beside a price that is real today.
+    val member = if (state == Freshness.OK) memberOfferIn(html, offer, rate) else null
     return Wish(
         id = id,
         name = facts.name.ifBlank { "Новий товар" },
@@ -1040,7 +1053,9 @@ fun wishFromOffer(
                 amount = converted.amount,
                 currency = converted.currency,
                 rate = converted.rate,
-                availability = offer.availability
+                availability = offer.availability,
+                memberPrice = member?.price ?: 0.0,
+                memberTier = member?.tier.orEmpty()
             )
         )
     )
@@ -1353,6 +1368,9 @@ private fun offersInNode(
             offersInNode(node.opt(it), into, depth + 1, label, currency, stock)
         }
         is org.json.JSONObject -> {
+            // A crossed-out "was" or a card member's price is a figure beside the
+            // price, never another edition of the thing: see [isSidePrice].
+            if (isSidePrice(node)) return
             // A node names itself, and that name belongs to any price directly on it.
             val own = node.optString("name").ifBlank { node.optString("sku") }.ifBlank { label }
             // Inherited the same way, because the currency is usually stated once on
@@ -1378,6 +1396,128 @@ private fun offersInNode(
             }
         }
     }
+}
+
+/**
+ * schema.org's words for a figure printed beside the price that nobody pays at the
+ * till: the crossed-out one, the list and the recommended prices, the advertising
+ * minimum. Reduced to letters and lower case, the way [availabilityFrom] reduces its
+ * tokens, because shops write the full URL, the bare word and everything between.
+ */
+private val REFERENCE_PRICE_TYPES = setOf(
+    "strikethroughprice", "listprice", "msrp", "srp", "minimumadvertisedprice"
+)
+
+/**
+ * Whether this JSON-LD node is a price *beside* the price: a reference figure, or
+ * one that holds only for members of a shop's loyalty programme.
+ *
+ * Rozetka publishes all three of its figures in one `priceSpecification` list —
+ * 1 599 to anyone, 1 799 crossed out, 1 519 with the Rozetka card — and they used
+ * to come out of [extractOffers] as three editions with the product's own name on
+ * each. Read by type instead: the crossed-out one is the "was" that
+ * [declaredListPrice] already takes, and the member's one is a field of its own on
+ * the shop ([memberOfferIn]). A specification with no type and no tier is still an
+ * ordinary price — some templates put the only figure there.
+ */
+internal fun isSidePrice(node: org.json.JSONObject): Boolean {
+    if (node.has("validForMemberTier")) return true
+    val type = node.optString("priceType")
+        .substringAfterLast('/').substringAfterLast('#')
+        .filter { it.isLetter() }
+        .lowercase()
+    return type in REFERENCE_PRICE_TYPES
+}
+
+/**
+ * A price a page states for members of a shop's loyalty programme, in the page's
+ * own money, with the programme as the page names it — Rozetka writes
+ * `"validForMemberTier": {"@id": "https://rozetka.com.ua/#rozetka-card"}`.
+ */
+data class MemberPrice(val price: Double, val tier: String, val currency: String = "")
+
+/**
+ * Every member's price the page's structured data declares.
+ *
+ * A tier that earns points rather than stating a price — Rozetka's bonus tier sits
+ * in the same list — has no figure and is not one of these.
+ */
+fun memberPrices(html: String): List<MemberPrice> {
+    val found = mutableListOf<MemberPrice>()
+    Regex(
+        """<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    ).findAll(html).map { it.groupValues[1].trim() }.forEach { block ->
+        runCatching {
+            val root: Any = when {
+                block.startsWith("[") -> JSONArray(block)
+                block.startsWith("{") -> org.json.JSONObject(block)
+                else -> return@runCatching
+            }
+            memberPricesIn(root, found, depth = 0, currency = "")
+        }
+    }
+    return found
+}
+
+private fun memberPricesIn(node: Any?, into: MutableList<MemberPrice>, depth: Int, currency: String) {
+    if (depth > 8) return
+    when (node) {
+        is JSONArray -> (0 until node.length()).forEach {
+            memberPricesIn(node.opt(it), into, depth + 1, currency)
+        }
+        is org.json.JSONObject -> {
+            val money = currencyCode(node.optString("priceCurrency")).ifBlank { currency }
+            if (node.has("validForMemberTier")) {
+                priceNumber(node.opt("price")?.toString().orEmpty())?.let {
+                    into.add(MemberPrice(it, tierName(node.opt("validForMemberTier")), money))
+                }
+                return
+            }
+            node.keys().forEach { key ->
+                if (key != "review" && key != "reviews") {
+                    memberPricesIn(node.opt(key), into, depth + 1, money)
+                }
+            }
+        }
+    }
+}
+
+/** The programme a member's price is for: its `@id`, or its name where it has no id. */
+private fun tierName(value: Any?): String = when (value) {
+    is org.json.JSONObject -> value.optString("@id").ifBlank { value.optString("name") }
+    is JSONArray -> (0 until value.length()).firstNotNullOfOrNull { index ->
+        tierName(value.opt(index)).takeIf { it.isNotBlank() }
+    }.orEmpty()
+    is String -> value
+    else -> ""
+}
+
+/**
+ * Below this share of the ordinary price a member's figure is not plausibly the same
+ * thing: minor units, a bundle, a different product's figure.
+ */
+private const val MEMBER_PRICE_FLOOR = 0.5
+
+/**
+ * The member's price for this offer, in hryvnia, or null.
+ *
+ * Only below the ordinary price — a card price that is not cheaper says nothing —
+ * and not absurdly below it. Rozetka's card is preferred when a page names several
+ * programmes, because it is the one the owner can say they hold (see PricesMore.kt);
+ * otherwise the cheapest.
+ */
+fun memberOfferIn(html: String, offer: Offer, rate: FxRate): MemberPrice? {
+    if (offer.price <= 0.0) return null
+    val plausible = memberPrices(html).filter {
+        it.price < offer.price && it.price >= offer.price * MEMBER_PRICE_FLOOR
+    }
+    val chosen = plausible.firstOrNull { isRozetkaCard(it.tier) }
+        ?: plausible.minByOrNull { it.price }
+        ?: return null
+    val converted = toHryvnia(chosen.price, chosen.currency.ifBlank { offer.currency }, rate)
+    if (converted.noRate) return null
+    return MemberPrice(converted.uah, chosen.tier, UAH)
 }
 
 /** Walks a JSON-LD document looking for a Product offer, including inside @graph. */

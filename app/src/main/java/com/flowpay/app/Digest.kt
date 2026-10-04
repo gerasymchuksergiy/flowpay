@@ -177,7 +177,19 @@ fun digest(
      * Lines said once, already filtered against what was said before — a payment's
      * life ([lifeLines]) and what the bank statement shows (Mono.kt).
      */
-    once: List<OnceLine> = emptyList()
+    once: List<OnceLine> = emptyList(),
+    /** Each bound market's low as the previous message saw it. See [marketTargetLines]. */
+    marketSaid: Map<String, Double> = emptyMap(),
+    /**
+     * The plan's own lines — the eve of a salary, the funds on the 1st. See
+     * [planDigestLines]; worked out by the caller, which holds the plan.
+     */
+    planLines: List<String> = emptyList(),
+    /**
+     * The month as Огляд shows it — «На життя» and the funds included — for the
+     * closing line. Absent, income less payments, as it always was.
+     */
+    month: Budget? = null
 ): Digest {
     // Said once each — a refund that is late, a warranty ending, «Як тобі …?».
     val purchaseOnce = purchaseOnceLines(orders, today.toEpochDay()).filterNot { it.key in said }
@@ -212,8 +224,11 @@ fun digest(
         // whose charge should not have come, a promo about to end, the bank seeing
         // a paused payment charge again, a charge missed or taken twice.
         addAll(once.map { it.text })
+        addAll(planLines)
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
+        // The market on Hotline reaching a wish's target: a line, never a push.
+        addAll(marketTargetLines(wishes, today.toEpochDay(), marketSaid))
         // Last: a window closing is worth a line, never the headline.
         addAll(returnLines(orders, today.toEpochDay()))
         addAll(purchaseOnce.map { it.text })
@@ -222,7 +237,7 @@ fun digest(
 
     // The month's free cash rides along rather than standing on its own. It is the
     // figure every one of the lines above is spent against, and it is never news.
-    val trailer = freeCashLine(budget(income, monthlyTotal(pays, usdSellRate, today)))
+    val trailer = freeCashLine(month ?: budget(income, monthlyTotal(pays, usdSellRate, today)))
 
     // A trial about to charge is the line that most needs a way out under it: the
     // service's own cancel page, one tap from the notification. Two at most, so

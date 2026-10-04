@@ -120,16 +120,19 @@ private fun widgetShown(context: Context): WidgetShown {
     // already has, and totalLabel says so out loud when it is missing.
     val rate = store.fxRate().first.sell
     val prefs = TouchPrefs(context)
+    // The same «Вільно» as Огляд: «На життя» and the funds in it (MoneyPlan.kt).
+    val month = honestBudget(context, store, rate, today)
     val summary = widgetSummary(
         pays = pays,
         orders = store.orders(),
         income = income,
         usdSellRate = rate,
         today = today,
-        marks = marks
+        marks = marks,
+        month = month
     ).let {
         // «Ховати суми поза застосунком»: names and dates, no sums.
-        if (prefs.hideOutside()) widgetWithoutSums(it, budget(income, monthlyTotal(pays, rate, today))) else it
+        if (prefs.hideOutside()) widgetWithoutSums(it, month) else it
     }
     // The next payment's emoji, from the imported pack when there is one —
     // decoded here because a widget draws a bitmap, not a composable glyph.

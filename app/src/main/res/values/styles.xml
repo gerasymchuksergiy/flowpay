@@ -5,4 +5,12 @@
   <item name="android:windowLightStatusBar">false</item>
   <item name="android:windowActionModeOverlay">true</item>
  </style>
+ <!-- The sheet over a shop's app (ShopSheet.kt): see-through, so the shop stays
+      behind it, and without the window's own fade. -->
+ <style name="Theme.FlowPay.Sheet" parent="Theme.FlowPay">
+  <item name="android:windowIsTranslucent">true</item>
+  <item name="android:windowBackground">@android:color/transparent</item>
+  <item name="android:backgroundDimEnabled">false</item>
+  <item name="android:windowAnimationStyle">@null</item>
+ </style>
 </resources>

@@ -80,6 +80,7 @@ fun binKindLabel(kind: String): String = when (kind) {
     BIN_WISH -> "Бажання"
     BIN_PAY -> "Витрата"
     BIN_ORDER -> "Покупка"
+    BIN_FUND -> "Фонд"
     else -> "Запис"
 }
 

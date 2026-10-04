@@ -655,3 +655,20 @@ fun FlowPayTheme(content: @Composable () -> Unit) {
         }
     }
 }
+
+/**
+ * The app's colours, type and motion without its ground, for a window that floats
+ * over another app — the sheet over a shop (ShopSheet.kt). A full-screen near-black
+ * there would hide the very shop the sheet exists to sit over; the sheet brings its
+ * own surface.
+ */
+@Composable
+fun FlowPayOverlayTheme(content: @Composable () -> Unit) {
+    CompositionLocalProvider(LocalReducedMotion provides systemReducedMotion()) {
+        MaterialTheme(
+            colorScheme = FlowPayColors,
+            typography = FlowPayTypography,
+            content = content
+        )
+    }
+}
