@@ -2081,7 +2081,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         wishes = wishes,
         funds = funds,
         usdSell = usdSell,
-        life = planSettings.life,
         payday = planSettings.payday,
         holidays = remember(returns) { store.holidaysAround(today) },
         ritual = ritualRecord
@@ -2212,10 +2211,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // once, so nothing here saves its older copy over the new wish.
     val sheetVersion = ShopSheetSignal.version
     LaunchedEffect(sheetVersion) { if (sheetVersion > 0) reload() }
-    val monoBalance = remember(monoVersion) {
-        MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
-    }
-    val monoAt = remember(monoVersion) { MonoStore(context).clientAt() }
 
     // A fund pays its part of an annual charge once the month is marked or over —
     // whichever way the mark came, a monobank tick included. Kept, so the next
@@ -2246,8 +2241,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         inputs = moneyInputs,
         plan = moneyNow,
         settings = planSettings,
-        monoBalance = monoBalance,
-        monoAt = monoAt,
         declinedFunds = declinedFunds,
         treat = monthTreat(wishes, moneyNow.treatBudget - codTotal(codDues(orders, today)), today.toEpochDay()),
         saveSettings = { settings ->
@@ -2622,7 +2615,6 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                         ),
                                         cod, monthBudget.income, summary.freeCash
                                     ),
-                                    balance = monoBalance,
                                     treat = monthTreat(wishes, summary.freeCash - summary.plannedMonthly - codTotal(cod), today.toEpochDay()),
                                     parcelsToPay = codLine(cod),
                                     weatherParcels = codChips(cod, today),
@@ -4997,11 +4989,7 @@ fun SharedTransitionScope.WishDetailScreen(
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    // The same «Вільно» as Огляд: after life too, when it is on.
-                                    personal(
-                                        (if ((moneyHost?.plan?.month?.life ?: 0.0) > 0.0) "Вільно після платежів і життя " else "Вільно після витрат ") +
-                                            "${money(freeCash)} на місяць"
-                                    ),
+                                    personal("Вільно після витрат ${money(freeCash)} на місяць"),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine
@@ -8852,8 +8840,6 @@ fun SettingsScreen(
     onOpenTab: (Int) -> Unit,
     /** The next seven days as weather — see Ideas.kt. */
     weather: List<MoneyDay>,
-    /** The card's own money from monobank, null when it is not connected. */
-    balance: Double?,
     /** The one wish that could be bought now without hurting the month. */
     treat: Treat?,
     onOpenWish: (String) -> Unit,
@@ -8874,7 +8860,6 @@ fun SettingsScreen(
     val context = LocalContext.current
     var message by remember { mutableStateOf<String?>(null) }
     // The plan's dialogs and sheets — see MoneyPlanUi.kt.
-    var lifeOpen by remember { mutableStateOf(false) }
     var incomeOpen by remember { mutableStateOf(false) }
     var affordOpen by remember { mutableStateOf(false) }
     var skipping by remember { mutableStateOf<PlanAsk?>(null) }
@@ -8997,13 +8982,8 @@ fun SettingsScreen(
                         moneyHost?.plan?.month?.asBudget()
                             ?: Budget(summary.income, summary.monthlyExpenses, summary.freeCash, summary.overspent, summary.budgetUnknown)
                     )
-                    // With «На життя» on, the figure is «після платежів і життя», and
-                    // the panel opens the one number it rests on.
-                    val lifeOn = moneyHost?.plan?.month?.let { it.life > 0.0 } == true
                     HeroPanel(
-                        modifier = Modifier
-                            .revealOnEnter(1, entrance)
-                            .then(if (lifeOn) Modifier.clip(Radius.lg).clickable(onClickLabel = "Змінити витрати на життя") { lifeOpen = true } else Modifier),
+                        modifier = Modifier.revealOnEnter(1, entrance),
                         label = moneyHost?.plan?.month?.let { heroLabel(it) } ?: when {
                             summary.budgetUnknown -> "Вкажіть дохід на Платежах"
                             summary.overspent -> "Не сходиться цього місяця"
@@ -9047,16 +9027,8 @@ fun SettingsScreen(
                     // Below the panel rather than inside it: the figure is income less
                     // the standing costs, and a parcel's money is said beside it.
                     parcelsToPay?.let { ParcelsToPayLine(it) }
-                    // What the card can spend a day until money arrives — monobank's
-                    // own balance and a known payday only; without either nothing
-                    // changes. And on a payday, the ritual. See MoneyPlan.kt.
+                    // On a payday, the ritual. See MoneyPlan.kt.
                     moneyHost?.let { host ->
-                        val allowanceNow = host.monoBalance?.takeIf { host.inputs.payday.known }
-                            ?.let { allowance(host.inputs, host.plan, it) }
-                        allowanceNow?.let {
-                            Spacer(Modifier.height(Space.md))
-                            AllowanceTile(it, host.monoAt, Modifier.revealOnEnter(2, entrance))
-                        }
                         ritualFor(host.inputs, host.plan)?.let { ritual ->
                             Spacer(Modifier.height(Space.md))
                             RitualTile(
@@ -9086,7 +9058,7 @@ fun SettingsScreen(
                     // The week ahead as weather: a rainy Wednesday seen on Monday.
                     if (weather.isNotEmpty()) {
                         Spacer(Modifier.height(Space.md))
-                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance), balance, weatherParcels)
+                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance), parcels = weatherParcels)
                     }
                     // Four tiles, each the one figure its own tab is about, each a door
                     // into that tab. Bento rather than a column of rows: the four
@@ -9448,12 +9420,6 @@ fun SettingsScreen(
                         personal(incomeRowDetail(host.inputs.income, host.settings.payday)),
                         onClick = { incomeOpen = true }
                     )
-                    SettingsRow(
-                        Icons.Default.ShoppingCart,
-                        "Витрати на життя",
-                        personal(lifeRowDetail(host.settings.life)),
-                        onClick = { lifeOpen = true }
-                    )
                 }
                 // Filled list items painted a large lighter block across the screen and
                 // left a hard seam under the header. They sit on the page instead.
@@ -9708,12 +9674,6 @@ fun SettingsScreen(
         }
     }
     moneyHost?.let { host ->
-        if (lifeOpen) {
-            LifeDialog(host.settings.life, { lifeOpen = false }) { life ->
-                host.saveSettings(host.settings.copy(life = life))
-                lifeOpen = false
-            }
-        }
         if (incomeOpen) {
             IncomeDialog(
                 host.inputs.income,

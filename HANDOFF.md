@@ -3,7 +3,7 @@
 Everything the next session needs to work on this app without relearning it the
 expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
 to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed), and
-again at the end of 4 October 2026 at `v3.21.1` / 1515 tests. **Start with §19**:
+again at the end of 4 October 2026 at `v3.21.2` / 1515 tests. **Start with §19**:
 where things stand and what to do first.
 
 Nearly every rule below exists because breaking it cost something real — a failed
@@ -1033,6 +1033,7 @@ from the tag, the new strings found in the DEX):
 | `v3.20.0` | Prices: Rozetka by type, glitches, Hotline market and button, rate corridor, sheet over the shop (§23) |
 | `v3.21.0` | One «Вільно», funds, payday, «Чи потягну?», month ahead (§24) |
 | `v3.21.1` | The eye covers every new sum (§25) |
+| `v3.21.2` | Taken back out at the owner's word: «На життя» and the monobank balance as «your money» (§26) |
 
 How 3.17–3.21 were made: the owner said «додай все» to the research page, five
 builders worked in parallel worktrees (`.claude/worktrees/{parcels,prices,touch,
@@ -1046,9 +1047,10 @@ finished after 3.16.1 is not known.
 
 **The owner's answers so far:** payday — advance on the 15th, salary at month end
 (the owner sets «останній робочий день» / 31 and advance 15 in Огляд →
-Налаштування → «Дохід і день зарплати»). Everything else asked in §20–§25 «Open
-with the owner» is still open — the important ones: «На життя» amount; whether
-saved money leaves the card; a «Подушка» fund; «Мій номер для Нової пошти»; a
+Налаштування → «Дохід і день зарплати»). The salary mostly stays in another bank — it
+rarely all goes to monobank — which is why §26 took two things back out.
+Everything else asked in §20–§25 «Open with the owner» is still open — the
+important ones: a «Подушка» fund; «Мій номер для Нової пошти»; a
 Rozetka card; the sheet over the shop (keep or go back); whether to hide sums in
 the morning notification.
 
@@ -1704,3 +1706,27 @@ shop price lets someone estimate the savings.
 - With the eye shut, dialogs that confirm a sum («Пропустити», «Погасити
   достроково») show dots — the eye has to be opened to read the figure. Fine?
 - Days to payday and the cushion's days stay visible. Fine?
+
+---
+
+## 26. Taken back out (4 October 2026, evening, v3.21.2)
+
+After 3.21.1 the owner read the explanation of «Витрати на життя» and called it
+«якась херня», then added that the salary rarely goes to monobank in full. Asked
+whether to take the balance-based pieces out, they said «так, роби». So:
+
+- **«На життя» is gone from the app**: no settings row, no tap on the hero, no
+  dialog (`LifeDialog` deleted); `MoneyInputs.life` is never fed (MainActivity,
+  `PlanStore.moneyInputs`). The model still handles a life cost — dormant, still
+  covered by MoneyPlanTest — and a stored `mp_life_on` / `mp_life` is ignored.
+  Do not bring it back unless the owner asks.
+- **The monobank balance no longer stands for the owner's money.** The weather's
+  «На картці … — вистачить / не вистачить» line is not passed any more
+  (`SettingsScreen` lost its `balance` parameter); «Скільки можна сьогодні»
+  (`AllowanceTile`) is deleted; «Чи потягну?» uses only a typed «Скільки зараз є»
+  («на всіх картках і готівкою») — `MoneyHost.monoBalance` / `monoAt` were
+  removed. `allowance()` and `balanceLine()` stay as tested pure functions with no
+  caller.
+- **Kept on purpose:** the digest's first line «Завтра … а на картці … —
+  докиньте» (§21 `shortTomorrowLine`): it counts only payments confirmed as charged
+  from monobank, so it really is about that card's money.

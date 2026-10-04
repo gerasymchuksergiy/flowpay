@@ -67,10 +67,6 @@ data class MoneyHost(
     val inputs: MoneyInputs,
     val plan: MoneyPlan,
     val settings: PlanSettings,
-    /** monobank's own money on the ticked hryvnia cards; null when it is not connected. */
-    val monoBalance: Double? = null,
-    /** When that balance was read, epoch ms. */
-    val monoAt: Long = 0L,
     val declinedFunds: Set<String> = emptySet(),
     /** The month's «Подарунок собі», so «Чи потягну?» can say whether it survives. */
     val treat: Treat? = null,
@@ -124,39 +120,6 @@ private fun InkSwitch(checked: Boolean, colour: Color, onChange: (Boolean) -> Un
 }
 
 // ------------------------------------------------------------ «На життя»
-
-/** The switch and the one number. Off: the app works exactly as it did. */
-@Composable
-fun LifeDialog(life: LifeCost, close: () -> Unit, save: (LifeCost) -> Unit) {
-    var on by remember { mutableStateOf(life.on || life.monthly <= 0.0) }
-    var text by remember { mutableStateOf(amountText(life.monthly)) }
-    AlertDialog(
-        onDismissRequest = close,
-        title = { Text("Витрати на життя") },
-        text = {
-            Column {
-                Text(
-                    "Їжа, транспорт, кафе — одне число на місяць, приблизно. Тоді «Вільно» стане «після " +
-                        "платежів і життя», і саме від нього рахуватимуть «Подарунок собі», «Плани не сходяться», " +
-                        "погода, віджет і плитка в шторці.",
-                    color = TextSecondary,
-                    fontSize = Type.captionSize,
-                    lineHeight = Type.captionLine
-                )
-                Row(
-                    Modifier.fillMaxWidth().padding(top = Space.md).clip(Radius.sm).clickable { on = !on },
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("Враховувати витрати на життя", Modifier.weight(1f), fontSize = Type.bodySize)
-                    Switch(on, { on = it })
-                }
-                if (on) NumberField("На місяць, ₴", text) { text = it }
-            }
-        },
-        confirmButton = { Button({ save(LifeCost(on, parseAmount(text))) }) { Text("Зберегти") } },
-        dismissButton = { TextButton(close) { Text("Скасувати") } }
-    )
-}
 
 // ------------------------------------------------------------ the payday
 
@@ -247,38 +210,6 @@ fun PaydayFields(payday: Payday, today: LocalDate, holidays: Set<Long>, set: (Pa
 }
 
 // ------------------------------------------------------------ «Скільки можна сьогодні»
-
-/** «Можна ~620 ₴ на день · до зарплати 9 днів», from the card's own money. */
-@Composable
-fun AllowanceTile(allowance: Allowance, updatedAt: Long, modifier: Modifier = Modifier) {
-    val colour = TileMint
-    BentoTile(colour, modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Скільки можна сьогодні", Modifier.weight(1f), color = TileInkSoft, fontSize = Type.captionSize, fontWeight = Type.medium)
-            EmojiGlyph("💳", 28.dp)
-        }
-        Spacer(Modifier.height(Space.xs))
-        if (allowance.left >= 0.0) {
-            Row(verticalAlignment = Alignment.Bottom) {
-                // The card's own money is the owner's: the eye on Огляд hides it (Privacy.kt).
-                SplitFigure(personalFigure("~" + money(perDayFigure(allowance.perDay))), 26.sp)
-                Spacer(Modifier.width(Space.sm))
-                Text("на день", Modifier.padding(bottom = 3.dp), color = TileInkSoft, fontSize = Type.captionSize)
-            }
-        } else {
-            Text(
-                personal(allowanceHeadline(allowance)),
-                color = TileAlarm,
-                fontSize = Type.bodySize,
-                lineHeight = Type.bodyLine,
-                fontWeight = Type.strong
-            )
-        }
-        TileCaption(if (allowance.left >= 0.0) allowanceWhen(allowance) else "ще ${daysLabel(allowance.days)}", colour)
-        Spacer(Modifier.height(Space.xs))
-        TileCaption(personal(allowanceDetail(allowance, updatedAt)), colour, maxLines = 3)
-    }
-}
 
 // ------------------------------------------------------------ «Розкласти зарплату»
 
@@ -436,7 +367,6 @@ fun AffordSheet(
     var cashText by remember { mutableStateOf(amountText(host.settings.cash)) }
     var partsOpen by remember { mutableStateOf(false) }
     var parts by remember { mutableIntStateOf(6) }
-    val mono = host.monoBalance
     val date = when (whenChoice) {
         1 -> thisWeekend(today)
         2 -> picked ?: today
@@ -444,11 +374,13 @@ fun AffordSheet(
     }
     val price = parseAmount(priceText)
     val typed = parseAmount(cashText).takeIf { cashText.isNotBlank() }
-    val balance = mono ?: typed
+    // Typed, never monobank's: the owner's salary mostly stays in another bank, so
+    // one card's balance would read as being short when nothing is (4 October).
+    val balance = typed
     val result = if (price > 0.0) affordability(host.inputs, host.plan, price, date, balance, host.treat, wishId) else null
 
     fun keepBalance() {
-        if (mono == null && typed != null && (typed != host.settings.cash || host.settings.cashDay != today.toEpochDay())) {
+        if (typed != null && (typed != host.settings.cash || host.settings.cashDay != today.toEpochDay())) {
             host.saveSettings(host.settings.copy(cash = typed, cashDay = today.toEpochDay()))
         }
     }
@@ -481,24 +413,19 @@ fun AffordSheet(
                 }, { Text(label, fontSize = Type.captionSize) })
             }
         }
-        if (mono != null) {
-            Text(
-                personal("На картках monobank ${money(kotlin.math.round(mono))}" + if (host.monoAt > 0L) " · оновлено ${timeLabel(host.monoAt)}" else ""),
-                Modifier.padding(top = Space.md),
-                color = TextSecondary,
-                fontSize = Type.captionSize
-            )
-        } else {
-            // The balance kept from last time shows as dots while the eye is shut.
-            PersonalNumberField("Зараз на картці, ₴", cashText) { cashText = it }
-            val age = typedBalanceAge(host.settings.cashDay, today)
-            Text(
-                if (cashText.isBlank()) "Без залишку відповідь буде лише за планом" else age.ifBlank { "запам'ятаю до наступного разу" },
-                Modifier.padding(top = Space.xs),
-                color = TextSecondary,
-                fontSize = Type.captionSize
-            )
-        }
+        // The balance kept from last time shows as dots while the eye is shut.
+        PersonalNumberField("Скільки зараз є, ₴", cashText) { cashText = it }
+        val age = typedBalanceAge(host.settings.cashDay, today)
+        Text(
+            if (cashText.isBlank()) {
+                "На всіх картках і готівкою. Без цього відповідь буде лише за планом"
+            } else {
+                age.ifBlank { "запам'ятаю до наступного разу" }
+            },
+            Modifier.padding(top = Space.xs),
+            color = TextSecondary,
+            fontSize = Type.captionSize
+        )
 
         result?.let { AffordResult(it) }
 

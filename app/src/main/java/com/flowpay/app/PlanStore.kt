@@ -96,7 +96,6 @@ fun moneyInputs(
         wishes = store.wishes(),
         funds = plan.funds(),
         usdSell = usdSell,
-        life = plan.life(),
         payday = plan.payday(),
         holidays = store.holidaysAround(today),
         ritual = plan.ritual()
