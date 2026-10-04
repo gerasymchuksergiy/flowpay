@@ -11,11 +11,17 @@ package com.flowpay.app
  *
  * Hotline is Ukraine's price comparison site, so the answer is a search there. The
  * whole mechanism is a URL handed to the person's own browser. **Nothing here
- * fetches anything**, and that is deliberate rather than unfinished: hotline
- * renders its results in JavaScript and serves a plain client a page with no
- * products in it, there is no API, and a scraper aimed at it would be a network
- * call that could only ever return nothing. The browser runs the JavaScript. The
- * app's job is to build a good query and get out of the way.
+ * fetches the search**, and that is deliberate: hotline's robots.txt disallows the
+ * `/sr/` search for every robot, and its results are drawn by its own JavaScript. The
+ * browser runs the JavaScript. The app's job is to build a good query and get out
+ * of the way.
+ *
+ * Corrected 4 October 2026: this used to say hotline serves a plain client nothing.
+ * That is true of the dead `/ua/search/` address (forty bytes, below) and of the
+ * search, not of a **product page**, which answers the app's own User-Agent with the
+ * whole page and its JSON-LD — 1 193 356 bytes, `AggregateOffer` lowPrice 1 316 and
+ * offerCount 105 for JBL Tune 520BT on 4 October. Product pages are what the market
+ * line reads (PricesMore.kt, [parseMarket]), and only after the owner shared one.
  *
  * So the quality of this feature is entirely the quality of the query, which is
  * why [searchTerms] is the long part of this file and the short part of the screen.

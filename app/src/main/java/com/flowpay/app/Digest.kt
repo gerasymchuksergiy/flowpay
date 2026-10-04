@@ -144,7 +144,9 @@ fun digest(
      */
     paid: List<PaidMark> = emptyList(),
     /** Each wish's price as the previous message saw it, by id. See [recentChange]. */
-    lastSaid: Map<String, Double> = emptyMap()
+    lastSaid: Map<String, Double> = emptyMap(),
+    /** Each bound market's low as the previous message saw it. See [marketTargetLines]. */
+    marketSaid: Map<String, Double> = emptyMap()
 ): Digest {
     // The rate and its source arrive apart, as the rest of the message needs only
     // the figure; the threshold needs both, so they are put back together for it.
@@ -174,6 +176,8 @@ fun digest(
         addAll(paymentLines(pays, today, holidays, paid))
         addAll(amountLines(pays, today.toEpochDay()))
         addAll(priceLines(wishes, today.toEpochDay(), lastSaid))
+        // The market on Hotline reaching a wish's target: a line, never a push.
+        addAll(marketTargetLines(wishes, today.toEpochDay(), marketSaid))
         // Last: a window closing is worth a line, never the headline.
         addAll(returnLines(orders, today.toEpochDay()))
     }

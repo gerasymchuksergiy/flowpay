@@ -9,6 +9,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,11 +48,15 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.input.pointer.PointerEventTimeoutCancellationException
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
 import kotlin.math.abs
 
 /**
@@ -93,6 +99,56 @@ fun RozetkaCardRow(modifier: Modifier = Modifier) {
             })
         }
     )
+}
+
+/**
+ * The inside of a button that shares its row with two others: the stock 24 dp a
+ * side left three labels wrapping on a 360 dp phone.
+ */
+val CompactButtonPadding = PaddingValues(horizontal = Space.sm, vertical = 8.dp)
+
+/**
+ * The wish page's buttons: all in one row of equal widths when every label fits its
+ * third, otherwise the first two in a row and the rest under them at full width.
+ *
+ * Measured, not guessed: «Оновити», «Магазин ↗» and «Hotline ↗» fit a 360 dp
+ * phone at the ordinary font size, and at a larger one «Оновити» was cut to
+ * «Оновиті» — so the row decides by each button's own natural width.
+ */
+@Composable
+fun ActionsRow(gap: Dp, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    Layout(content, modifier) { measurables, constraints ->
+        val width = constraints.maxWidth
+        val space = gap.roundToPx()
+        val count = measurables.size
+        if (count == 0) return@Layout layout(width, 0) {}
+        val slot = (width - space * (count - 1)) / count
+        val fits = count < 3 || measurables.all { it.maxIntrinsicWidth(constraints.maxHeight) <= slot }
+        if (fits) {
+            val placed = measurables.map { it.measure(Constraints.fixedWidth(slot.coerceAtLeast(0))) }
+            val height = placed.maxOf { it.height }
+            layout(width, height) {
+                placed.forEachIndexed { index, item ->
+                    item.place(index * (slot + space), (height - item.height) / 2)
+                }
+            }
+        } else {
+            val half = ((width - space) / 2).coerceAtLeast(0)
+            val top = measurables.take(2).map { it.measure(Constraints.fixedWidth(half)) }
+            val rest = measurables.drop(2).map { it.measure(Constraints.fixedWidth(width)) }
+            val topHeight = top.maxOf { it.height }
+            val height = topHeight + rest.sumOf { it.height + space }
+            layout(width, height) {
+                top.forEachIndexed { index, item -> item.place(index * (half + space), 0) }
+                var y = topHeight
+                rest.forEach { item ->
+                    y += space
+                    item.place(0, y)
+                    y += item.height
+                }
+            }
+        }
+    }
 }
 
 /** One quiet line under the price on the wish page. */
@@ -353,6 +409,217 @@ fun WishHistoryChart(wish: Wish, note: String?, onChange: (Wish) -> Unit) {
             }
             IconButton({ picked = null }, Modifier.size(32.dp)) {
                 Icon(Icons.Default.Close, "Сховати", tint = TextDisabled, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
+}
+
+// ------------------------------------------------------------ the market on Hotline
+
+/**
+ * «Ринок: від 1 316 ₴ · 97 магазинів · Hotline» under the price, with «на 283 ₴
+ * дешевше» beside it when the wish's shop asks noticeably more. A tap opens the
+ * Hotline page, where the shops are named. Nothing at all without a bound market.
+ */
+@Composable
+fun MarketRow(wish: Wish, today: Long, onOpen: (String) -> Unit) {
+    val market = wish.market ?: return
+    val line = marketLine(market, today) ?: return
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = Space.xs)
+            .clip(Radius.sm)
+            .clickable(onClickLabel = "Відкрити Hotline") { onOpen(market.url) }
+            .padding(vertical = Space.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            line,
+            Modifier.weight(1f, fill = false),
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
+        marketChip(wish, today)?.let { chip ->
+            Spacer(Modifier.width(Space.sm))
+            Text(
+                chip,
+                Modifier
+                    .clip(Radius.pill)
+                    .background(SurfaceHigh)
+                    .padding(horizontal = Space.sm, vertical = 2.dp),
+                color = TextPrimary,
+                fontSize = Type.overlineSize,
+                fontWeight = Type.strong,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * The market's own row under «Де стежимо»: bound — what it is and «Відв'язати»;
+ * not bound — «Прив'язати ринок», which opens the Hotline search with the wish's
+ * own query. The page found there comes back through «Поділитися».
+ */
+@Composable
+fun MarketShopRow(wish: Wish, onSearch: () -> Unit, onOpen: (String) -> Unit, onUnbind: () -> Unit) {
+    val market = wish.market
+    if (market == null) {
+        TextButton(onSearch) { Text("Прив'язати ринок") }
+        Text(
+            "Відкриє пошук на Hotline. Знайдіть там цей товар і поділіться його сторінкою з " +
+                "FlowPay — під ціною з'явиться мінімальна ціна по Україні.",
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
+        return
+    }
+    Row(Modifier.fillMaxWidth().padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
+        Column(
+            Modifier
+                .weight(1f)
+                .clip(Radius.sm)
+                .clickable { onOpen(market.url) }
+        ) {
+            Text("Ринок · Hotline", fontSize = Type.bodySize)
+            Text(
+                listOfNotNull(
+                    market.low.takeIf { it > 0.0 }?.let { "від ${money(it)}" },
+                    market.offers.takeIf { it > 0 }?.let { shopsLabel(it) }
+                ).joinToString(" · ").ifBlank { "ще не прочитано" },
+                color = TextSecondary,
+                fontSize = Type.captionSize
+            )
+        }
+        TextButton(onUnbind) { Text("Відв'язати", color = TextSecondary) }
+    }
+}
+
+/**
+ * «Прив'язати як ринок до «X»?» — what sharing a Hotline product page asks.
+ *
+ * The page is read once, here, so the owner can see its photo and name and check it
+ * is the same thing; the wish is preselected by name ([bestWishFor]) and any other
+ * can be picked. Nothing is bound until «Прив'язати».
+ */
+@Composable
+fun BindMarketSheet(
+    url: String,
+    wishes: List<Wish>,
+    onClose: () -> Unit,
+    onBind: (String, Market) -> Unit
+) {
+    var reading by remember(url) { mutableStateOf<MarketReading?>(null) }
+    var problem by remember(url) { mutableStateOf<String?>(null) }
+    var loading by remember(url) { mutableStateOf(true) }
+    var chosen by remember(url) { mutableStateOf<String?>(null) }
+    val today = remember { java.time.LocalDate.now().toEpochDay() }
+    val touch = rememberTouch()
+    LaunchedEffect(url) {
+        val page = runCatching { pageHtml(url) }.getOrNull()
+        val read = page?.let { parseMarket(it) }
+        reading = read
+        problem = when {
+            page == null -> "Hotline не відповів. Поділіться сторінкою ще раз трохи згодом."
+            read == null -> "Це не сторінка товару на Hotline. Відкрийте сам товар і поділіться ним."
+            else -> null
+        }
+        chosen = read?.let { bestWishFor(it.name, wishes) }
+        loading = false
+    }
+    val target = wishes.firstOrNull { it.id == chosen }
+    FormSheet(
+        title = target?.let { "Прив'язати як ринок до «${it.name}»?" } ?: "Прив'язати як ринок?",
+        confirmLabel = "Прив'язати",
+        confirmEnabled = reading != null && target != null,
+        onConfirm = {
+            val read = reading
+            val id = chosen
+            if (read != null && id != null) {
+                touch.landed()
+                onBind(id, withMarketReading(Market(url), read, today))
+            }
+        },
+        onDismiss = onClose
+    ) {
+        val read = reading
+        when {
+            loading -> Row(verticalAlignment = Alignment.CenterVertically) {
+                BusyMark()
+                Spacer(Modifier.width(Space.sm))
+                Text("Читаю сторінку Hotline…", color = TextSecondary, fontSize = Type.captionSize)
+            }
+            read == null -> Text(
+                problem.orEmpty(),
+                color = Negative,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+            else -> {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    if (read.image.isNotBlank()) {
+                        AsyncImage(
+                            read.image,
+                            read.name,
+                            Modifier.size(64.dp).clip(Radius.sm).background(SurfaceRaised),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(Modifier.width(Space.md))
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(read.name.ifBlank { "Товар на Hotline" }, fontSize = Type.bodySize, maxLines = 2)
+                        marketLine(withMarketReading(Market(url), read, today), today)?.let {
+                            Text(it, color = TextSecondary, fontSize = Type.captionSize)
+                        }
+                    }
+                }
+                Text(
+                    "Ціна ринку не замінить ціну бажання і не надсилатиме сповіщень: рядок під " +
+                        "ціною, а ранкове зведення скаже, коли ринок дійде до вашої цілі.",
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.md)
+                )
+                if (wishes.isEmpty()) {
+                    Text(
+                        "Спершу додайте бажання з магазину — ринок прив'язується до нього.",
+                        color = Negative,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.md)
+                    )
+                }
+                Spacer(Modifier.height(Space.sm))
+                wishes.forEach { wish ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(Radius.sm)
+                            .clickable { chosen = wish.id }
+                            .padding(vertical = Space.xs),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = chosen == wish.id, onClick = { chosen = wish.id })
+                        Text(
+                            wish.name,
+                            Modifier.weight(1f),
+                            fontSize = Type.bodySize,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (wish.market != null) {
+                            Text(
+                                "уже є ринок",
+                                color = TextDisabled,
+                                fontSize = Type.overlineSize,
+                                modifier = Modifier.padding(start = Space.sm)
+                            )
+                        }
+                    }
+                }
             }
         }
     }

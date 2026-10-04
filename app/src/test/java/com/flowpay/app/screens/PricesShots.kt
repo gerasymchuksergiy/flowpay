@@ -10,6 +10,8 @@ import com.flowpay.app.AppCommand
 import com.flowpay.app.FlowPayApp
 import com.flowpay.app.Freshness
 import com.flowpay.app.FxRate
+import com.flowpay.app.Market
+import com.flowpay.app.MarketPoint
 import com.flowpay.app.PricePoint
 import com.flowpay.app.PriceStore
 import com.flowpay.app.SECTION_HISTORY
@@ -73,6 +75,10 @@ class PricesShots {
 
     @Test fun wishPage() = page("p1-wish-page", "Навушники JBL Tune 520BT Black")
 
+    // The same at a larger system font, where three buttons in a row are tightest.
+    @Test @Config(qualifiers = "uk-rUA-w360dp-h2600dp-440dpi", fontScale = 1.15f)
+    fun wishPageLargeFont() = page("p1b-wish-page-font115", "Навушники JBL Tune 520BT Black")
+
     private fun rozetkaWish(): Wish {
         val url = "https://rozetka.com.ua/ua/jbl_jblt520btblkeu/p369896649/"
         return Wish(
@@ -98,6 +104,11 @@ class PricesShots {
             excluded = listOf(SetAside(PricePoint(2999.0, day - 50), PricePoint(1699.0, day - 45))),
             // Sold out for ten days.
             stockGaps = listOf(StockGap(day - 28, day - 18)),
+            market = Market(
+                url = "https://hotline.ua/ua/av-naushniki-garnitury/jbl-tune-520bt-black-jblt520btblkeu/",
+                low = 1316.0, offers = 97, day = day,
+                history = listOf(MarketPoint(1316.0, 97, day))
+            ),
             sources = listOf(
                 WishSource(
                     url = url, price = 1599.0, freshness = Freshness.OK, checkedDay = day,

@@ -359,3 +359,248 @@ fun gapsOf(array: JSONArray?): List<StockGap> {
         array.optJSONObject(index)?.let { StockGap(it.optLong("f", 0L), it.optLong("t", 0L)) }
     }.filter { it.from > 0L }
 }
+
+// ------------------------------------------------------------ the market on Hotline
+
+/**
+ * What one Hotline product page says: the cheapest offer in Ukraine, and how many
+ * shops are offering. The name and the photograph are for the owner to check the
+ * page is the right thing before it is bound; nothing else uses them.
+ */
+data class MarketReading(
+    val low: Double,
+    val offers: Int,
+    val name: String = "",
+    val image: String = ""
+)
+
+/** One change of the market, for the line the chart does not draw yet. */
+data class MarketPoint(val low: Double, val offers: Int, val day: Long)
+
+/**
+ * Hotline's page for the same thing, bound to a wish by the owner.
+ *
+ * A yardstick, never the price: it does not replace [Wish.price], does not enter the
+ * history or the verdicts, and never rings the phone. The cheapest offer on a price
+ * comparison site is often an unknown shop or a «під замовлення» listing, so it is
+ * shown as what the market asks, not as advice to buy there.
+ */
+data class Market(
+    /** The product page — never the search, which hotline's robots.txt forbids. */
+    val url: String,
+    val low: Double = 0.0,
+    val offers: Int = 0,
+    /** Epoch day the page was last read with a price on it. Nought before the first. */
+    val day: Long = 0L,
+    /** Every change of [low] or [offers], kept from the first day. */
+    val history: List<MarketPoint> = emptyList()
+)
+
+/** How many market changes a wish keeps, as many as price changes. */
+const val MARKET_HISTORY_CAP = HISTORY_CAP
+
+/** Above the market's low by more than this share, and the chip says by how much. */
+const val MARKET_GAP_SHARE = 0.05
+
+/** A market reading older than this says its date; older still, and no chip is drawn. */
+const val MARKET_STALE_DAYS = 2L
+
+/**
+ * Paths on hotline.ua that are never a product page: the search (forbidden to robots
+ * by the site), its shop redirects, comparisons, brand and account pages.
+ */
+private val HOTLINE_NOT_PRODUCT = setOf(
+    "sr", "go", "cmp", "brands", "yp", "user", "profile", "cart", "login", "register", "search"
+)
+
+/**
+ * The product page this address is, normalised, or null when it is not one.
+ *
+ * Hotline writes a product as a hyphenated section and a slug, with the language
+ * before them or not: `/ua/av-naushniki-garnitury/jbl-tune-520bt-black-…/`. A
+ * category is a bare section and a subsection (`/ua/av/naushniki-garnitury/`), and
+ * the search is `/ua/sr/?q=…`, which the site's robots.txt disallows and which this
+ * app therefore never reads. Whatever passes here is still checked on the page
+ * itself ([parseMarket]) before anything is bound.
+ */
+fun hotlineProductUrl(url: String): String? {
+    val parsed = runCatching { java.net.URI(url.trim()) }.getOrNull() ?: return null
+    val host = parsed.host?.lowercase()?.removePrefix("www.") ?: return null
+    if (host != "hotline.ua") return null
+    val parts = parsed.rawPath.orEmpty().split('/').filter { it.isNotBlank() }
+    val language = parts.firstOrNull()?.takeIf { it == "ua" || it == "ru" }
+    val body = if (language != null) parts.drop(1) else parts
+    if (body.size < 2) return null
+    val section = body[0].lowercase()
+    if (section in HOTLINE_NOT_PRODUCT || !section.contains('-')) return null
+    return "https://hotline.ua/" + listOfNotNull(language, body[0], body[1]).joinToString("/") + "/"
+}
+
+/**
+ * The market on a Hotline product page: `AggregateOffer.lowPrice` — the low, never
+ * the high — and `offerCount`, in hryvnia. Null on anything that is not a product
+ * page with an aggregate offer in it, including a category or a search page.
+ */
+fun parseMarket(html: String): MarketReading? {
+    Regex(
+        """<script[^>]+type=["']application/ld\+json["'][^>]*>(.*?)</script>""",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)
+    ).findAll(html).map { it.groupValues[1].trim() }.forEach { block ->
+        val root: Any = runCatching {
+            when {
+                block.startsWith("[") -> JSONArray(block)
+                block.startsWith("{") -> JSONObject(block)
+                else -> null
+            }
+        }.getOrNull() ?: return@forEach
+        marketIn(root, depth = 0)?.let { found ->
+            return found.copy(image = found.image.ifBlank { jsonLdImage(html) })
+        }
+    }
+    return null
+}
+
+private fun marketIn(node: Any?, depth: Int): MarketReading? {
+    if (depth > 6) return null
+    return when (node) {
+        is JSONArray -> (0 until node.length()).firstNotNullOfOrNull { marketIn(node.opt(it), depth + 1) }
+        is JSONObject -> {
+            val type = node.opt("@type")?.toString().orEmpty()
+            val own = if (type.contains("Product")) aggregateIn(node.opt("offers"))?.let { (low, count) ->
+                MarketReading(low, count, cleanProductTitle(node.optString("name")))
+            } else {
+                null
+            }
+            own ?: node.keys().asSequence()
+                .filter { it != "review" && it != "reviews" && it != "offers" }
+                .firstNotNullOfOrNull { marketIn(node.opt(it), depth + 1) }
+        }
+        else -> null
+    }
+}
+
+/** The low and the count of an AggregateOffer in hryvnia, or null. */
+private fun aggregateIn(offers: Any?): Pair<Double, Int>? = when (offers) {
+    is JSONArray -> (0 until offers.length()).firstNotNullOfOrNull { aggregateIn(offers.opt(it)) }
+    is JSONObject -> {
+        val aggregate = offers.optString("@type").contains("AggregateOffer", ignoreCase = true)
+        val money = currencyCode(offers.optString("priceCurrency")).ifBlank { UAH }
+        val low = priceNumber(offers.opt("lowPrice")?.toString().orEmpty())
+        val count = offers.opt("offerCount")?.toString()?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 0
+        if (aggregate && money == UAH && low != null) low to count else null
+    }
+    else -> null
+}
+
+/** The market after one reading: the figures updated, a point kept on any change. */
+fun withMarketReading(market: Market, reading: MarketReading, today: Long): Market {
+    val last = market.history.lastOrNull()
+    val changed = last == null || last.low != reading.low || last.offers != reading.offers
+    return market.copy(
+        low = reading.low,
+        offers = reading.offers,
+        day = today,
+        history = if (changed) {
+            (market.history + MarketPoint(reading.low, reading.offers, today)).takeLast(MARKET_HISTORY_CAP)
+        } else {
+            market.history
+        }
+    )
+}
+
+/** «Ринок: від 1 316 ₴ · 97 магазинів · Hotline», with its date once it is not fresh. */
+fun marketLine(market: Market?, today: Long): String? {
+    if (market == null || market.low <= 0.0) return null
+    val shops = market.offers.takeIf { it > 0 }?.let { " · ${shopsLabel(it)}" }.orEmpty()
+    val age = if (market.day > 0L && today - market.day >= MARKET_STALE_DAYS) {
+        ", ${dayMonth(java.time.LocalDate.ofEpochDay(market.day))}"
+    } else {
+        ""
+    }
+    return "Ринок: від ${money(market.low)}$shops · Hotline$age"
+}
+
+/**
+ * «на 283 ₴ дешевше» — beside the market line when the wish's cheapest shop asks
+ * more than [MARKET_GAP_SHARE] above the market's low. Silent on a stale wish, whose
+ * price nobody can pay, and on a market reading too old to compare with today's.
+ */
+fun marketChip(wish: Wish, today: Long): String? {
+    val market = wish.market ?: return null
+    if (market.low <= 0.0 || isStale(wish.freshness) || wish.price <= 0.0) return null
+    if (market.day <= 0L || today - market.day > MARKET_STALE_DAYS) return null
+    if (wish.price <= market.low * (1 + MARKET_GAP_SHARE)) return null
+    return "на ${approxMoney(wish.price - market.low)} дешевше"
+}
+
+/**
+ * The morning digest's word about markets: «… — на Hotline від 1 316 ₴, у межах
+ * цілі 1 350 ₴», once per crossing.
+ *
+ * [said] is each wish's market low as the previous message saw it — the same
+ * memory [recentChange] keeps for prices, for the same reason: a crossing dated
+ * yesterday afternoon must still be said this morning, and said only this morning.
+ * Silent for a held wish, for a market not read in the last day, and for a wish
+ * whose own price is already at its target — that one has been told already.
+ */
+fun marketTargetLines(wishes: List<Wish>, today: Long, said: Map<String, Double>): List<String> =
+    wishes.mapNotNull { wish ->
+        val market = wish.market ?: return@mapNotNull null
+        val target = wish.targetPrice
+        val reached = target > 0.0 && market.low > 0.0 && market.low <= target
+        val fresh = market.day > 0L && today - market.day <= 1L
+        val ownAlready = !isStale(wish.freshness) && wish.price > 0.0 && wish.price <= target
+        val saidBefore = said[wish.id]?.let { it <= target } == true
+        if (!reached || !fresh || ownAlready || saidBefore || onHold(wish, today)) return@mapNotNull null
+        "${wish.name} — на Hotline від ${money(market.low)}, у межах цілі ${money(target)}"
+    }
+
+/** What a digest saw of the markets, for the next one's [marketTargetLines]. */
+fun marketSeen(wishes: List<Wish>): Map<String, Double> =
+    wishes.mapNotNull { wish -> wish.market?.low?.takeIf { it > 0.0 }?.let { wish.id to it } }.toMap()
+
+/**
+ * The wish a shared Hotline page most likely belongs to, or null when nothing in
+ * the names matches.
+ *
+ * Words shared between the page's name and each wish's name and search terms, a
+ * model number counting double — "520bt" says more than "black". Only a starting
+ * choice; the sheet shows every wish and the owner picks.
+ */
+fun bestWishFor(name: String, wishes: List<Wish>): String? {
+    fun words(text: String): Set<String> = Regex("""[\p{L}\p{N}]{2,}""").findAll(text.lowercase())
+        .map { it.value }.toSet()
+    val wanted = words(name)
+    if (wanted.isEmpty()) return null
+    return wishes.map { wish ->
+        val shared = wanted.intersect(words(wish.name + " " + wishSearchTerms(wish)))
+        wish to shared.sumOf { word -> if (word.any { it.isDigit() }) 2 else 1 }
+    }.filter { it.second > 0 }.maxByOrNull { it.second }?.first?.id
+}
+
+/** Where the Hotline button on a wish goes: its bound product page, or a search. */
+fun hotlineLink(wish: Wish, terms: String = wishSearchTerms(wish)): String =
+    wish.market?.url?.takeIf { it.isNotBlank() } ?: hotlineSearch(terms)
+
+fun marketJson(market: Market): JSONObject = JSONObject()
+    .put("u", market.url).put("l", market.low).put("n", market.offers).put("d", market.day)
+    .put(
+        "h",
+        JSONArray().apply {
+            market.history.forEach { put(JSONObject().put("l", it.low).put("n", it.offers).put("d", it.day)) }
+        }
+    )
+
+fun marketOf(o: JSONObject?): Market? {
+    val url = o?.optString("u")?.takeIf { it.isNotBlank() } ?: return null
+    val points = o.optJSONArray("h") ?: JSONArray()
+    return Market(
+        url = url,
+        low = o.optDouble("l", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+        offers = o.optInt("n", 0).coerceAtLeast(0),
+        day = o.optLong("d", 0L),
+        history = (0 until points.length()).mapNotNull { index ->
+            points.optJSONObject(index)?.let { MarketPoint(it.optDouble("l", 0.0), it.optInt("n", 0), it.optLong("d", 0L)) }
+        }.filter { it.low > 0.0 && it.low.isFinite() }
+    )
+}

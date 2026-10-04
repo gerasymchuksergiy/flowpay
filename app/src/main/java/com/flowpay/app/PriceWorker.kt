@@ -13,6 +13,20 @@ import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.TimeUnit
 
 /**
+ * Reads a wish's bound Hotline page and folds the reading into its market.
+ *
+ * The product page and nothing else: hotline's robots.txt disallows `/sr/`, the
+ * search, and the app never fetches it — the search only ever opens in the owner's
+ * browser. A page that does not answer, or answers without an aggregate offer,
+ * leaves the market exactly as it was, the way a shop that times out keeps its price.
+ */
+suspend fun withMarketRead(wish: Wish, today: Long): Wish {
+    val market = wish.market ?: return wish
+    val reading = runCatching { parseMarket(pageHtml(market.url)) }.getOrNull() ?: return wish
+    return wish.copy(market = withMarketReading(market, reading, today))
+}
+
+/**
  * The twice-daily background pass: what did prices do, and where are the parcels.
  *
  * Both exist so the app can tell you rather than needing to be opened and asked.
@@ -46,7 +60,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         var pagesAnswered = 0
         val fresh = old.map { previous ->
             if (System.currentTimeMillis() > deadline) return@map previous
-            when (val reading = refreshed(previous, today, stamp)) {
+            val read = when (val reading = refreshed(previous, today, stamp)) {
                 Reading.Failed -> previous
                 // A page that answered without a price is still news about the item,
                 // so the new freshness is saved. It is deliberately not counted as a
@@ -99,6 +113,9 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                     current.copy(notifiedPrice = alert.notifyPrice)
                 }
             }
+            // The market on Hotline, read with the prices and only its product page.
+            // Never a push, whatever it says — the morning digest has the one line.
+            if (System.currentTimeMillis() > deadline) read else withMarketRead(read, today)
         }
         // Laid onto the list as it is now, not saved over it. A pass takes minutes,
         // and a wish added, deleted or edited on the phone meanwhile used to be

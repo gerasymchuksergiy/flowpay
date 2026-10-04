@@ -392,6 +392,149 @@ class PricesMoreTest {
         assertEquals(wish, back)
     }
 
+    // ------------------------------------------------------------ the market on Hotline
+
+    private val hotline by lazy { fixture("hotline-jbl-tune-520bt.html") }
+    private val hotlineUrl = "https://hotline.ua/ua/av-naushniki-garnitury/jbl-tune-520bt-black-jblt520btblkeu/"
+
+    @Test
+    fun `a Hotline product page gives the market's low and how many shops offer it`() {
+        val reading = parseMarket(hotline)!!
+
+        // lowPrice, never highPrice (3 090).
+        assertEquals(1316.0, reading.low, 0.001)
+        assertEquals(105, reading.offers)
+        assertEquals("JBL Tune 520BT Black (JBLT520BTBLKEU)", reading.name)
+        assertEquals("https://hotline.ua/img/tx/378/3784149245.jpg", reading.image)
+    }
+
+    @Test
+    fun `a page with no aggregate offer is not a market`() {
+        assertNull(parseMarket(rozetka))
+        assertNull(parseMarket("<html><title>Пошук</title></html>"))
+    }
+
+    @Test
+    fun `only a product page is taken, never the search or a category`() {
+        assertEquals(hotlineUrl, hotlineProductUrl(hotlineUrl))
+        assertEquals(hotlineUrl, hotlineProductUrl("https://www.hotline.ua/ua/av-naushniki-garnitury/jbl-tune-520bt-black-jblt520btblkeu/?tab=prices#offers"))
+        assertEquals(
+            "https://hotline.ua/av-naushniki-garnitury/jbl-tune-520bt-black-jblt520btblkeu/",
+            hotlineProductUrl("https://hotline.ua/av-naushniki-garnitury/jbl-tune-520bt-black-jblt520btblkeu")
+        )
+        assertNull(hotlineProductUrl("https://hotline.ua/ua/sr/?q=jbl%20tune"))
+        assertNull(hotlineProductUrl("https://hotline.ua/ua/av/naushniki-garnitury/"))
+        assertNull(hotlineProductUrl("https://hotline.ua/ua/brands/jbl/"))
+        assertNull(hotlineProductUrl("https://rozetka.com.ua/ua/av-naushniki/jbl/"))
+    }
+
+    @Test
+    fun `a shared Hotline product page is a market to bind, not a new wish`() {
+        val link = sharedLink("Дивись $hotlineUrl", listOf(rozetkaWish()))
+
+        assertTrue(link is SharedLink.New)
+        assertEquals(hotlineUrl, hotlineProductUrl((link as SharedLink.New).url))
+        assertNull(wishToOpen(link))
+    }
+
+    @Test
+    fun `the wish to bind to is guessed from the names, and only guessed`() {
+        val jbl = rozetkaWish()
+        val other = Wish("w2", "Кросівки ASICS Gel-1130", "https://prom.ua/x", "", 3999.0, history = emptyList())
+
+        assertEquals("w1", bestWishFor("JBL Tune 520BT Black (JBLT520BTBLKEU)", listOf(other, jbl)))
+        assertNull(bestWishFor("Пилосос Dyson V15", listOf(other, jbl)))
+    }
+
+    private fun bound(day: Long = 20_365L, low: Double = 1316.0) =
+        rozetkaWish().copy(market = withMarketReading(Market(hotlineUrl), MarketReading(low, 97), day))
+
+    @Test
+    fun `the market line and the chip under the price`() {
+        val wish = bound()
+
+        assertEquals("Ринок: від 1 316 ₴ · 97 магазинів · Hotline", plain(marketLine(wish.market, 20_365L)))
+        assertEquals("на 283 ₴ дешевше", plain(marketChip(wish, 20_365L)))
+        // Within five per cent of the market there is nothing to say.
+        assertNull(marketChip(bound(low = 1550.0), 20_365L))
+        // A stale wish, or a market reading too old to compare, says nothing either.
+        assertNull(marketChip(wish.copy(freshness = Freshness.OUT_OF_STOCK), 20_365L))
+        assertNull(marketChip(wish, 20_369L))
+        assertEquals(
+            "Ринок: від 1 316 ₴ · 97 магазинів · Hotline, ${dayMonth(java.time.LocalDate.ofEpochDay(20_365L))}",
+            plain(marketLine(wish.market, 20_369L))
+        )
+        assertNull(marketLine(null, 20_365L))
+    }
+
+    @Test
+    fun `the market history keeps a point only when something changed`() {
+        val first = withMarketReading(Market(hotlineUrl), MarketReading(1316.0, 97), 20_365L)
+        val same = withMarketReading(first, MarketReading(1316.0, 97), 20_366L)
+        val moved = withMarketReading(same, MarketReading(1299.0, 99), 20_367L)
+
+        assertEquals(1, same.history.size)
+        assertEquals(20_366L, same.day)
+        assertEquals(listOf(1316.0, 1299.0), moved.history.map { it.low })
+        assertEquals(99, moved.offers)
+    }
+
+    @Test
+    fun `the digest says the market reached the target once`() {
+        val wish = bound(day = 20_365L).copy(targetPrice = 1350.0)
+
+        val first = marketTargetLines(listOf(wish), 20_365L, emptyMap())
+        assertEquals(listOf("Навушники JBL Tune 520BT Black (JBLT520BTBLKEU) — на Hotline від 1 316 ₴, у межах цілі 1 350 ₴"), first.map { plain(it) })
+        // The next morning the previous message had seen it: nothing.
+        assertTrue(marketTargetLines(listOf(wish), 20_366L, marketSeen(listOf(wish))).isEmpty())
+        // It went back above and came down again: said again.
+        assertEquals(1, marketTargetLines(listOf(wish), 20_365L, mapOf("w1" to 1400.0)).size)
+    }
+
+    @Test
+    fun `the digest keeps quiet about a held wish, an old reading, or a wish already at its target`() {
+        val wish = bound(day = 20_365L).copy(targetPrice = 1350.0)
+
+        assertTrue(marketTargetLines(listOf(wish.copy(holdUntil = 20_400L)), 20_365L, emptyMap()).isEmpty())
+        assertTrue(marketTargetLines(listOf(wish), 20_368L, emptyMap()).isEmpty())
+        assertTrue(marketTargetLines(listOf(wish.copy(price = 1300.0)), 20_365L, emptyMap()).isEmpty())
+    }
+
+    @Test
+    fun `the morning message carries the market line`() {
+        val wish = bound(day = java.time.LocalDate.of(2026, 10, 5).toEpochDay()).copy(targetPrice = 1350.0)
+
+        val message = digest(
+            wishes = listOf(wish),
+            pays = emptyList(),
+            orders = emptyList(),
+            today = java.time.LocalDate.of(2026, 10, 5),
+            usdSellRate = 0.0,
+            income = 0.0
+        )
+
+        assertTrue(plain(message.title)!!.contains("на Hotline від 1 316 ₴"))
+    }
+
+    @Test
+    fun `the Hotline button opens the bound page, or a search with the wish's own words`() {
+        assertEquals(hotlineUrl, hotlineLink(bound()))
+        val unbound = rozetkaWish()
+        assertEquals(hotlineSearch(wishSearchTerms(unbound)), hotlineLink(unbound))
+        assertTrue(hotlineLink(unbound).startsWith("https://hotline.ua/ua/sr/?q=JBL%20Tune%20520BT"))
+        // A query the owner corrected wins.
+        assertEquals(hotlineSearch("jbl t520"), hotlineLink(unbound.copy(searchQuery = "jbl t520")))
+    }
+
+    @Test
+    fun `the market survives the round trip through storage`() {
+        val wish = bound()
+
+        assertEquals(wish.market, wishOf(wishJson(wish)).market)
+        assertEquals(wish, wishOf(wishJson(wish)))
+        assertNull(wishOf(wishJson(rozetkaWish())).market)
+    }
+
     @Test
     fun `the card fields survive the round trip through storage`() {
         val source = rozetkaWish().sources.single()

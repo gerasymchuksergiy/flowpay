@@ -317,7 +317,13 @@ data class Wish(
     /** Points the owner said were real prices, so the glitch hint stops asking. */
     val realPoints: List<PricePoint> = emptyList(),
     /** When the thing was sold out, so the chart's line stops there. PricesMore.kt. */
-    val stockGaps: List<StockGap> = emptyList()
+    val stockGaps: List<StockGap> = emptyList(),
+    /**
+     * Hotline's product page for the same thing, bound by the owner: the market's
+     * lowest price and how many shops offer it. A yardstick — never the price,
+     * never a push. Null on every wish nobody has bound one to. PricesMore.kt.
+     */
+    val market: Market? = null
 )
 
 data class Pay(
@@ -987,17 +993,19 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     // Written even when empty, like the array above, so that what comes back out
     // of the bin is exactly what went in.
     .put("sq", wish.searchQuery)
-    // Set-aside glitches, points said to be real, sold-out spans (PricesMore.kt).
-    // The owner's own answers and part of the history, so they travel with it.
-    .put("wpx", setAsideJson(wish.excluded))
-    .put("wpr", pointsJson(wish.realPoints))
-    .put("wpg", gapsJson(wish.stockGaps))
     // Unlike the two above this one is genuinely absent rather than empty on a
     // wish nobody has asked about, and the difference is load-bearing: absent
     // means the section offers to write one, and an empty object would mean a
     // model was asked and said nothing. So the key is written only when there is
     // an answer, and [wishOf] reads its absence back as null.
     .let { if (wish.appraisal != null) it.put("ap", appraisalJson(wish.appraisal)) else it }
+    // Set-aside glitches, points said to be real, sold-out spans (PricesMore.kt).
+    // The owner's own answers and part of the history, so they travel with it.
+    .put("wpx", setAsideJson(wish.excluded))
+    .put("wpr", pointsJson(wish.realPoints))
+    .put("wpg", gapsJson(wish.stockGaps))
+    // The bound Hotline market, only when there is one, like "ap" above.
+    .let { if (wish.market != null) it.put("wpmk", marketJson(wish.market)) else it }
 
 /**
  * Which shape a stored review is written in.
@@ -1213,7 +1221,9 @@ fun wishOf(o: JSONObject): Wish {
         // aside, nothing confirmed, no sold-out span recorded.
         excluded = setAsideOf(o.optJSONArray("wpx")),
         realPoints = pointsOf(o.optJSONArray("wpr")),
-        stockGaps = gapsOf(o.optJSONArray("wpg"))
+        stockGaps = gapsOf(o.optJSONArray("wpg")),
+        // Absent on every wish no Hotline page was bound to.
+        market = marketOf(o.optJSONObject("wpmk"))
     )
 }
 
@@ -1751,6 +1761,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // A tracking number that arrived through the share sheet, waiting for the
     // purchases tab to open its add form with it.
     var sharedTracking by remember { mutableStateOf<String?>(null) }
+    // A Hotline product page that arrived through the share sheet, waiting for the
+    // owner to say which wish it is the market for. PricesMore.kt.
+    var marketShare by remember { mutableStateOf<String?>(null) }
     // Both read pruned: a month that fell out of the year, or an entry past its
     // thirty days, is dropped on the way out of the store rather than lingering
     // in memory until something happens to write the list back.
@@ -1834,6 +1847,13 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     say(knownShareNote(link.wish))
                 }
                 is SharedLink.New -> {
+                    // A Hotline product page is a market for a wish, not a wish:
+                    // it asks which one to bind it to — see [hotlineProductUrl].
+                    val market = hotlineProductUrl(link.url)
+                    if (market != null) {
+                        marketShare = market
+                        return@launch
+                    }
                     // The link is saved before the page is read, so a shop that
                     // blocks the fetch costs a name and a price, never the item.
                     val id = System.currentTimeMillis().toString()
@@ -2359,6 +2379,23 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         onOpenNotifications = { openNotificationSettings(context) }
                     )
                 }
+            }
+            // A Hotline page shared into the app: which wish is it the market for?
+            // Bound onto the list as it is when the owner answers, then that wish's
+            // page opens with the market line under its price. PricesUi.kt.
+            marketShare?.let { page ->
+                BindMarketSheet(
+                    url = page,
+                    wishes = wishes,
+                    onClose = { marketShare = null },
+                    onBind = { id, market ->
+                        val next = wishes.map { if (it.id == id) it.copy(market = market) else it }
+                        wishes = next
+                        store.saveWishes(next)
+                        marketShare = null
+                        openedWish = id
+                    }
+                )
             }
         }
     }
@@ -4159,6 +4196,8 @@ fun SharedTransitionScope.WishDetailScreen(
                 }
                 // The Rozetka card's price, only for an owner who holds the card.
                 cardLine(wish, hasCard)?.let { PriceAside(it) }
+                // The market on Hotline, when one is bound: a yardstick, not the price.
+                MarketRow(wish, today.toEpochDay()) { openLink(context, it) }
                 // Why the figure above is the colour it is, in one sentence. The
                 // card can only carry a two-word badge; this is where it is explained.
                 freshnessNote(wish.freshness)?.let { note ->
@@ -4551,6 +4590,15 @@ fun SharedTransitionScope.WishDetailScreen(
                                 { addingSource = true },
                                 Modifier.padding(top = Space.sm)
                             ) { Text("Додати магазин") }
+                            // The market on Hotline: bound here, read with the prices.
+                            MarketShopRow(
+                                wish,
+                                onSearch = {
+                                    openLink(context, hotlineSearch(searchText.ifBlank { wishSearchTerms(wish) }))
+                                },
+                                onOpen = { openLink(context, it) },
+                                onUnbind = { onChange(wish.copy(market = null)) }
+                            )
                         }
                     }
                 }
@@ -4752,7 +4800,12 @@ fun SharedTransitionScope.WishDetailScreen(
                     }
                 }
                 Spacer(Modifier.height(Space.md))
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                // Three in a row since «Hotline ↗» joined (4 October): tighter gaps,
+                // tighter insides and one-word labels, so all three fit a 360 dp
+                // phone without a label wrapping — and where a larger font would
+                // not let them, [ActionsRow] puts the third under the other two.
+                // Checked on the JVM render (PricesShots).
+                ActionsRow(gap = Space.sm) {
                     OutlinedButton(
                         {
                             scope.launch {
@@ -4805,26 +4858,39 @@ fun SharedTransitionScope.WishDetailScreen(
                                 refreshing = false
                             }
                         },
-                        Modifier.weight(1f),
+                        Modifier,
                         enabled = !refreshing,
                         shape = Radius.sm,
                         border = BorderStroke(1.dp, HairLine),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        contentPadding = CompactButtonPadding
                     ) {
                         if (refreshing) {
                             BusyMark()
                         } else {
-                            Icon(Icons.Default.Refresh, null)
+                            Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
                         }
-                        Text(" Оновити")
+                        Text(" Оновити", maxLines = 1, softWrap = false)
                     }
                     OutlinedButton(
                         { openLink(context, wish.url) },
-                        Modifier.weight(1f),
+                        Modifier,
                         shape = Radius.sm,
                         border = BorderStroke(1.dp, HairLine),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
-                    ) { Text("До магазину ↗") }
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        contentPadding = CompactButtonPadding
+                    ) { Text("Магазин ↗", maxLines = 1, softWrap = false) }
+                    // Any wish, in one tap: its bound Hotline page, or the Hotline
+                    // search with the wish's own query — the same words the card
+                    // for a thing nobody sells uses. See [hotlineLink].
+                    OutlinedButton(
+                        { openLink(context, hotlineLink(wish, searchText.ifBlank { wishSearchTerms(wish) })) },
+                        Modifier,
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        contentPadding = CompactButtonPadding
+                    ) { Text("Hotline ↗", maxLines = 1, softWrap = false) }
                 }
                 message?.let {
                     Text(

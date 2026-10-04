@@ -23,4 +23,17 @@ class PriceStore(context: Context) {
     fun rozetkaCard(): Boolean = prefs.getBoolean("wp_rozetka_card", false)
 
     fun saveRozetkaCard(on: Boolean) = prefs.edit { putBoolean("wp_rozetka_card", on) }
+
+    /** Each bound market's low as the last morning message saw it — see [marketTargetLines]. */
+    fun digestMarket(): Map<String, Double> = runCatching {
+        val o = org.json.JSONObject(prefs.getString("wp_digest_market", "{}") ?: "{}")
+        o.keys().asSequence().associateWith { o.optDouble(it, 0.0) }
+    }.getOrDefault(emptyMap())
+
+    fun saveDigestMarket(lows: Map<String, Double>) = prefs.edit {
+        putString(
+            "wp_digest_market",
+            org.json.JSONObject().apply { lows.forEach { (id, low) -> put(id, low) } }.toString()
+        )
+    }
 }

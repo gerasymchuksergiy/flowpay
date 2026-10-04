@@ -75,7 +75,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
             // screen days earlier, and a notification cannot be waved away in place
             // the way the pill now can.
             paid = store.paidMarks(today),
-            lastSaid = store.digestPrices()
+            lastSaid = store.digestPrices(),
+            marketSaid = PriceStore(applicationContext).digestMarket()
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
@@ -94,6 +95,8 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // What this message saw, so tomorrow's compares against it rather than
         // against a calendar day — see [recentChange].
         store.saveDigestPrices(store.wishes().filter { it.price > 0.0 }.associate { it.id to it.price })
+        // The same for the Hotline markets, so a crossing is said once.
+        PriceStore(applicationContext).saveDigestMarket(marketSeen(store.wishes()))
         store.saveLastReminderDay(today.toEpochDay())
         store.saveLastRunAt(WORK_DIGEST, System.currentTimeMillis())
         // Pins tomorrow's run to the chosen hour again. A twenty-four-hour period
