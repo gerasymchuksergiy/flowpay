@@ -1010,14 +1010,13 @@ minutes per worker» below.
 ## 19. Where things stand — end of 4 October 2026
 
 **Released and checked after CI** (signature `00e2a967…bca6e`, version code
-from the tag, the new strings found in the DEX) — **except `v3.16.1`**, which was
-still building on GitHub when the day ended:
+from the tag, the new strings found in the DEX):
 
 | Tag | What |
 |---|---|
 | `v3.15.0` | Arrivals motion, money weather, a treat of the month, the wish duel, the recap as a picture (§17) |
 | `v3.16.0` | «Частинами», monobank, and the parallel session's NBU-rate fix `b02ba03` (§18, §11) |
-| `v3.16.1` | monobank: a first load longer than ten minutes goes in parts (§18). Tagged, **not yet checked** |
+| `v3.16.1` | monobank: a first load longer than ten minutes goes in parts (§18) |
 
 Branch `fix/production-readiness`, everything pushed. No worktrees or side
 branches left over (the peer's `fix/nbu-rate-leak` was cherry-picked, then
@@ -1029,9 +1028,6 @@ owner was told to update and press «Оновити зараз» in Налашт
 What was read before the stop is kept, so the load goes on rather than restarts.
 
 **First thing next session:**
-0. Check the `v3.16.1` release as §6 says: the asset exists, signature
-   `00e2a967…bca6e`, versionCode 31601, and «Завантажую виписку» in the DEX. If
-   CI failed, read why (§6) and re-tag; the owner is waiting for this one.
 1. Ask how monobank looks after 3.16.1: a screenshot of Налаштування → monobank
    (it should read «Завантажую виписку — ще ≈N хв», then «Оновлено …») and one
    of Платежі (the questions, found subscriptions). That is the first real test
