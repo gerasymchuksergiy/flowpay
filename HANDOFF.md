@@ -2,7 +2,9 @@
 
 Everything the next session needs to work on this app without relearning it the
 expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
-to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed).
+to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed), and
+again at the end of 4 October 2026 at `v3.16.1` / 1180 tests. **Start with §19**:
+where things stand and what to do first.
 
 Nearly every rule below exists because breaking it cost something real — a failed
 release, a silent data loss, three hours of the owner waiting. Where that is so,
@@ -24,7 +26,7 @@ listing. It does five things:
 | Огляд | Budget, savings plans, monthly recap, bin, backups, settings |
 
 **Owner:** Ukrainian, not a programmer. Phone: Redmi Note 14, HyperOS, Android 16.
-He cannot read the code to check what you tell him — so what you say about the
+They cannot read the code to check what you tell them — so what you say about the
 app has to be true, and "it should work" is not a report.
 
 **Stack:** Kotlin, Jetpack Compose, Material 3 `1.4.0`, Compose BOM `2026.05.00`,
@@ -38,12 +40,12 @@ No database — everything is JSON in `SharedPreferences`.
 
 ## 2. The code, file by file
 
-33 Kotlin files, ~20,000 lines. The shape is deliberate and worth understanding
+46 Kotlin files, ~28,500 lines. The shape is deliberate and worth understanding
 before adding to it:
 
 > **Pure logic lives in the small files. Compose lives in `MainActivity.kt` and
 > `Components.kt`.** Everything that can be decided without a screen is a plain
-> function over plain data, and it has a unit test. This is why 1096 tests can
+> function over plain data, and it has a unit test. This is why 1180 tests can
 > cover an app with no instrumented tests at all.
 
 When you add a feature, the arithmetic goes in a small file with tests, and only
@@ -54,8 +56,8 @@ composable would have shipped it untested.
 
 | File | Lines | What is in it |
 |---|---|---|
-| `MainActivity.kt` | 7982 | Data models, the `Store`, all seven screens, all eight sheets |
-| `Components.kt` | 1827 | Every shared composable |
+| `MainActivity.kt` | 9333 | Data models, the `Store`, all seven screens, all eight sheets |
+| `Components.kt` | 2090 | Every shared composable |
 
 `MainActivity.kt` is large because it holds four things that would each be small:
 
@@ -435,6 +437,16 @@ Parallel worktree agents built most of this. What was learned:
   commit — 403 files, 136,000 lines, alongside a 23-line change. `.claude/` is now
   in `.gitignore`; add files by name anyway.
 - The scratchpad is **shared between agents**. Name files distinctly.
+- **Another Claude session may be working in the same checkout.** On 4 October a
+  second session fixed the rate bug while this one held uncommitted monobank
+  work. Run `git status` before the first edit; if files you did not touch have
+  changed, work in `git worktree add --detach .claude/worktrees/<name>` (it needs
+  its own `local.properties`), commit there and hand over the hash to
+  cherry-pick. Never a bare `git stash` — the stash stack is shared.
+- **Do not start Edge or Chrome from a script on the owner's PC.** A headless
+  Edge render on 4 October popped an error dialog («Не вдалося створити каталог
+  даних») on the owner's screen, and they asked what had broken. Use the built-in
+  browser pane, the JVM screenshots, or skip the look.
 
 ---
 
@@ -488,7 +500,7 @@ The repository is public. Two separate exposures, do not confuse them:
    provider, and revoked. It stops working. Never commit one.
 2. **A key in the APK** is extractable by anyone who downloads a release. The
    owner asked for this explicitly so that nothing has to be typed into the app,
-   and that is his decision. The mitigation is a spend cap on the provider's side.
+   and that is their decision. The mitigation is a spend cap on the provider's side.
 
 So: secrets live in **GitHub repository secrets**, injected at build time. The
 signing keystore already worked this way; `GEMINI_API_KEY` joined it.
@@ -578,7 +590,7 @@ second made a parcel that had not moved in a day look freshly updated.
   until they age out (30 days).
 - Monobank's **personal API** (`client-info`, `statement`, `currency`) is read-only
   by construction and cannot move money; statement is 1 request per 60 s, window
-  31 days + 1 hour. Not integrated — the owner declined for now.
+  31 days + 1 hour. Integrated on 4 October 2026 at the owner's request — §18.
 
 ### The appraisal (`Appraisal.kt`)
 
@@ -661,23 +673,57 @@ wrong.
 ## 13. How to talk to the owner
 
 - **Ukrainian**, always.
-- **He cannot check the code.** Do not say a thing is done unless it is verified,
+- **They cannot check the code.** Do not say a thing is done unless it is verified,
   and name what you could not verify. "Nothing here was seen on a screen" is a
   sentence that has to be said often.
-- **Report the failures too.** He has been told about every mistake in this
+- **Report the failures too.** They have been told about every mistake in this
   project — the three lost hours, the 403 files, the wrong status code — and the
   work went better for it.
-- **Explain the reasoning, briefly.** He is not a programmer but he is making
-  product decisions, and he has repeatedly improved on the plan when he could see
-  the trade-off.
-- When he asks for something that will not work, say so once with the reason,
-  offer the nearest thing that will, and then do what he decides.
+- **Explain the reasoning, briefly.** They are not a programmer but they are
+  making product decisions, and they have repeatedly improved on the plan when
+  they could see the trade-off.
+- When they ask for something that will not work, say so once with the reason,
+  offer the nearest thing that will, and then do what they decide.
+- **Pronouns.** The owner has not said which to use; write «they» in English and,
+  in Ukrainian, prefer forms without grammatical gender («у тебе позначено»,
+  «натисни») over a guessed «зробив/зробила».
 
 ---
 
 ## 14. Open items
 
-(Updated 3 October 2026 — the Search Suggestions item below is now done.)
+(Updated 4 October 2026, end of day. The newest are first.)
+
+- **monobank has met real data only at the account check.** On 4 October the
+  owner connected a real token: name, four cards (two hryvnia, a dollar and a
+  euro one — all four ticked) and balances came through. The first statement
+  load then hit the ten-minute worker limit (fixed in 3.16.1, §18). Still unseen
+  on real data: the questions «monobank: схоже, це оплати» on Платежі, found
+  subscriptions, the drift tile, the jar link, the balance line under «Фінансова
+  погода». Ask for screenshots before changing any of the matching thresholds.
+- **Bugs the ten-app research found in the code** (read in the code and on live
+  pages by the researchers; no test written yet — start each with a failing one):
+  1. Rozetka: the parser offers three same-named prices (regular, strikethrough,
+     Rozetka-card) in «Яка ціна ваша?»; choosing other than the first, the next
+     check jumps back to it and the history gets an invented step
+     (`offersInNode`/`extractOffers` in `Parsing.kt`, `matchOffer` in `Wishes.kt`).
+  2. «Поділитися» of an SMS or Viber text with both a link and a 14-digit TTN
+     becomes a wish, because the link is checked before the TTN.
+  3. A held wish's plan still counts in «Плани не сходяться» and in the treat's
+     budget (`plannedMonthly` ignores `holdUntil`) — a few lines, but the owner's
+     call.
+  4. hotline.ua product pages do return full HTML to the app's User-Agent
+     (checked from a PC); only the `/sr/` search is disallowed by robots.txt. The
+     «40 bytes» note in §11 is about the dead search URL.
+- **Next features are the owner's pick.** The artifact «Що взяти в інших» ranks
+  twelve ideas (№1 «На життя» — an honest «Вільно»; №2 «Сплачено» from the widget
+  and the morning digest; №3 cash on delivery in the weather; …) and lists quick
+  wins. The owner was asked for numbers on 4 October; no answer yet.
+- **Left out of the shipped instalments and monobank** (in the ideas, not built):
+  a cancelled subscription «діє до», «Погасив достроково» / «Повернув», the
+  digest's «на картці не вистачає», a notification when a jar covers the price.
+
+(Older, from 3 October:)
 
 - **Nothing in this app has been verified visually.** Grain strength, the lit
   edge, the shape morph on a target-hit card, the appraisal card's states — all
@@ -773,8 +819,8 @@ halves of their mapping and round-trip tested: `Order.dg` (digital), `Order.rb`
 
 ## 16. Bento and emoji (3 October 2026, evening)
 
-The owner called the «Лайм 2.0» screens monotonous. Ten styles were tried on his
-own screens in a private page (claude.ai artifact «Примірочна FlowPay»); he chose
+The owner called the «Лайм 2.0» screens monotonous. Ten styles were tried on their
+own screens in a private page (claude.ai artifact «Примірочна FlowPay»); they chose
 **bento** and asked for an emoji per thing («інтернет — то браузер емодзі, якщо
 телефон — то трубка»), then chose **Apple's emoji** over the free Fluent set after
 being told about the licence. Rendered and checked on the JVM screenshots; **not
@@ -791,7 +837,7 @@ seen on the phone yet.**
 Apple's emoji are Apple's artwork and this repository and every APK are public.
 The owner imports them once: **Огляд → Налаштування → «Емодзі Apple» → Вибрати**,
 picking `FlowPay-emoji-Apple.zip` (3 370 PNGs, 72 px, named by `emojiKey`, made on
-his PC from the Figma community pack he downloaded — `Downloads\Emoji Mega Pack (3,900+ iOS
+their PC from the Figma community pack they downloaded — `Downloads\Emoji Mega Pack (3,900+ iOS
 Apple Emojis).zip`, a `fig-kiwi` file whose images are blobs in the message
 chunk). They live in `filesDir/emoji`, are not in the backup, and until imported
 — or on any other phone — `EmojiGlyph` draws the character in the phone's font.
@@ -839,7 +885,7 @@ Both halves, round-trip tested (`EmojiTest`).
   in a session, within 700 ms of opening — never on later visits or on scroll),
   stage segments fill by colour animation.
 - **Motion, third wave — arrivals (4 October 2026).** The owner asked for tabs
-  and tiles to *appear* like the code-made motion videos he had shown (kinetic
+  and tiles to *appear* like the code-made motion videos they had shown (kinetic
   type, staggered physics, things drawing on). Every time a tab opens
   (`LocalEntrance`, provided once around each tab in FlowPayApp; 700 ms window,
   so nothing replays while scrolling): the page drifts in from the side of the
@@ -959,3 +1005,50 @@ minutes per worker» below.
 - The JVM screenshots seed `flowpay-mono` with a fake token string and a sample
   statement (the keystore does not exist under Robolectric).
 
+---
+
+## 19. Where things stand — end of 4 October 2026
+
+**Released and checked after CI** (signature `00e2a967…bca6e`, version code
+from the tag, the new strings found in the DEX) — **except `v3.16.1`**, which was
+still building on GitHub when the day ended:
+
+| Tag | What |
+|---|---|
+| `v3.15.0` | Arrivals motion, money weather, a treat of the month, the wish duel, the recap as a picture (§17) |
+| `v3.16.0` | «Частинами», monobank, and the parallel session's NBU-rate fix `b02ba03` (§18, §11) |
+| `v3.16.1` | monobank: a first load longer than ten minutes goes in parts (§18). Tagged, **not yet checked** |
+
+Branch `fix/production-readiness`, everything pushed. No worktrees or side
+branches left over (the peer's `fix/nbu-rate-leak` was cherry-picked, then
+removed).
+
+**On the owner's phone:** 3.16.0 with monobank connected and all four cards
+ticked. It showed the false «Немає зв'язку з monobank» that 3.16.1 fixes; the
+owner was told to update and press «Оновити зараз» in Налаштування → monobank.
+What was read before the stop is kept, so the load goes on rather than restarts.
+
+**First thing next session:**
+0. Check the `v3.16.1` release as §6 says: the asset exists, signature
+   `00e2a967…bca6e`, versionCode 31601, and «Завантажую виписку» in the DEX. If
+   CI failed, read why (§6) and re-tag; the owner is waiting for this one.
+1. Ask how monobank looks after 3.16.1: a screenshot of Налаштування → monobank
+   (it should read «Завантажую виписку — ще ≈N хв», then «Оновлено …») and one
+   of Платежі (the questions, found subscriptions). That is the first real test
+   of the matching in §18 — judge the thresholds by it, not by the sample
+   statement in the tests.
+2. Ask which ideas to build next (§14 and the page below). The quick wins
+   include the three real bugs listed in §14.
+
+**Pages made for the owner** (claude.ai artifacts, private to them):
+- «Що взяти в інших» — ten apps taken apart: 145 functions, 52 ideas kept and
+  30 dropped with the reasons, twelve ranked, quick wins.
+  https://claude.ai/artifact/8CLCEbrNbushrXhNjqBZuF
+- «Примірочна FlowPay» — ten design styles tried on the app's own screens
+  (3 October; bento was chosen, §16).
+
+**Owner actions still open:** rotate the Gemini keys pasted on 16 September;
+the Android developer verification account before it reaches Ukraine (both
+§14). Optionally untick the dollar and euro cards if no payment is made from
+them — each card adds about three minutes to a first load and a request to
+every pass.
