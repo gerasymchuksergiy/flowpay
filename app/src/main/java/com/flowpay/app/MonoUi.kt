@@ -195,7 +195,8 @@ fun MonoSheet(onClose: () -> Unit) {
                         Column(Modifier.weight(1f)) {
                             Text("${account.label} · ${currencyLabel(account.currencyCode)}", fontSize = Type.bodySize)
                             Text(
-                                personal("${account.type} · ${amountLabelMinor(account.own, account.currencyCode)}"),
+                                // A figure hidden whole, whatever its currency is written as.
+                                "${account.type} · ${personalFigure(amountLabelMinor(account.own, account.currencyCode))}",
                                 color = TextSecondary,
                                 fontSize = Type.captionSize
                             )
@@ -253,12 +254,16 @@ fun MonoSheet(onClose: () -> Unit) {
     }
 }
 
-/** «UAH», «USD», «EUR», or the code. */
+/**
+ * «UAH», «USD», «EUR», «PLN»: the ISO letters for the bank's numeric code, or the
+ * code itself when the phone does not know it. A złoty account read «985» — not a
+ * currency to the eye, nor to the mask that hides sums (Privacy.kt).
+ */
 fun currencyLabel(code: Int): String = when (code) {
     UAH_CODE -> "UAH"
     USD_CODE -> "USD"
     EUR_CODE -> "EUR"
-    else -> code.toString()
+    else -> java.util.Currency.getAvailableCurrencies().firstOrNull { it.numericCode == code }?.currencyCode ?: code.toString()
 }
 
 /** A minor-unit amount in its own currency. */

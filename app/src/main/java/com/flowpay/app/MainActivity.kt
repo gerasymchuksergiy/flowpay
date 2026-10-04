@@ -1905,7 +1905,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // queued snackbars would still be reporting the fetch after it finished.
     fun say(text: String) = noticeScope.launch {
         notices.currentSnackbarData?.dismiss()
-        notices.showSnackbar(text)
+        // «Фонд покрив …», «Записано: відкладено …»: with the eye on Огляд shut, a
+        // snackbar hides its sums like the screen under it (Privacy.kt).
+        notices.showSnackbar(personalNow(text))
     }
 
     // Declared after the effect above so that when a command arrives on another
@@ -9443,13 +9445,13 @@ fun SettingsScreen(
                     SettingsRow(
                         Icons.Default.Payments,
                         "Дохід і день зарплати",
-                        incomeRowDetail(host.inputs.income, host.settings.payday),
+                        personal(incomeRowDetail(host.inputs.income, host.settings.payday)),
                         onClick = { incomeOpen = true }
                     )
                     SettingsRow(
                         Icons.Default.ShoppingCart,
                         "Витрати на життя",
-                        lifeRowDetail(host.settings.life),
+                        personal(lifeRowDetail(host.settings.life)),
                         onClick = { lifeOpen = true }
                     )
                 }

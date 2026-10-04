@@ -260,13 +260,14 @@ fun AllowanceTile(allowance: Allowance, updatedAt: Long, modifier: Modifier = Mo
         Spacer(Modifier.height(Space.xs))
         if (allowance.left >= 0.0) {
             Row(verticalAlignment = Alignment.Bottom) {
-                SplitFigure("~" + money(perDayFigure(allowance.perDay)), 26.sp)
+                // The card's own money is the owner's: the eye on Огляд hides it (Privacy.kt).
+                SplitFigure(personalFigure("~" + money(perDayFigure(allowance.perDay))), 26.sp)
                 Spacer(Modifier.width(Space.sm))
                 Text("на день", Modifier.padding(bottom = 3.dp), color = TileInkSoft, fontSize = Type.captionSize)
             }
         } else {
             Text(
-                allowanceHeadline(allowance),
+                personal(allowanceHeadline(allowance)),
                 color = TileAlarm,
                 fontSize = Type.bodySize,
                 lineHeight = Type.bodyLine,
@@ -275,7 +276,7 @@ fun AllowanceTile(allowance: Allowance, updatedAt: Long, modifier: Modifier = Mo
         }
         TileCaption(if (allowance.left >= 0.0) allowanceWhen(allowance) else "ще ${daysLabel(allowance.days)}", colour)
         Spacer(Modifier.height(Space.xs))
-        TileCaption(allowanceDetail(allowance, updatedAt), colour, maxLines = 3)
+        TileCaption(personal(allowanceDetail(allowance, updatedAt)), colour, maxLines = 3)
     }
 }
 
@@ -313,13 +314,13 @@ fun RitualTile(
         if (ritual.done && record != null) {
             Spacer(Modifier.height(Space.sm))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(ritualDoneLine(record), Modifier.weight(1f), fontSize = Type.captionSize, fontWeight = Type.medium)
+                Text(personal(ritualDoneLine(record)), Modifier.weight(1f), fontSize = Type.captionSize, fontWeight = Type.medium)
                 TextButton({ onUndo(record) }) { Text("Скасувати", color = TileInk) }
             }
             return@BentoTile
         }
         Spacer(Modifier.height(Space.sm))
-        TileCaption(ritualPaymentsLine(ritual), colour, maxLines = 3)
+        TileCaption(personal(ritualPaymentsLine(ritual)), colour, maxLines = 3)
         var full by remember(ritual.anchor) { mutableStateOf(false) }
         val on = remember(ritual.anchor, ritual.lines.size) { mutableStateListOf<Boolean>().apply { repeat(ritual.lines.size) { add(true) } } }
         val sums = ritual.lines.map { if (full || !ritual.scaled) it.full else it.proposed }
@@ -333,7 +334,7 @@ fun RitualTile(
                     if (line.ask.jar) TileCaption("банка monobank — оновиться сама", colour, maxLines = 1)
                 }
                 Spacer(Modifier.width(Space.sm))
-                Text(money(sums[index]), fontSize = Type.captionSize, fontWeight = Type.strong, style = Tabular)
+                Text(personalFigure(money(sums[index])), fontSize = Type.captionSize, fontWeight = Type.strong, style = Tabular)
                 Spacer(Modifier.width(Space.sm))
                 if (index < on.size) InkSwitch(on[index], colour) { on[index] = it }
             }
@@ -341,7 +342,7 @@ fun RitualTile(
         if (ritual.scaled) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TileCaption(
-                    if (full) "Як у плані — більше, ніж вільно" else "Плани не влазять у вільні ${money(ritual.free.coerceAtLeast(0.0))} — суми зменшено порівну",
+                    if (full) "Як у плані — більше, ніж вільно" else personal("Плани не влазять у вільні ${money(ritual.free.coerceAtLeast(0.0))} — суми зменшено порівну"),
                     colour,
                     Modifier.weight(1f),
                     maxLines = 3
@@ -352,7 +353,7 @@ fun RitualTile(
         val total = ritual.lines.indices.filter { it < on.size && on[it] }.sumOf { sums[it] }
         Spacer(Modifier.height(Space.xs))
         Text(
-            ritualSummary(total, ritual.free, ritual.incomeKnown),
+            personal(ritualSummary(total, ritual.free, ritual.incomeKnown)),
             fontSize = Type.captionSize,
             lineHeight = Type.captionLine,
             fontWeight = Type.medium
@@ -411,8 +412,8 @@ fun MonthAheadTile(ahead: MonthAhead, modifier: Modifier = Modifier) {
             }
         }
         Spacer(Modifier.height(Space.sm))
-        TileCaption(monthAheadDetail(ahead), colour)
-        dearerLine(ahead)?.let { TileCaption(it, colour, Modifier.padding(top = Space.xs), maxLines = 3) }
+        TileCaption(personal(monthAheadDetail(ahead)), colour)
+        dearerLine(ahead)?.let { TileCaption(personal(it), colour, Modifier.padding(top = Space.xs), maxLines = 3) }
     }
 }
 
@@ -482,13 +483,14 @@ fun AffordSheet(
         }
         if (mono != null) {
             Text(
-                "На картках monobank ${money(kotlin.math.round(mono))}" + if (host.monoAt > 0L) " · оновлено ${timeLabel(host.monoAt)}" else "",
+                personal("На картках monobank ${money(kotlin.math.round(mono))}" + if (host.monoAt > 0L) " · оновлено ${timeLabel(host.monoAt)}" else ""),
                 Modifier.padding(top = Space.md),
                 color = TextSecondary,
                 fontSize = Type.captionSize
             )
         } else {
-            NumberField("Зараз на картці, ₴", cashText) { cashText = it }
+            // The balance kept from last time shows as dots while the eye is shut.
+            PersonalNumberField("Зараз на картці, ₴", cashText) { cashText = it }
             val age = typedBalanceAge(host.settings.cashDay, today)
             Text(
                 if (cashText.isBlank()) "Без залишку відповідь буде лише за планом" else age.ifBlank { "запам'ятаю до наступного разу" },
@@ -511,14 +513,14 @@ fun AffordSheet(
                 }
                 val pay = instalmentPayFor(name.ifBlank { "Покупка частинами" }, price, parts, date, wishEmoji(name))
                 Text(
-                    "${pay.instalments} × ${money(pay.amount)} · перший платіж ${dayMonth(date)}, останній ${dayMonth(instalmentLast(pay))}",
+                    personal("${pay.instalments} × ${money(pay.amount)} · перший платіж ${dayMonth(date)}, останній ${dayMonth(instalmentLast(pay))}"),
                     Modifier.padding(top = Space.sm),
                     fontSize = Type.captionSize,
                     fontWeight = Type.medium
                 )
                 Text("Вільно по місяцях:", Modifier.padding(top = Space.xs), color = TextSecondary, fontSize = Type.captionSize)
                 instalmentPreview(host.inputs, host.plan, pay).forEach { line ->
-                    Text(monthFreeLine(line), color = if (line.after < 0.0) Negative else TextPrimary, fontSize = Type.captionSize, style = Tabular)
+                    Text(personal(monthFreeLine(line)), color = if (line.after < 0.0) Negative else TextPrimary, fontSize = Type.captionSize, style = Tabular)
                 }
                 OutlinedButton(
                     {
@@ -561,7 +563,7 @@ fun AffordSheet(
 private fun ColumnScope.AffordResult(result: Affordability) {
     Spacer(Modifier.height(Space.lg))
     Text(
-        result.headline,
+        personal(result.headline),
         color = when (result.verdict) {
             AffordVerdict.SHORT_PAYMENTS, AffordVerdict.SHORT_LIFE -> Negative
             else -> TextPrimary
@@ -570,24 +572,24 @@ private fun ColumnScope.AffordResult(result: Affordability) {
         lineHeight = Type.sectionLine,
         fontWeight = Type.strong
     )
-    result.basis?.let { Text(it, color = TextSecondary, fontSize = Type.captionSize) }
-    result.perDay?.let { Text(it, Modifier.padding(top = Space.xs), fontSize = Type.captionSize, fontWeight = Type.medium, style = Tabular) }
-    result.weather?.let { Text(it, Modifier.padding(top = Space.xs), fontSize = Type.captionSize) }
+    result.basis?.let { Text(personal(it), color = TextSecondary, fontSize = Type.captionSize) }
+    result.perDay?.let { Text(personal(it), Modifier.padding(top = Space.xs), fontSize = Type.captionSize, fontWeight = Type.medium, style = Tabular) }
+    result.weather?.let { Text(personal(it), Modifier.padding(top = Space.xs), fontSize = Type.captionSize) }
     if (result.moves.isNotEmpty()) {
         Text("Менший внесок цього місяця:", Modifier.padding(top = Space.sm), color = TextSecondary, fontSize = Type.captionSize)
         result.moves.forEach { move ->
             Text(
-                "«${move.ask.name}» −${money(askRounded(move.taken))} — ${move.effect}",
+                personal("«${move.ask.name}» −${money(askRounded(move.taken))} — ${move.effect}"),
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine
             )
         }
     }
-    result.treat?.let { Text(it, Modifier.padding(top = Space.xs), color = TextSecondary, fontSize = Type.captionSize) }
+    result.treat?.let { Text(personal(it), Modifier.padding(top = Space.xs), color = TextSecondary, fontSize = Type.captionSize) }
     if (result.levers.isNotEmpty()) {
         Text("Що допоможе:", Modifier.padding(top = Space.sm), color = TextSecondary, fontSize = Type.captionSize)
         result.levers.forEach { lever ->
-            LeaderRow(lever.text, leverGain(lever))
+            LeaderRow(personal(lever.text), personalFigure(leverGain(lever)))
         }
     }
 }
@@ -602,7 +604,7 @@ fun SkipDialog(ask: PlanAsk, today: LocalDate, close: () -> Unit, confirm: () ->
         title = { Text("Пропустити «${ask.name}» у ${monthLocative(today.monthValue)}?") },
         text = {
             Column {
-                Text(skipPrice(ask, today).replaceFirstChar { it.uppercase() } + ".", fontSize = Type.bodySize, lineHeight = Type.bodyLine)
+                Text(personal(skipPrice(ask, today).replaceFirstChar { it.uppercase() } + "."), fontSize = Type.bodySize, lineHeight = Type.bodyLine)
                 Text(
                     "Цього місяця план не проситиме грошей і не рахуватиметься в «Плани не сходяться». " +
                         "З 1 ${monthGenitive(today.plusMonths(1).monthValue)} повернеться сам. " +
@@ -631,7 +633,7 @@ fun WishSkipRow(wish: Wish, today: LocalDate, onChange: (Wish) -> Unit) {
                 Text(skippedLine(today), fontSize = Type.captionSize, fontWeight = Type.medium)
             } else {
                 Text("Пропустити цього місяця", fontSize = Type.captionSize, fontWeight = Type.medium)
-                Text(skipPrice(ask, today), color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
+                Text(personal(skipPrice(ask, today)), color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
             }
         }
         TextButton({ onChange(skippedWish(wish, today, !ask.skipped)) }) {
@@ -665,7 +667,7 @@ fun FundsTile(host: MoneyHost, modifier: Modifier = Modifier) {
                 Text("Фонди", fontSize = Type.bodySize, fontWeight = Type.medium)
                 TileCaption(
                     if (host.plan.funds.isEmpty()) "Відкладати потроху на річні платежі й на своє: подушка, ТО авто, подарунки"
-                    else fundsSummary(host.plan),
+                    else personal(fundsSummary(host.plan)),
                     colour,
                     maxLines = 3
                 )
@@ -695,11 +697,12 @@ fun FundsTile(host: MoneyHost, modifier: Modifier = Modifier) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    TileCaption(fundProgressLine(fund, pay, host.usdSell), colour, maxLines = 1)
-                    TileCaption(fundPlanLine(fund, pay, today, host.usdSell), colour)
-                    fundCoveredLine(fund, pay, today, host.usdSell)?.let { TileCaption(it, colour) }
+                    // What a fund holds and asks is the owner's money (Privacy.kt).
+                    TileCaption(personal(fundProgressLine(fund, pay, host.usdSell)), colour, maxLines = 1)
+                    TileCaption(personal(fundPlanLine(fund, pay, today, host.usdSell)), colour)
+                    fundCoveredLine(fund, pay, today, host.usdSell)?.let { TileCaption(personal(it), colour) }
                     val put = putThisMonth(fund, today)
-                    if (put > 0.0) TileCaption("цього місяця відкладено ${money(put)}", colour)
+                    if (put > 0.0) TileCaption(personal("цього місяця відкладено ${money(put)}"), colour)
                 }
                 Spacer(Modifier.width(Space.sm))
                 InkPill("✅ Відклав", colour) { putting = fund }
@@ -711,7 +714,7 @@ fun FundsTile(host: MoneyHost, modifier: Modifier = Modifier) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     EmojiGlyph(shownEmoji(offer.pay), 24.dp)
                     Spacer(Modifier.width(Space.sm))
-                    Text(fundOfferLine(offer), Modifier.weight(1f), fontSize = Type.captionSize, lineHeight = Type.captionLine)
+                    Text(personal(fundOfferLine(offer)), Modifier.weight(1f), fontSize = Type.captionSize, lineHeight = Type.captionLine)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(Space.sm), modifier = Modifier.padding(top = Space.sm)) {
                     InkPill("Створити", colour) {
@@ -812,8 +815,10 @@ fun FundSheet(host: MoneyHost, fund: Fund?, close: () -> Unit) {
         EmojiField(emoji, fundEmoji(Fund("", name), pay)) { emoji = it }
         if (pay != null) {
             Text(
-                "Для платежу «${pay.name}» · ${money(chargeUah(pay, host.usdSell))} · ${annualChargeDay(pay)}. " +
-                    "Скільки відкладати щомісяця, рахується від дати, як «Знаю дату» в бажанні.",
+                personal(
+                    "Для платежу «${pay.name}» · ${money(chargeUah(pay, host.usdSell))} · ${annualChargeDay(pay)}. " +
+                        "Скільки відкладати щомісяця, рахується від дати, як «Знаю дату» в бажанні."
+                ),
                 Modifier.padding(top = Space.sm),
                 color = TextSecondary,
                 fontSize = Type.captionSize,
@@ -864,7 +869,7 @@ fun FundSheet(host: MoneyHost, fund: Fund?, close: () -> Unit) {
                     Spacer(Modifier.width(Space.sm))
                     Column(Modifier.weight(1f)) {
                         Text(if (ask.skipped) skippedLine(today) else "Пропустити цього місяця", fontSize = Type.captionSize, fontWeight = Type.medium)
-                        if (!ask.skipped) Text(skipPrice(ask, today), color = TextSecondary, fontSize = Type.captionSize)
+                        if (!ask.skipped) Text(personal(skipPrice(ask, today)), color = TextSecondary, fontSize = Type.captionSize)
                     }
                     TextButton({
                         host.updateFunds { list -> list.map { if (it.id == fund.id) skippedFund(it, today, !ask.skipped) else it } }
@@ -924,6 +929,6 @@ fun FundOnTile(fund: Fund, pay: Pay, usdSell: Double, colour: Color) {
             ringColor = ink
         )
         Spacer(Modifier.width(Space.xs))
-        TileCaption("зібрано ${fundProgressLine(fund, pay, usdSell)}", colour, maxLines = 2)
+        TileCaption(personal("зібрано ${fundProgressLine(fund, pay, usdSell)}"), colour, maxLines = 2)
     }
 }

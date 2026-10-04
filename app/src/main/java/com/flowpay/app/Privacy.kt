@@ -33,8 +33,27 @@ private const val GAP = "[ \\u00A0\\u202F]"
 /** A figure as the app writes one: «1 200», «2 203,24», «41,6», «9.99». */
 private const val NUMBER = "(?<![\\d,.])(?:\\d{1,3}(?:$GAP\\d{3})+|\\d+)(?:[,.]\\d+)?"
 
-/** A figure followed by what makes it money: a currency, or «тис» from [shortMoney]. */
-private val AMOUNT = Regex("$NUMBER($GAP*)(₴|\\$|€|грн\\.?|UAH|USD|EUR|тис\\.?(?:$GAP*₴)?)")
+/**
+ * The ISO letters of every currency the phone knows — a monobank account in
+ * złoty reads «1 234,56 PLN» — and only those: «iPhone 16 PRO» is a name.
+ */
+private val CODES = java.util.Currency.getAvailableCurrencies().map { it.currencyCode }.sorted().joinToString("|")
+
+/**
+ * What makes a figure money: a currency — a sign, «грн», or a currency's letters
+ * ([CODES]) — or «тис» from [shortMoney].
+ */
+private val UNIT = "₴|\\$|€|грн\\.?|(?:$CODES)(?![A-Za-z])|тис\\.?(?:$GAP*₴)?"
+
+/** A figure followed by what makes it money. */
+private val AMOUNT = Regex("$NUMBER($GAP*)($UNIT)")
+
+/**
+ * The bare first half of «2 140 з 6 400 ₴» — what a fund holds of its goal — and
+ * of «покрив 800 з 1 199 ₴». Only when the second half is money: «платіж 3 з 6»
+ * and «6 з 30 днів» are counts and stay.
+ */
+private val BEFORE_OF = Regex("$NUMBER(?=$GAP+з$GAP+[~≈]?$GAP?$NUMBER$GAP*(?:$UNIT))")
 
 /** «$12» — a currency in front, the way some letters write it. */
 private val DOLLAR_FIRST = Regex("\\$$GAP?$NUMBER")
@@ -51,7 +70,9 @@ private val BEFORE_ARROW = Regex("$NUMBER(?=$GAP*→)")
  * dates have no currency after them and are left alone.
  */
 fun maskSums(text: String): String {
-    val amounts = AMOUNT.replace(text) { match ->
+    // The bare halves first, while the money beside them still reads as money.
+    val pairs = BEFORE_OF.replace(text, SUM_MASK)
+    val amounts = AMOUNT.replace(pairs) { match ->
         val unit = match.groupValues[2]
         if (unit.startsWith("тис")) SUM_MASK else SUM_MASK + match.groupValues[1] + unit
     }
@@ -139,3 +160,10 @@ fun personal(text: String): String = if (SumsMask.on) maskSums(text) else text
 @Composable
 @ReadOnlyComposable
 fun personalFigure(text: String): String = if (SumsMask.on) maskFigure(text) else text
+
+/**
+ * The same, for a line said once rather than drawn — a snackbar, from a tap
+ * handler where a composable cannot be called: «Фонд покрив …», «Записано:
+ * відкладено …».
+ */
+fun personalNow(text: String): String = if (SumsMask.on) maskSums(text) else text

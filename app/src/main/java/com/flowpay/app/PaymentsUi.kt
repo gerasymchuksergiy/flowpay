@@ -414,9 +414,11 @@ fun PayOffDialog(pay: Pay, recorded: Double, today: LocalDate, onDismiss: () -> 
         title = { Text("Погасити «${pay.name}» достроково?") },
         text = {
             Text(
-                "У «По місяцях» за ${monthName(today.monthValue).lowercase()} буде записано " +
-                    "${amountLabel(recorded, pay.currency)} — платіж цього місяця і все, що лишалося, разом. " +
-                    "Після цього розстрочка більше ніде не рахуватиметься.",
+                personal(
+                    "У «По місяцях» за ${monthName(today.monthValue).lowercase()} буде записано " +
+                        "${amountLabel(recorded, pay.currency)} — платіж цього місяця і все, що лишалося, разом. " +
+                        "Після цього розстрочка більше ніде не рахуватиметься."
+                ),
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine
             )

@@ -257,4 +257,89 @@ class PrivacyTest {
         assertEquals(tileFace(TILE_FREE, rate, month(40_000.0)), tileFace(TILE_FREE, rate, month(40_000.0), hideSums = false))
         assertEquals(money(month(40_000.0).free), tileFace(TILE_FREE, rate, month(40_000.0)).label)
     }
+
+    // ------------------------------------------------------------ the money plan (HANDOFF §24)
+
+    /** Sunday, 4 October 2026 — MoneyPlanTest's day, so these are the lines it checks. */
+    private val planDay = LocalDate.of(2026, 10, 4)
+    private val rent = Pay("Оренда", 11_000.0, day = 1)
+    private val internet = Pay("Інтернет", 300.0, day = 15)
+    private val insurance = Pay("Автоцивілка", 6_400.0, day = 1, billingMonth = 6)
+
+    private fun planInputs(pays: List<Pay> = listOf(rent, internet), funds: List<Fund> = emptyList(), life: LifeCost = LifeCost()) =
+        MoneyInputs(planDay, 40_000.0, pays, emptyList(), emptyList(), funds, 41.6, life, Payday(), emptySet(), null)
+
+    /** The format's no-break and thin spaces as plain ones, to compare whole lines. */
+    private fun plain(text: String) = text.replace(Char(0xA0), ' ').replace(Char(0x202F), ' ')
+
+    @Test
+    fun `the hero, the bar and the settings rows lose their sums and keep their days`() {
+        val life = honestMonth(planInputs(life = LifeCost(true, 12_000.0)))
+
+        val hero = maskSums(heroCaption(life, paydayCountdown(Payday(25), planDay, emptySet())))
+
+        assertEquals(listOf("Платежі $SUM_MASK ₴ · на життя $SUM_MASK ₴ · змінити", "До зарплати ще 19 днів"), plain(hero).lines())
+        assertEquals("Платежі $SUM_MASK ₴ · 🛒 життя $SUM_MASK ₴ з $SUM_MASK ₴", plain(maskSums(monthBarDetail(life)!!)))
+        assertEquals("$SUM_MASK ₴ на місяць · «Вільно» — після платежів і життя", plain(maskSums(lifeRowDetail(LifeCost(true, 12_000.0)))))
+        assertEquals("$SUM_MASK ₴ на місяць · зарплата: 25 числа", plain(maskSums(incomeRowDetail(40_000.0, Payday(25)))))
+        assertEquals("Відкладаєте $SUM_MASK ₴ — з вільних лишиться $SUM_MASK ₴", plain(maskSums(ritualSummary(3_000.0, 28_401.0, true))))
+    }
+
+    @Test
+    fun `a fund hides both halves of what it holds, and a count stays a count`() {
+        val fund = Fund("f", "Автоцивілка", payName = "Автоцивілка", saved = 2_140.0, dueMonth = "2027-06")
+        val cushion = Fund("c", "Подушка", monthly = 1_000.0, saved = 3_000.0, goal = 10_000.0)
+        val plan = moneyPlan(planInputs(pays = listOf(rent, insurance), funds = listOf(fund, cushion)))
+        // The tick that made the fund pay: «Фонд покрив 800 з 1 199 ₴ — 399 ₴ лягли на червень».
+        val note = coverageNote(
+            listOf(fund), listOf(fund.copy(coveredMonth = "2027-06", covered = 800.0)),
+            listOf(insurance.copy(amount = 1_199.0)), emptyList(), 41.6
+        )!!
+
+        assertEquals("$SUM_MASK з $SUM_MASK ₴", plain(maskSums(fundProgressLine(fund, insurance, 41.6))))
+        assertEquals("Фонд покрив $SUM_MASK з $SUM_MASK ₴ — $SUM_MASK ₴ лягли на червень", plain(maskSums(note)))
+        assertEquals("У фондах $SUM_MASK ₴ · цього місяця відкласти $SUM_MASK ₴", plain(maskSums(fundsSummary(plan))))
+        assertNoSums(maskSums(fundPlanLine(fund, insurance, planDay, 41.6)))
+        // «з» between counts is not a fund's progress.
+        listOf("6 з 30 днів", "позначено 1 з 8", "платіж 3 з 6", "Справді подешевшали: 3 з 12").forEach { assertEquals(it, maskSums(it)) }
+    }
+
+    @Test
+    fun `the «Чи потягну» sheet hides the card's money and keeps the verdict's words`() {
+        val input = planInputs()
+        val result = affordability(input, moneyPlan(input), 30_000.0, planDay, 20_000.0)
+        val headline = maskSums(result.headline)
+
+        assertTrue(headline, headline.contains("не влазить: бракує $SUM_MASK ₴ на платежі"))
+        assertNoSums(headline)
+        val perDay = plain(maskSums(result.perDay!!))
+        assertTrue(perDay, perDay.endsWith(": ≈$SUM_MASK → $SUM_MASK ₴ на день"))
+        assertEquals("жовтень: $SUM_MASK → $SUM_MASK ₴", plain(maskSums(monthFreeLine(MonthFree(planDay, 4_200.0, 2_284.0)))))
+        assertEquals("+$SUM_MASK ₴", maskFigure(leverGain(Lever("Купити 1 листопада, після зарплати", 1_000.0))))
+    }
+
+    @Test
+    fun `a monobank account in złoty is money too, and a model's name is not`() {
+        val zone = java.time.ZoneOffset.UTC
+        fun tx(id: String, day: Int) =
+            MonoTx(id, LocalDate.of(2026, 10, day).atTime(12, 0).toEpochSecond(zone), "SPOTIFY", 4899, -2_399, -2_399, 985, false, "pln")
+        val double = DoubleCharge(Pay("Spotify", 23.99, day = 2), tx("a", 2), tx("b", 3))
+
+        assertEquals("PLN", currencyLabel(985))
+        assertEquals("$SUM_MASK PLN", plain(maskSums(amountLabelMinor(123_456, 985))))
+        assertEquals("Spotify $SUM_MASK PLN × 2 · 2 і 3 жовтня", plain(maskSums(doubleChargeLine(double, mapOf("pln" to 985), zone))))
+        assertEquals("Для платежу «iPhone 16 PRO» · $SUM_MASK ₴", maskSums("Для платежу «iPhone 16 PRO» · ${money(2_500.0)}"))
+    }
+
+    @Test
+    fun `a snackbar says its sums only while the eye is open`() {
+        val note = "Записано: відкладено ${money(3_500.0)}"
+        try {
+            SumsMask.set(true)
+            assertEquals("Записано: відкладено $SUM_MASK ₴", personalNow(note))
+        } finally {
+            SumsMask.set(false)
+        }
+        assertEquals(note, personalNow(note))
+    }
 }
