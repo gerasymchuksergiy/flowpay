@@ -894,9 +894,10 @@ savings plant that grows with the savings.
 ## 18. «Частинами» and monobank (4 October 2026)
 
 Both asked for by the owner («роби monobank і частинами») after the ten-app
-research (artifact «Що взяти в інших»). Tested on the JVM; **monobank has never
-talked to the real API from this code** — the owner's own token is the first
-real test.
+research (artifact «Що взяти в інших»). The owner connected a real token on
+4 October (3.16.0): `client-info` parsed fine (name, four cards — two hryvnia,
+one dollar, one euro). The first statement load was what broke — see «Ten
+minutes per worker» below.
 
 ### «Частинами» (Payments.kt)
 - Two fields on `Pay`: `instalments` (count, JSON `ic`) and `instalmentStart`
@@ -921,10 +922,27 @@ real test.
   any export or backup (Android backup is off in the manifest). «Відключити»
   deletes the file, the key and every wish's jar link.
 - **Calls:** `/personal/client-info`, `/personal/statement/{acc}/{from}/{to}`;
-  61 s between calls (limit 1/60 s), windows ≤ 31 days, paging at 500. First pass
-  reads 93 days (three months for the subscription finder), later passes from the
-  last read minus two days. `MonoWorker` every 6 h (network required), plus
-  «Оновити зараз»; a `Mutex` keeps passes from overlapping in-process.
+  one request a minute (limit 1/60 s), kept across passes: `call()` waits from
+  the stored time of the last request, the token check on connecting included,
+  and on a 429 waits once more and retries. Windows ≤ 31 days, paging at 500.
+  `statementPlan` lists the requests: 93 days back for a card never read (three
+  months for the subscription finder), otherwise from where it was read — minus
+  two days at the recent edge only (a hold settles under the same id). Account
+  information younger than 5 minutes is not asked again. `MonoWorker` every 6 h
+  (network required), plus «Оновити зараз»; a pass that finds another running
+  (`Mutex.tryLock`) leaves it to finish.
+- **Ten minutes per worker (fixed in 3.16.1).** WorkManager stops a worker at
+  10 minutes. With all four cards ticked a first load is 4 × 3 windows = 12
+  requests, ≈ 12 minutes, and a «Оновити зараз» worker waiting on the old
+  `Mutex.withLock` counted its wait too. A worker was stopped, and the
+  coroutine's `CancellationException`, caught as `Exception`, was shown in red as
+  «Немає зв'язку з monobank» (the owner's screenshot, 4 October). Now a pass
+  stops itself at 8 minutes (`PASS_BUDGET_MS`) and queues the rest as
+  `mono-more` (`APPEND_OR_REPLACE`); operations and the per-card `until` are
+  saved after every request; cancellation is rethrown, never reported; the plan
+  is recomputed after every request, so a card ticked mid-load joins it.
+  Settings and the sheet show «Завантажую виписку — ще ≈N хв» (`loadingLeft`,
+  stale after 15 minutes) instead of an error.
 - **Ask before deciding** (the research's strongest rule): `monoMatches` finds,
   per unmarked month (this one and last), the charge on the due date −4…+6 days
   that fits: LEARNED (merchant the owner confirmed; ±40%), NAMED (description

@@ -26,6 +26,53 @@ class MonoTest {
 
     private val accounts = mapOf("acc" to UAH_CODE)
 
+    // ------------------------------------------------------------ the requests a pass makes
+
+    private val daySeconds = 86_400L
+    private val planNow = 1_800_000_000L
+
+    @Test
+    fun `a card never read is read three months back, a month a request`() {
+        val plan = statementPlan(listOf("a", "b"), emptyMap(), planNow)
+        assertEquals(listOf("a", "a", "a", "b", "b", "b"), plan.map { it.account })
+        assertEquals(planNow - 93 * daySeconds, plan[0].from)
+        assertEquals(planNow, plan[2].to)
+        assertTrue(plan.all { it.to - it.from <= STATEMENT_WINDOW_S })
+        // Back to back, nothing skipped.
+        assertEquals(plan[0].to, plan[1].from)
+    }
+
+    @Test
+    fun `a card read this morning is read again from two days before`() {
+        val morning = planNow - 6 * 3_600
+        assertEquals(
+            listOf(StatementCall("a", morning - 2 * daySeconds, planNow)),
+            statementPlan(listOf("a"), mapOf("a" to morning), planNow)
+        )
+    }
+
+    @Test
+    fun `a first load the phone stopped goes on where it stopped, with no extra request`() {
+        // Two of the three months read when the pass was stopped.
+        val stoppedAt = planNow - 93 * daySeconds + 2 * STATEMENT_WINDOW_S
+        assertEquals(
+            listOf(StatementCall("a", stoppedAt, planNow)),
+            statementPlan(listOf("a"), mapOf("a" to stoppedAt), planNow)
+        )
+        // A month behind is still one request, not two.
+        assertEquals(1, statementPlan(listOf("a"), mapOf("a" to planNow - 30 * daySeconds), planNow).size)
+        // And a card left for half a year is read three months back, not six.
+        assertEquals(
+            planNow - 93 * daySeconds,
+            statementPlan(listOf("a"), mapOf("a" to planNow - 180 * daySeconds), planNow).first().from
+        )
+    }
+
+    @Test
+    fun `a load says how long is left`() {
+        assertEquals("Завантажую виписку — ще ≈13 хв", loadingLine(12))
+    }
+
     // ------------------------------------------------------------ reading
 
     @Test

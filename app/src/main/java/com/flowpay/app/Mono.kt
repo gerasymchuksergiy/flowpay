@@ -181,6 +181,44 @@ fun statementWindows(from: Long, to: Long): List<Pair<Long, Long>> {
 /** 31 days: the longest statement the API answers in one request. */
 const val STATEMENT_WINDOW_S = 31L * 24 * 60 * 60
 
+/** How far back a card is read the first time: three months, for the subscription finder. */
+const val STATEMENT_HISTORY_S = 93L * 24 * 60 * 60
+
+/** Read again at the recent edge: a hold settles under the same id a day or two later. */
+const val STATEMENT_OVERLAP_S = 2L * 24 * 60 * 60
+
+/** One statement request: which account, and the window in unix seconds. */
+data class StatementCall(val account: String, val from: Long, val to: Long)
+
+/**
+ * Every statement request still needed to bring [accounts] up to [now], oldest
+ * first for each: from where the account was last read ([readUntil]), or three
+ * months back for one never read.
+ *
+ * The two-day overlap is only for the recent edge. Further back — a first load
+ * picked up again after the phone stopped it — the account is complete up to the
+ * point recorded, and an overlap there would only cost one more request, which is
+ * a minute.
+ */
+fun statementPlan(accounts: Collection<String>, readUntil: Map<String, Long>, now: Long): List<StatementCall> {
+    val oldest = now - STATEMENT_HISTORY_S
+    return accounts.flatMap { account ->
+        val until = readUntil[account]
+        val from = when {
+            until == null -> oldest
+            now - until <= STATEMENT_WINDOW_S - STATEMENT_OVERLAP_S -> until - STATEMENT_OVERLAP_S
+            else -> until
+        }
+        statementWindows(maxOf(from, oldest), now).map { (start, end) -> StatementCall(account, start, end) }
+    }
+}
+
+/**
+ * «Завантажую виписку — ще ≈7 хв» while [left] requests remain: a minute each,
+ * the API's limit, and one more for the account check that opens a pass.
+ */
+fun loadingLine(left: Int): String = "Завантажую виписку — ще ≈${left + 1} хв"
+
 // ------------------------------------------------------------ merchants
 
 /**

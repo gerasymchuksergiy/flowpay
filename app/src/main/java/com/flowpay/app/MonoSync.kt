@@ -17,10 +17,10 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -99,7 +99,31 @@ class MonoStore(context: Context) {
 
     fun client(): MonoClient? = prefs.getString("client", null)?.let { runCatching { parseMonoClient(it) }.getOrNull() }
 
-    fun saveClient(client: MonoClient) = prefs.edit { putString("client", monoClientJson(client).toString()) }
+    fun saveClient(client: MonoClient) = prefs.edit {
+        putString("client", monoClientJson(client).toString())
+        putLong("cat", System.currentTimeMillis())
+    }
+
+    /** When the account information was last read, epoch ms. */
+    fun clientAt(): Long = prefs.getLong("cat", 0L)
+
+    /** When the API was last called, epoch ms: the next call waits a minute from it. */
+    fun lastCall(): Long = prefs.getLong("call", 0L)
+
+    fun saveLastCall(at: Long) = prefs.edit { putLong("call", at) }
+
+    /**
+     * Statement requests still to make in the load under way, or 0. A count saved
+     * more than a quarter of an hour ago is stale — the phone stopped that pass and
+     * has not started the next — and reads as 0.
+     */
+    fun loadingLeft(now: Long = System.currentTimeMillis()): Int =
+        if (now - prefs.getLong("leftAt", 0L) < 15 * 60_000L) prefs.getInt("left", 0) else 0
+
+    fun saveLoadingLeft(left: Int) = prefs.edit {
+        putInt("left", left)
+        putLong("leftAt", System.currentTimeMillis())
+    }
 
     /** The accounts whose statements are read. Empty means every hryvnia account. */
     fun chosen(): Set<String> = prefs.getStringSet("acc", emptySet())?.toSet() ?: emptySet()
@@ -199,12 +223,23 @@ private fun monoGet(path: String, token: String): String {
 object MonoSync {
     private const val WORK_PERIODIC = "mono"
     private const val WORK_NOW = "mono-now"
+    private const val WORK_MORE = "mono-more"
 
     /** A little over the API's one request a minute. */
     private const val GAP_MS = 61_000L
 
-    /** How far back the first pass reads, for the subscription finder to see three months. */
-    private const val HISTORY_DAYS = 93L
+    /**
+     * How long one pass may read. WorkManager stops a worker at ten minutes, and a
+     * first load is a request a minute for every month of every card — twelve
+     * minutes for four cards — so a pass stops itself here and queues the rest.
+     */
+    private const val PASS_BUDGET_MS = 8 * 60_000L
+
+    /** What one request may take on top of its wait. */
+    private const val CALL_ALLOWANCE_MS = 30_000L
+
+    /** Account information this fresh is not asked for again: the pass before has it. */
+    private const val CLIENT_FRESH_MS = 5 * 60_000L
 
     /** How long operations are kept on the phone. */
     private const val KEEP_DAYS = 100L
@@ -224,6 +259,7 @@ object MonoSync {
         val mono = MonoStore(context)
         mono.saveToken(clean)
         mono.saveClient(client)
+        mono.saveLastCall(System.currentTimeMillis())
         mono.saveSync(0L, "")
         // A periodic pass runs at once when it is first enqueued: that is the first sync.
         schedule(context)
@@ -231,45 +267,111 @@ object MonoSync {
         return client
     }
 
-    /** Reads the account information and the statements, then applies them. */
-    suspend fun run(context: Context) = lock.withLock {
-        val mono = MonoStore(context)
-        val token = mono.token() ?: return@withLock
+    /**
+     * Reads the account information and the statements, then applies them.
+     *
+     * Progress is saved after every request, so a pass the phone stops loses
+     * nothing; a pass that would outrun [PASS_BUDGET_MS] stops itself and queues
+     * the rest. When another pass is already reading, this one leaves it to it.
+     */
+    suspend fun run(context: Context) {
+        if (!lock.tryLock()) return
         try {
-            val client = withContext(Dispatchers.IO) { parseMonoClient(monoGet("/personal/client-info", token)) }
-            mono.saveClient(client)
+            pass(context)
+        } finally {
+            lock.unlock()
+        }
+    }
+
+    private suspend fun pass(context: Context) {
+        val started = System.currentTimeMillis()
+        val mono = MonoStore(context)
+        val token = mono.token() ?: return
+        // This pass is the news now: an old error would only mislead while it runs.
+        mono.saveSync(0L, "")
+        MonoStore.bump()
+        try {
+            val client = mono.client()?.takeIf { started - mono.clientAt() < CLIENT_FRESH_MS }
+                ?: parseMonoClient(call(mono, "/personal/client-info", token)).also { mono.saveClient(it) }
             val now = System.currentTimeMillis() / 1000
             val until = mono.fetchedUntil()
             var cache = mono.txs()
-            for (account in mono.accountsToRead(client)) {
-                // Two days of overlap: a hold settles under the same id, a day late.
-                val from = maxOf(until[account]?.minus(2L * 86_400) ?: 0L, now - HISTORY_DAYS * 86_400)
-                for ((start, end) in statementWindows(from, now)) {
-                    var to = end
-                    while (true) {
-                        delay(GAP_MS)
-                        val part = withContext(Dispatchers.IO) {
-                            parseMonoStatement(monoGet("/personal/statement/$account/$start/$to", token), account)
-                        }
-                        cache = mergeMonoTx(cache, part, now - KEEP_DAYS * 86_400)
-                        if (part.size < PAGE) break
-                        to = part.minOf { it.time } - 1
-                        if (to <= start) break
+            while (true) {
+                // Asked afresh after every request, so a card ticked meanwhile joins in.
+                val plan = statementPlan(mono.accountsToRead(client), until, now)
+                val step = plan.firstOrNull() ?: break
+                mono.saveLoadingLeft(plan.size)
+                MonoStore.bump()
+                var to = step.to
+                var complete = false
+                while (!complete) {
+                    if (!fitsInPass(mono, started)) {
+                        // The rest in a minute, in a new pass; what was read is kept.
+                        continueSoon(context)
+                        apply(context)
+                        return
                     }
+                    val part = parseMonoStatement(call(mono, "/personal/statement/${step.account}/${step.from}/$to", token), step.account)
+                    if (!mono.connected()) return
+                    cache = mergeMonoTx(cache, part, now - KEEP_DAYS * 86_400)
+                    mono.saveTxs(cache)
+                    to = (part.minOfOrNull { it.time } ?: step.from) - 1
+                    complete = part.size < PAGE || to <= step.from
                 }
-                until[account] = now
-                // Saved per account, so a pass stopped half way keeps what it read.
-                mono.saveTxs(cache)
+                until[step.account] = step.to
                 mono.saveFetchedUntil(until)
             }
+            mono.saveLoadingLeft(0)
             apply(context)
             mono.saveSync(System.currentTimeMillis(), "")
+        } catch (stopped: CancellationException) {
+            // The phone stopped the worker. Not a fault, and what was read is saved.
+            throw stopped
         } catch (problem: Exception) {
-            mono.saveSync(0L, (problem as? MonoApiError)?.message ?: "Немає зв'язку з monobank")
+            mono.saveLoadingLeft(0)
+            mono.saveSync(0L, (problem as? MonoApiError)?.message ?: "Немає зв'язку з monobank. Спробую ще раз пізніше.")
             throw problem
         } finally {
             MonoStore.bump()
         }
+    }
+
+    /**
+     * One request, a minute after the last one. monobank counts every call against
+     * the token, the check on connecting included, so the minute is kept across
+     * passes. Asked to wait anyway, it waits once more and tries again.
+     */
+    private suspend fun call(mono: MonoStore, path: String, token: String): String {
+        var refused = 0
+        while (true) {
+            val wait = mono.lastCall() + GAP_MS - System.currentTimeMillis()
+            if (wait > 0) delay(wait)
+            try {
+                return withContext(Dispatchers.IO) { monoGet(path, token) }
+            } catch (busy: MonoApiError) {
+                if (busy.code != 429 || ++refused > 1) throw busy
+            } finally {
+                if (mono.connected()) mono.saveLastCall(System.currentTimeMillis())
+            }
+        }
+    }
+
+    /** Whether one more request, its wait included, still ends inside this pass's budget. */
+    private fun fitsInPass(mono: MonoStore, started: Long): Boolean {
+        val now = System.currentTimeMillis()
+        val wait = maxOf(0L, mono.lastCall() + GAP_MS - now)
+        return now + wait + CALL_ALLOWANCE_MS - started <= PASS_BUDGET_MS
+    }
+
+    /**
+     * The rest of a long load, in a new pass that starts once this one ends (it
+     * waits out the minute itself). Appended when this pass is itself the rest.
+     */
+    private fun continueSoon(context: Context) {
+        val request = OneTimeWorkRequestBuilder<MonoWorker>()
+            .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+            .build()
+        WorkManager.getInstance(context).enqueueUniqueWork(WORK_MORE, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
     }
 
     /**
@@ -317,6 +419,7 @@ object MonoSync {
     fun disconnect(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_PERIODIC)
         WorkManager.getInstance(context).cancelUniqueWork(WORK_NOW)
+        WorkManager.getInstance(context).cancelUniqueWork(WORK_MORE)
         MonoStore(context).forget()
         val store = Store(context)
         val wishes = store.wishes()
@@ -331,6 +434,8 @@ class MonoWorker(context: Context, parameters: WorkerParameters) : CoroutineWork
         return try {
             MonoSync.run(applicationContext)
             Result.success()
+        } catch (stopped: CancellationException) {
+            throw stopped
         } catch (busy: MonoApiError) {
             // Asked to wait: try again later. A refused token will not get better by retrying.
             if (busy.code == 429) Result.retry() else Result.success()

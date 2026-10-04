@@ -60,8 +60,10 @@ fun MonoSettingsItem(onOpen: () -> Unit) {
     val (connected, line, alarm) = remember(version) {
         val client = mono.client()
         val error = mono.lastError()
+        val left = mono.loadingLeft()
         when {
             !mono.connected() -> Triple(false, "Сам бачитиме, що оплачено, і знайде забуті підписки. Потрібен ваш токен", false)
+            left > 0 -> Triple(true, loadingLine(left), false)
             error.isNotBlank() -> Triple(true, error, true)
             mono.lastSync() == 0L -> Triple(true, "Підключено. Перша виписка завантажується — кілька хвилин", false)
             else -> Triple(
@@ -120,7 +122,7 @@ fun MonoSheet(onClose: () -> Unit) {
                     runCatching { MonoSync.connect(context, token) }
                         .onSuccess {
                             token = ""
-                            note = "Підключено: ${it.name}. Перша виписка за три місяці завантажується у фоні — monobank дозволяє один запит на хвилину, тож це кілька хвилин."
+                            note = "Підключено: ${it.name}. Перша виписка за три місяці завантажується у фоні — monobank дозволяє один запит на хвилину, тож це близько трьох хвилин на кожну картку."
                         }
                         .onFailure { problem = (it as? MonoApiError)?.message ?: "Не вдалося з'єднатися з monobank. Перевірте інтернет і токен." }
                     busy = false
@@ -207,15 +209,20 @@ fun MonoSheet(onClose: () -> Unit) {
                 }
                 Switch(mono.auto(), { mono.saveAuto(it); MonoStore.bump() })
             }
+            val left = remember(version) { mono.loadingLeft() }
+            val error = remember(version) { mono.lastError() }
             Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
                 TextButton({
                     MonoSync.runNow(context)
-                    note = "Оновлюю у фоні — кілька хвилин: monobank дозволяє один запит на хвилину."
+                    // While a load runs, its own line already says how long is left.
+                    note = if (left > 0) null else "Оновлюю у фоні — кілька хвилин: monobank дозволяє один запит на хвилину."
                 }) { Text("Оновити зараз") }
                 TextButton({ confirmOff = true }) { Text("Відключити", color = Negative) }
             }
-            val error = remember(version) { mono.lastError() }
-            if (error.isNotBlank()) Text(error, color = Negative, fontSize = Type.captionSize)
+            when {
+                left > 0 -> Text(loadingLine(left), color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine)
+                error.isNotBlank() -> Text(error, color = Negative, fontSize = Type.captionSize, lineHeight = Type.captionLine)
+            }
         }
         problem?.let { Text(it, color = Negative, fontSize = Type.captionSize, lineHeight = Type.captionLine) }
         note?.let { Text(it, color = TextSecondary, fontSize = Type.captionSize, lineHeight = Type.captionLine) }
