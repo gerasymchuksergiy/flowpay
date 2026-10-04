@@ -24,7 +24,6 @@ import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
-import androidx.glance.appwidget.updateAll
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -493,6 +492,9 @@ class MainActivity : ComponentActivity() {
         // scheduling only once a folder exists would mean a folder chosen while the
         // app was already running never got a job at all.
         BackupWorker.schedule(this)
+        // The eye on Огляд, as it was left — set before the first frame, so a
+        // hidden sum is never drawn even once. See Privacy.kt.
+        SumsMask.set(TouchPrefs(this).hideInside())
         setContent { FlowPayApp(this, command) { command = null } }
     }
 
@@ -506,7 +508,9 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // Leaving the app is the moment the home screen is about to be looked at,
         // and by then anything edited in this session has already been saved.
-        lifecycleScope.launch { FlowPayWidget().updateAll(this@MainActivity) }
+        // Through refreshWidget: a bare updateAll is ignored by a widget session
+        // that is still running (Widget.kt).
+        lifecycleScope.launch { refreshWidget(this@MainActivity) }
     }
 
     // Read as a CharSequence: a text/html share arrives as a styled Spanned, and
@@ -1970,6 +1974,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // lists here are read again when it ends, as after any background pass.
     val monoVersion = MonoStore.version
     LaunchedEffect(monoVersion) { if (monoVersion > 0) reload() }
+    // «Сплачено» from the widget or the morning message, made while this screen
+    // was open: the marks are read again so it shows, and so the next tick here
+    // starts from them (QuickActions.kt).
+    val quickVersion = QuickMarks.version
+    LaunchedEffect(quickVersion) { if (quickVersion > 0) paid = store.paidMarks() }
     val monoBalance = remember(monoVersion) {
         MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
     }
@@ -2229,7 +2238,13 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             adding = adding,
                             setAdding = { adding = it },
                             paid = paid,
-                            setPaid = { marks -> paid = marks; store.savePaidMarks(marks) },
+                            // Onto the marks as the store has them, not over them: the
+                            // widget and the morning message may have marked something
+                            // since this list was read (QuickActions.kt, HANDOFF §15).
+                            setPaid = { marks ->
+                                val before = paid
+                                paid = store.updatePaidMarks { now -> rebaseMarks(now, before, marks) }
+                            },
                             onDelete = { deletePay(it) }
                         )
                         TAB_ORDERS -> OrdersScreen(
@@ -8013,25 +8028,33 @@ fun SettingsScreen(
                             summary.overspent -> "Не сходиться цього місяця"
                             else -> "Вільно до кінця місяця"
                         },
-                        value = if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash),
-                        caption = committedDetail(bar),
+                        value = personalFigure(if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash)),
+                        caption = personal(committedDetail(bar)),
                         muted = summary.budgetUnknown,
                         emoji = "💰",
-                        footer = if (summary.budgetUnknown) null else {
-                            {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .height(8.dp)
-                                        .background(AccentInk.copy(alpha = 0.18f), Radius.pill)
-                                ) {
+                        // The bar, and the eye that hides the sums on every screen
+                        // (Privacy.kt) — always here, so the way back is in sight.
+                        footer = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (summary.budgetUnknown) {
+                                    Spacer(Modifier.weight(1f))
+                                } else {
                                     Box(
                                         Modifier
-                                            .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 350L).coerceIn(0f, 1f))
+                                            .weight(1f)
                                             .height(8.dp)
-                                            .background(AccentInk, Radius.pill)
-                                    )
+                                            .background(AccentInk.copy(alpha = 0.18f), Radius.pill)
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 350L).coerceIn(0f, 1f))
+                                                .height(8.dp)
+                                                .background(AccentInk, Radius.pill)
+                                        )
+                                    }
+                                    Spacer(Modifier.width(Space.sm))
                                 }
+                                SumsEye()
                             }
                         }
                     )
@@ -8381,6 +8404,7 @@ fun SettingsScreen(
                     "Вішлісти й фінанси зберігаються лише на телефоні. Оцінка товару " +
                         "надсилає Google назву й опис товару — без ціни і без ваших сум."
                 )
+                HideSumsOutsideRow()
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 MonoSettingsItem { monoOpen = true }
                 ListItem(

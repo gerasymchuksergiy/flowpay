@@ -1,12 +1,6 @@
 package com.flowpay.app
 
-import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
-import android.content.pm.PackageManager
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -79,7 +73,17 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         )
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
-        if (!summary.empty) notify(summary.title, summary.body)
+        if (!summary.empty) {
+            // A «Сплачено · …» button under each payment line, three at most, and
+            // the card kept so a button can redraw the message — QuickActions.kt.
+            val card = DigestCard(
+                summary.title,
+                summary.body,
+                digestOffers(store.pays(), today, store.holidaysAround(today), store.paidMarks(today))
+            )
+            TouchPrefs(applicationContext).saveDigestCard(card)
+            postDigest(applicationContext, card)
+        }
 
         // Disarmed after the message rather than before it, and only when the message
         // carried the line — asked of the message itself rather than worked out a
@@ -104,34 +108,7 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         return Result.success()
     }
 
-    private fun notify(title: String, text: String) {
-        val manager = applicationContext.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Щоденне зведення", NotificationManager.IMPORTANCE_DEFAULT)
-        )
-        val allowed = android.os.Build.VERSION.SDK_INT < 33 ||
-            applicationContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-        if (allowed) {
-            NotificationManagerCompat.from(applicationContext).notify(
-                CHANNEL.hashCode(),
-                NotificationCompat.Builder(applicationContext, CHANNEL)
-                    .setSmallIcon(R.drawable.ic_tile)
-                    .setContentTitle(title)
-                    .setContentText(text)
-                    .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                    // The digest is mostly about money going out, so it opens
-                    // the payments tab. See Notifications.kt.
-                    .setContentIntent(openTabIntent(applicationContext, TAB_PAYMENTS))
-                    .setAutoCancel(true)
-                    .build()
-            )
-        }
-    }
-
     companion object {
-        private const val CHANNEL = "payment_reminders"
-
         /**
          * Schedules the digest for the hour the user chose.
          *
