@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -412,6 +414,102 @@ fun WishHistoryChart(wish: Wish, note: String?, onChange: (Wish) -> Unit) {
             }
         }
     }
+}
+
+// ------------------------------------------------------------ the dollar's corridor
+
+/**
+ * «Межі курсу»: two optional edges on Monobank's sell rate and the «Сплеск» switch.
+ *
+ * Prefilled with what is watched, so moving an edge is a keystroke. Without
+ * Monobank's rate on the phone an edge cannot be set — its side could not be read —
+ * and the line under the fields says so, as the threshold's dialog did. «Прибрати»
+ * takes everything away, and with it the hourly check.
+ */
+@Composable
+fun RateCorridorDialog(
+    corridor: RateCorridor,
+    rate: FxRate,
+    onDismiss: () -> Unit,
+    onSave: (RateCorridor) -> Unit
+) {
+    var belowText by remember { mutableStateOf(amountText(corridor.below.rate)) }
+    var aboveText by remember { mutableStateOf(amountText(corridor.above.rate)) }
+    var spike by remember { mutableStateOf(corridor.spike) }
+    val below = parseAmount(belowText)
+    val above = parseAmount(aboveText)
+    val problem = corridorProblem(below, above, rate)
+    val touch = rememberTouch()
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Межі курсу") },
+        text = {
+            Column {
+                Text(
+                    "Перевіряю курс продажу Monobank щогодини й одразу сповіщу, коли він " +
+                        "вийде за межу. Можна одну межу або обидві.",
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+                if (rate.source == SOURCE_MONOBANK && rate.sell > 0.0) {
+                    Text(
+                        "Зараз продаж ${rateFigure(rate.sell)} ₴",
+                        color = TextPrimary,
+                        fontSize = Type.captionSize,
+                        modifier = Modifier.padding(top = Space.sm)
+                    )
+                }
+                NumberField("Нижче, ₴", belowText) { belowText = it }
+                NumberField("Вище, ₴", aboveText) { aboveText = it }
+                Row(
+                    Modifier.fillMaxWidth().padding(top = Space.md),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Сплеск", fontWeight = Type.medium)
+                        Text(
+                            "якщо за добу курс зміниться більше ніж на 1%",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine
+                        )
+                    }
+                    Spacer(Modifier.width(Space.md))
+                    Switch(spike, { on ->
+                        spike = on
+                        touch.switched(on)
+                    })
+                }
+                problem?.let {
+                    Text(
+                        it,
+                        color = Negative,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine,
+                        modifier = Modifier.padding(top = Space.sm)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(corridorAsSet(below, above, spike, rate, corridor)) },
+                enabled = problem == null && (below > 0.0 || above > 0.0 || spike)
+            ) { Text("Стежити") }
+        },
+        dismissButton = {
+            // Removing lives here rather than on the screen, as it did for the
+            // threshold: the rarer action does not deserve a button to step over.
+            if (corridor.watching) {
+                TextButton({ onSave(RateCorridor(spikeDay = corridor.spikeDay)) }) {
+                    Text("Прибрати", color = Negative)
+                }
+            } else {
+                TextButton(onDismiss) { Text("Скасувати") }
+            }
+        }
+    )
 }
 
 // ------------------------------------------------------------ the market on Hotline

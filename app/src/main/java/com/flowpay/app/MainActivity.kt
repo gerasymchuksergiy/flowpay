@@ -511,6 +511,8 @@ class MainActivity : ComponentActivity() {
         }
         PriceWorker.schedule(this)
         ReminderWorker.schedule(this)
+        // The dollar's corridor: an hourly check only while something is watched.
+        RateWorker.schedule(this)
         // Only for an owner who connected monobank; nothing is asked of anyone else.
         if (MonoStore(this).connected()) MonoSync.schedule(this)
         // Enqueued whether or not a folder has been chosen: the worker checks, and
@@ -5261,8 +5263,11 @@ fun CalculatorScreen(store: Store) {
     var loading by remember { mutableStateOf(false) }
     var rateError by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf(store.rateHistory()) }
-    var rateTarget by remember { mutableStateOf(store.rateTarget()) }
-    var targetInput by remember { mutableStateOf("") }
+    // The corridor that replaced the single threshold (RateWatch.kt). Reading it
+    // the first time turns an old threshold into its edge.
+    val rateContext = LocalContext.current
+    val prices = remember(rateContext) { PriceStore(rateContext) }
+    var corridor by remember { mutableStateOf(prices.rateCorridor(store)) }
     var askingTarget by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -5527,7 +5532,7 @@ fun CalculatorScreen(store: Store) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    rateTargetNote(rateTarget, rate),
+                                    corridorNote(corridor, rate),
                                     Modifier.weight(1f),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
@@ -5535,20 +5540,14 @@ fun CalculatorScreen(store: Store) {
                                 )
                                 Spacer(Modifier.width(Space.sm))
                                 OutlinedButton(
-                                    onClick = {
-                                        // Prefilled with whatever is being watched, so
-                                        // nudging a threshold is a keystroke rather than
-                                        // remembering the number and typing it again.
-                                        targetInput = amountText(rateTarget?.rate ?: 0.0)
-                                        askingTarget = true
-                                    },
+                                    onClick = { askingTarget = true },
                                     shape = Radius.sm,
                                     border = BorderStroke(1.dp, HairLine),
                                     colors = ButtonDefaults.outlinedButtonColors(
                                         contentColor = TextPrimary
                                     )
                                 ) {
-                                    Text(if (rateTarget == null) "Стежити" else "Змінити")
+                                    Text(if (!corridor.watching) "Стежити" else "Змінити")
                                 }
                             }
                         }
@@ -5598,58 +5597,17 @@ fun CalculatorScreen(store: Store) {
         CollapsingTitle("Курс", listState)
     }
     if (askingTarget) {
-        AlertDialog(
-            onDismissRequest = { askingTarget = false },
-            title = { Text("Поріг по курсу") },
-            text = {
-                Column {
-                    Text(
-                        "Скажу один раз у ранковому зведенні, коли курс дійде до цього " +
-                            "числа. Далі поріг перестає нагадувати про себе.",
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine
-                    )
-                    Spacer(Modifier.height(Space.md))
-                    NumberField("Курс", targetInput) { targetInput = it }
-                    // No rate at all, or only the NBU's: the threshold is watched on
-                    // Monobank's figure, and its direction is read off it.
-                    rateTargetBlocked(rate)?.let {
-                        Text(
-                            it,
-                            color = Negative,
-                            fontSize = Type.captionSize,
-                            lineHeight = Type.captionLine,
-                            modifier = Modifier.padding(top = Space.sm)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        armRateTarget(parseAmount(targetInput), rate)?.let {
-                            rateTarget = it
-                            store.saveRateTarget(it)
-                        }
-                        askingTarget = false
-                    },
-                    enabled = rateTargetBlocked(rate) == null
-                ) { Text("Стежити") }
-            },
-            dismissButton = {
-                // Removing a threshold lives here rather than beside the caption:
-                // it is the rarer action of the two and does not deserve a button
-                // on the screen that the eye has to step over every time.
-                if (rateTarget != null) {
-                    TextButton({
-                        rateTarget = null
-                        store.saveRateTarget(null)
-                        askingTarget = false
-                    }) { Text("Прибрати", color = Negative) }
-                } else {
-                    TextButton({ askingTarget = false }) { Text("Скасувати") }
-                }
+        // Two optional edges and «Сплеск» — see RateWatch.kt. Saving schedules the
+        // hourly check, and clearing everything stops it.
+        RateCorridorDialog(
+            corridor = corridor,
+            rate = rate,
+            onDismiss = { askingTarget = false },
+            onSave = { next ->
+                corridor = next
+                prices.saveRateCorridor(next)
+                RateWorker.schedule(rateContext)
+                askingTarget = false
             }
         )
     }

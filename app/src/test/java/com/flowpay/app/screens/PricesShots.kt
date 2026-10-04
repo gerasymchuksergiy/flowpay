@@ -14,17 +14,21 @@ import com.flowpay.app.Market
 import com.flowpay.app.MarketPoint
 import com.flowpay.app.PricePoint
 import com.flowpay.app.PriceStore
+import com.flowpay.app.RateBound
+import com.flowpay.app.RateCorridor
 import com.flowpay.app.SECTION_HISTORY
 import com.flowpay.app.SECTION_SHOPS
 import com.flowpay.app.SOURCE_MONOBANK
 import com.flowpay.app.SetAside
 import com.flowpay.app.StockGap
 import com.flowpay.app.Store
+import com.flowpay.app.TAB_RATE
 import com.flowpay.app.TAB_WISHES
 import com.flowpay.app.UAH
 import com.flowpay.app.Wish
 import com.flowpay.app.WishSource
 import com.github.takahirom.roborazzi.captureRoboImage
+import com.github.takahirom.roborazzi.captureScreenRoboImage
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -74,6 +78,36 @@ class PricesShots {
     }
 
     @Test fun wishPage() = page("p1-wish-page", "Навушники JBL Tune 520BT Black")
+
+    private fun seedCorridor() {
+        val app = RuntimeEnvironment.getApplication()
+        Store(app).saveRateHistory((0..20).map { PricePoint(44.9 + (it % 5) * 0.08, day - 20 + it) })
+        PriceStore(app).saveRateCorridor(
+            RateCorridor(below = RateBound(44.80, armed = false), above = RateBound(45.80), spike = true)
+        )
+    }
+
+    @Test fun ratePage() {
+        seedCorridor()
+        rule.setContent { FlowPayApp(rule.activity, AppCommand.OpenTab(TAB_RATE)) }
+        rule.waitForIdle()
+        rule.onRoot().captureRoboImage("build/outputs/roborazzi/p2-rate.png")
+    }
+
+    // A dialog is a second window, and the screen behind it never reports idle under
+    // Robolectric; the clock is driven by hand and the whole screen captured.
+    @Test fun rateDialog() {
+        seedCorridor()
+        rule.setContent { FlowPayApp(rule.activity, AppCommand.OpenTab(TAB_RATE)) }
+        rule.waitForIdle()
+        rule.mainClock.autoAdvance = false
+        rule.onAllNodesWithText("Змінити")[0].performClick()
+        repeat(20) {
+            rule.mainClock.advanceTimeBy(100)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        }
+        captureScreenRoboImage("build/outputs/roborazzi/p3-rate-dialog.png")
+    }
 
     // The same at a larger system font, where three buttons in a row are tightest.
     @Test @Config(qualifiers = "uk-rUA-w360dp-h2600dp-440dpi", fontScale = 1.15f)

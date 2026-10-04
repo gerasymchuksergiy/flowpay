@@ -60,6 +60,11 @@
     android:name="android.appwidget.provider"
     android:resource="@xml/flowpay_widget_info"/>
   </receiver>
+  <!-- «Стежити далі» and «Готово» on a rate notification (RateWorker.kt). Only the
+       app's own PendingIntents reach it. -->
+  <receiver
+   android:name=".RateActionReceiver"
+   android:exported="false"/>
   <!-- A recap card shared as a picture: only cache/shared/ is reachable. -->
   <provider
     android:name="androidx.core.content.FileProvider"
