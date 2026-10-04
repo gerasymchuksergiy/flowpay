@@ -1141,3 +1141,131 @@ Logic in `ParcelsMore.kt` (tested in `ParcelsMoreTest`), Android bits in
 - The recipient's number is stored with the parcel and so is in the backup; the
   owner's own is not. Keep it so?
 - «Мені винні» right after «Повертаю» (now) or only once late? 30 days default?
+
+---
+
+## 21. A payment's life: cancelled, paused, promo, paid off (4 October 2026, v3.18.0)
+
+The payments share of «додай все»: ideas №6, №11, №12 remainder; «Як скасувати»;
+Rocket Money «Кінець акції», «Мовчать», «Автозвірка»; Copilot «Пауза»; Monarch «не
+списалось»; the Revolut jar alert; monobank «не вистачить на завтра». Pure logic in
+`PaymentsLife.kt` (`PaymentsLifeTest`) and `Mono.kt` (`MonoLifeTest`); screens in
+`PaymentsUi.kt`; the Android half in `PaymentsMemory.kt`. Rendered on the JVM
+(`screens/PaymentsLifeShots.kt`, `-Pshots`). **Not seen on the phone; the monobank
+parts have met only sample statements.**
+
+### The one check and the one price — never bypass them
+- **`runsOn(pay, date)`.** A charge due on a date happens unless the date is after
+  `Pay.stopsAfter`, on or after `pausedFrom`, or inside a finished pause (`pauses`).
+  `chargesIn()` asks it, so every total, record, strip, forecast, digest line, the
+  CSV and the widget follow. `nextLiveCharge()` / `isLive()` replaced `isFinished`
+  in `stillOwing`, `nextPayment`, `paymentGroups`, `annualElsewhere` and the CSV
+  «Підписка» rows. One test runs a cancelled, a paused and a returned payment
+  through every one of those places.
+- **`priceOn(pay, day)`.** `promoPrice` before `trialEnd` (0 = a free trial, as
+  before), `amount` after. Every former «trial → 0» goes through it: `monthCharge`,
+  `yearlyCharge`, `chargedOn` (returns copies carrying that day's price — **anything
+  that sums charges another way must use `priceOn`**), `remindersDue`
+  (`DueReminder.amount`), `monthRecord` / `monthLines`, `togglePaid` / `markAmount`,
+  `monoMatches` / `monoDrifts`. `nextCharge` looks past a free period only.
+- **`isFinished`** uses `planLast` (the last plan payment that still happens), so a
+  payoff or a return ends a plan.
+
+### States (`lifeOf` → `PayLife`)
+| State | Meaning | Where it is shown |
+|---|---|---|
+| RUNNING | charging as usual | the grid |
+| CANCELLED | `stopsAfter ≥ today` | «Скасовані — до кінця оплаченого», when no charge is left |
+| ENDED | `stopsAfter < today` | a question tile at the top |
+| PAUSED | `pausedFrom` set | «На паузі» |
+| FINISHED | a plan that is over | «Розстрочки, які закінчились» (`finishedPlanLine`) |
+
+### New fields (both JSON halves, round-trip tested)
+`Pay.stopsAfter` `plsa`; `Pay.stopReason` `plsr` (`cancelled` / `paidoff` /
+`returned`); `Pay.pausedFrom` `plpf`; `Pay.pauses` `plps` (`[{f,u,c}]`, last 12);
+`Pay.promoPrice` `plpp`; `Pay.cancelUrl` `plcu`; `Pay.order` `plo`;
+`Order.planReturned` `plr`. Preferences, none in the backup: `flowpay` → `pl_said`;
+`flowpay-mono` → `pl_gone`, `pl_wait`, `pl_dup`, `pl_after`, `pl_jar`.
+
+### Cancelled
+«Скасував ✓» opens a dialog with «діє до» = `paidUntil` (the day before the next
+charge, or the one after when that month is ticked; editable; a past date bins the
+payment at once). From the next day it is ENDED and its tile asks «Нового списання
+не було?» — «Не було ✓» bins it, «Списали — повернути» runs `unstopped` and ticks
+that month. The digest asks once (`ended|name|day`). Unanswered for 7 days
+(`CANCEL_QUESTION_DAYS`), `sweepPayments` on ON_START bins it. A cancelled payment
+always enters the bin un-cancelled (restoring brings it back running); the swept
+entry's id is deterministic, so a stale list cannot bin it twice.
+
+### «Як скасувати»
+`CANCEL_PLACES`, each URL requested once on 4 October 2026: Google Play
+subscriptions, YouTube `paid_memberships`, Netflix `cancelplan`, Spotify
+`account/overview`, ChatGPT `chatgpt.com/#settings` (whether it opens the dialog is
+not verified), Megogo `account?view_type=subscriptions`, Sweet.tv
+`ua-uk/cabinet/personal`. `Pay.cancelUrl` overrides; an unknown service gets a
+Google search «як скасувати <назва>». `cancelHelpFits`: always on trials; never on
+plans; not on rent, utilities, loans, insurance, car, medicine, pets (by emoji).
+A trial's last reminder adds up to 2 notification buttons (`DigestAction`).
+
+### Promo
+`PromoField` replaced `TrialField`: a date plus «Безкоштовно», «Пів ціни» or a
+typed price. The digest says once, as many days ahead as the payment's notice,
+«З 1 лютого Інтернет коштуватиме 300 ₴ замість 150 ₴ — …» (`promo|name|day`). When
+the promo ends, `withPromoEnded` writes `[regular@0 if the history is empty] +
+promo@0 + regular@trialEnd` once — «було 150 → стало 300», the digest's raise line
+and the recap («Акція скінчилась») all see it. Run by `sweepLife` (ON_START) and
+`recordPromoEnds` in ReminderWorker before the digest. A promo tile keeps the
+regular price as its big figure, «150 ₴ до 1 лютого» under the name, like trials.
+
+### Pause
+`paused` / `resumed`; a finished pause is kept as a span; paused months stay out of
+«По місяцях» even after resuming. `bankResumed` (MonoSync.apply, before matching)
+ends a pause when the confirmed merchant charges for a date inside it, within 40 %
+of the price, at that charge's due date, so the charge is ticked in the same pass.
+The digest says once «Megogo знову списує 199 ₴ — паузу знято».
+
+### Plans
+`paidOff`: `stopsAfter` = this month's payment (or today when it is behind);
+`payOffMarks` puts this month's payment and every later one into this month's mark.
+`returned`: `stopsAfter` = yesterday; months already paid stay; refunds are not
+tracked. `Pay.order` ties a plan to a purchase (picker on the plan's sheet);
+«Повернув» then sets `Order.planReturned` and the archived purchase card says so.
+«Відновити розстрочку» takes a stop back; the marks stay.
+
+### monobank extras (Mono.kt, read-only)
+- `silentPayments` («Мовчать»): 40 days for monthly, 10 days past the date for
+  annual; skipped when the last due month was ticked by hand. «Ще чекаю» quiets it
+  30 days; «Прибрати» opens the cancel dialog with `silentPaidUntil`.
+- `doubleCharges`: same merchant, same kopecks, ≤ 3 days apart, last 30 days.
+- `chargedAfterCancel`: cancelled payments still on the list, plus `pl_gone`
+  entries for 92 days after the paid period.
+- `missedCharges` («не списалось»): this month's date + 3 days, only once the
+  statement has been read since.
+- `shortTomorrowLine`: the digest's FIRST line; confirmed merchants only; balance
+  no older than 24 h.
+- `jarAlerts`: price read within 2 days, `Freshness.OK`, wish not held; once per
+  price level; channel `price_changes`.
+
+### The morning message — one say-once memory (merged with §20)
+`digest(points, now, said, lead, once)` returns `Digest.said` (every say-once key
+the message carried — payment life, monobank, purchases) and `Digest.actions`.
+ReminderWorker builds `lifeLines` + `monoMorning`, filters them through
+`LifeMemory` (`pl_said`, 300 kept) and passes them as `once`; the purchases' lines
+(§20 `purchaseOnceLines`) are filtered inside `digest()` against the same `said`
+set. After the message, `memory.markSaid(summary.said)`. The parcels branch's own
+`pk_said` memory and `Digest.onceKeys` were folded into this at the merge;
+`OnceLine` is declared once, in PaymentsLife.kt. **Android shows at most three
+notification actions in total** — whoever adds more buttons must share them.
+
+### Not verified
+Nothing seen on the phone. Not exercised: the notification buttons, the date
+pickers and confirm dialogs, «Відкрити monobank» (starts `com.ftband.mono`, falls
+back to monobank.ua), the jar notification, and every monobank part on real data.
+
+### Open with the owner
+- «діє до» default (day before the next charge) — fine, or ask every time?
+- An unanswered ended cancellation goes to the bin after 7 days — fine?
+- ChatGPT paid through Google Play? Then its own link should be Google Play's page.
+- «Мовчать» thresholds 40 days / 10 days — keep?
+- «Завтра не вистачить» counts only payments already confirmed from monobank.
+- During a promo the big figure is the regular price — or the promo one?
