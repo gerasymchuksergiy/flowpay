@@ -221,9 +221,15 @@ fun digestButtons(card: DigestCard): List<DigestButton> {
     return (listOfNotNull(undo) + left).take(DIGEST_BUTTONS)
 }
 
-/** The card after «Сплачено · …». A second press of the same button replaces the first. */
-fun digestPressed(card: DigestCard, mark: QuickMark, added: Boolean): DigestCard =
-    card.copy(done = card.done.filterNot { it.mark == mark } + QuickDone(mark, added))
+/**
+ * The card after «Сплачено · …». A second press of the same button — a double
+ * tap lands on the old button before the shade redraws — finds the mark already
+ * there; it is still the one this message made, so «Скасувати» stays.
+ */
+fun digestPressed(card: DigestCard, mark: QuickMark, added: Boolean): DigestCard {
+    val earlier = card.done.firstOrNull { it.mark == mark }
+    return card.copy(done = card.done.filterNot { it.mark == mark } + QuickDone(mark, added || earlier?.added == true))
+}
 
 /** The card after «Скасувати»: as if that button had never been pressed. */
 fun digestUndone(card: DigestCard, mark: QuickMark): DigestCard =

@@ -83,7 +83,8 @@ fun WeatherTile(
                     EmojiGlyph(day.emoji, 30.dp)
                     Spacer(Modifier.height(Space.xs))
                     Text(
-                        if (day.leaving > 0.0) shortMoney(day.leaving) else "—",
+                        // The eye on Огляд hides the figure; the weather itself stays (Privacy.kt).
+                        if (day.leaving > 0.0) personalFigure(shortMoney(day.leaving)) else "—",
                         color = TileInkSoft,
                         fontSize = 10.sp,
                         maxLines = 1,
@@ -93,10 +94,10 @@ fun WeatherTile(
             }
         }
         Spacer(Modifier.height(Space.sm))
-        TileCaption(weatherLine(days, today), TileSky)
+        TileCaption(personal(weatherLine(days, today)), TileSky)
         balance?.let {
             Text(
-                balanceLine(it, days),
+                personal(balanceLine(it, days)),
                 Modifier.padding(top = Space.xs),
                 color = TileInk,
                 fontSize = Type.captionSize,
@@ -134,7 +135,7 @@ fun TreatTile(treat: Treat, modifier: Modifier = Modifier, onOpen: () -> Unit) {
         TileCaption(
             listOfNotNull(
                 treat.reason.takeIf { it.isNotBlank() }?.replaceFirstChar { it.uppercase() },
-                "і ще лишиться ${money(treat.leftAfter)} вільних"
+                personal("і ще лишиться ${money(treat.leftAfter)} вільних")
             ).joinToString(" · "),
             TilePink,
             maxLines = 3

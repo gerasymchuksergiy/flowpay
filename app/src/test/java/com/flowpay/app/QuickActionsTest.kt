@@ -306,6 +306,16 @@ class QuickActionsTest {
     }
 
     @Test
+    fun `a double tap on the same button keeps the way back`() {
+        val once = digestPressed(morning, QuickMark("Оренда", nov), added = true)
+        // The second tap finds the mark the first one made.
+        val twice = digestPressed(once, QuickMark("Оренда", nov), added = false)
+
+        assertEquals(once, twice)
+        assertEquals("Скасувати", digestButtonLabel(digestButtons(twice).first()))
+    }
+
+    @Test
     fun `a payment marked in the app since the morning is said so, with nothing to undo`() {
         val pressed = digestPressed(morning, QuickMark("Оренда", nov), added = false)
 
