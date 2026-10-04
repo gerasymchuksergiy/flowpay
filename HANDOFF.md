@@ -3,7 +3,7 @@
 Everything the next session needs to work on this app without relearning it the
 expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
 to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed), and
-again at the end of 4 October 2026 at `v3.16.1` / 1180 tests. **Start with §19**:
+again at the end of 4 October 2026 at `v3.21.1` / 1515 tests. **Start with §19**:
 where things stand and what to do first.
 
 Nearly every rule below exists because breaking it cost something real — a failed
@@ -40,12 +40,12 @@ No database — everything is JSON in `SharedPreferences`.
 
 ## 2. The code, file by file
 
-46 Kotlin files, ~28,500 lines. The shape is deliberate and worth understanding
+68 Kotlin files, ~40,500 lines. The shape is deliberate and worth understanding
 before adding to it:
 
 > **Pure logic lives in the small files. Compose lives in `MainActivity.kt` and
 > `Components.kt`.** Everything that can be decided without a screen is a plain
-> function over plain data, and it has a unit test. This is why 1180 tests can
+> function over plain data, and it has a unit test. This is why 1515 tests can
 > cover an app with no instrumented tests at all.
 
 When you add a feature, the arithmetic goes in a small file with tests, and only
@@ -56,7 +56,7 @@ composable would have shipped it untested.
 
 | File | Lines | What is in it |
 |---|---|---|
-| `MainActivity.kt` | 9333 | Data models, the `Store`, all seven screens, all eight sheets |
+| `MainActivity.kt` | 10588 | Data models, the `Store`, all seven screens, all eight sheets |
 | `Components.kt` | 2090 | Every shared composable |
 
 `MainActivity.kt` is large because it holds four things that would each be small:
@@ -701,27 +701,19 @@ wrong.
   on real data: the questions «monobank: схоже, це оплати» on Платежі, found
   subscriptions, the drift tile, the jar link, the balance line under «Фінансова
   погода». Ask for screenshots before changing any of the matching thresholds.
-- **Bugs the ten-app research found in the code** (read in the code and on live
-  pages by the researchers; no test written yet — start each with a failing one):
-  1. Rozetka: the parser offers three same-named prices (regular, strikethrough,
-     Rozetka-card) in «Яка ціна ваша?»; choosing other than the first, the next
-     check jumps back to it and the history gets an invented step
-     (`offersInNode`/`extractOffers` in `Parsing.kt`, `matchOffer` in `Wishes.kt`).
-  2. «Поділитися» of an SMS or Viber text with both a link and a 14-digit TTN
-     becomes a wish, because the link is checked before the TTN.
-  3. A held wish's plan still counts in «Плани не сходяться» and in the treat's
-     budget (`plannedMonthly` ignores `holdUntil`) — a few lines, but the owner's
-     call.
-  4. hotline.ua product pages do return full HTML to the app's User-Agent
-     (checked from a PC); only the `/sr/` search is disallowed by robots.txt. The
-     «40 bytes» note in §11 is about the dead search URL.
-- **Next features are the owner's pick.** The artifact «Що взяти в інших» ranks
-  twelve ideas (№1 «На життя» — an honest «Вільно»; №2 «Сплачено» from the widget
-  and the morning digest; №3 cash on delivery in the weather; …) and lists quick
-  wins. The owner was asked for numbers on 4 October; no answer yet.
-- **Left out of the shipped instalments and monobank** (in the ideas, not built):
-  a cancelled subscription «діє до», «Погасив достроково» / «Повернув», the
-  digest's «на картці не вистачає», a notification when a jar covers the price.
+- **The ten-app research is built** («додай все», §20–§25): its four code bugs
+  are fixed (Rozetka's three prices §23, the TTN-beside-a-link share §20, the
+  held wish's plan §24, the hotline «40 bytes» note §23), and the ideas shipped in
+  3.17.0–3.21.1. **Deliberately not built:** reading the phone's notifications to
+  pick up parcels (needs the owner's explicit «так» — it would see every
+  notification); receipt photos (the backup carries JSON text only; files need
+  the backup to learn them first); from §24 — payments split into «з авансу / із
+  зарплати», cash or another bank as one extra number, a "low per-day" line.
+- **Almost all of it is unseen on the phone.** Each section (§20–§25) lists what
+  was rendered on the JVM and what was not (widget, tile, notification shade,
+  AlertDialogs under Robolectric, the sheet over another app). Ask for
+  screenshots before tuning thresholds (the glitch 35 %, «Мовчать» 40/10 days,
+  the matching in §18).
 
 (Older, from 3 October:)
 
@@ -1017,28 +1009,42 @@ from the tag, the new strings found in the DEX):
 | `v3.15.0` | Arrivals motion, money weather, a treat of the month, the wish duel, the recap as a picture (§17) |
 | `v3.16.0` | «Частинами», monobank, and the parallel session's NBU-rate fix `b02ba03` (§18, §11) |
 | `v3.16.1` | monobank: a first load longer than ten minutes goes in parts (§18) |
+| `v3.17.0` | Parcels: cash on delivery, pickup hours, returns, warranty, «Як тобі?» (§20) |
+| `v3.18.0` | A payment's life: cancelled, paused, promo, paid off; monobank extras (§21) |
+| `v3.19.0` | «Сплачено» from the widget and the digest, hiding sums, subscription letters (§22) |
+| `v3.20.0` | Prices: Rozetka by type, glitches, Hotline market and button, rate corridor, sheet over the shop (§23) |
+| `v3.21.0` | One «Вільно», funds, payday, «Чи потягну?», month ahead (§24) |
+| `v3.21.1` | The eye covers every new sum (§25) |
 
-Branch `fix/production-readiness`, everything pushed. No worktrees or side
-branches left over (the peer's `fix/nbu-rate-leak` was cherry-picked, then
-removed).
+How 3.17–3.21 were made: the owner said «додай все» to the research page, five
+builders worked in parallel worktrees (`.claude/worktrees/{parcels,prices,touch,
+payments,plan}`, branches `feat/*`), and each was merged one at a time with its
+conflicts resolved by hand and the full trio run on the merge (§8). The
+worktrees and branches were removed after 3.21.1.
 
-**On the owner's phone:** 3.16.0 with monobank connected and all four cards
-ticked. It showed the false «Немає зв'язку з monobank» that 3.16.1 fixes; the
-owner was told to update and press «Оновити зараз» in Налаштування → monobank.
-What was read before the stop is kept, so the load goes on rather than restarts.
+**On the owner's phone:** unknown which of these is installed. monobank is
+connected with all four cards ticked (§18); whether the first statement load
+finished after 3.16.1 is not known.
+
+**The owner's answers so far:** payday — advance on the 15th, salary at month end
+(the owner sets «останній робочий день» / 31 and advance 15 in Огляд →
+Налаштування → «Дохід і день зарплати»). Everything else asked in §20–§25 «Open
+with the owner» is still open — the important ones: «На життя» amount; whether
+saved money leaves the card; a «Подушка» fund; «Мій номер для Нової пошти»; a
+Rozetka card; the sheet over the shop (keep or go back); whether to hide sums in
+the morning notification.
 
 **First thing next session:**
-1. Ask how monobank looks after 3.16.1: a screenshot of Налаштування → monobank
-   (it should read «Завантажую виписку — ще ≈N хв», then «Оновлено …») and one
-   of Платежі (the questions, found subscriptions). That is the first real test
-   of the matching in §18 — judge the thresholds by it, not by the sample
-   statement in the tests.
-2. Ask which ideas to build next (§14 and the page below). The quick wins
-   include the three real bugs listed in §14.
+1. Ask which version is installed, and for screenshots: Огляд (hero, weather,
+   «Чи потягну?», «Розкласти зарплату» near month end), Платежі (monobank
+   questions, Фонди), Налаштування → monobank. Everything since 3.17 has only been
+   seen on the JVM.
+2. Go through the open questions above; each answer is usually a default to
+   change, not new work.
 
 **Pages made for the owner** (claude.ai artifacts, private to them):
 - «Що взяти в інших» — ten apps taken apart: 145 functions, 52 ideas kept and
-  30 dropped with the reasons, twelve ranked, quick wins.
+  30 dropped with the reasons, twelve ranked, quick wins. All built now (§14).
   https://claude.ai/artifact/8CLCEbrNbushrXhNjqBZuF
 - «Примірочна FlowPay» — ten design styles tried on the app's own screens
   (3 October; bento was chosen, §16).
@@ -1596,3 +1602,87 @@ one extra number; a "low per-day" digest line.
 - A «Подушка» fund (turns on «Місяць наперед»)? Which annual payments get funds?
 - Should the widget/tile say «після платежів і життя» when life is on?
 - Phone-font 🫙 for Фонди acceptable?
+
+---
+
+## 25. The eye after 3.21.0 — addendum to §22 (4 October 2026, v3.21.1)
+
+Every personal sum added by §20, §21, §23 and §24 was checked with the eye shut
+and rendered on the JVM (`screens/TouchMaskShots` m1–m6, `screens/
+TouchPlanMaskShots` p1–p7, `-Pshots`), each picture looked at. **None of it was
+seen on the phone.** This replaces two lines of §22: `MonoSync.apply` and
+`PriceWorker` are no longer exceptions.
+
+### Now hidden while the eye is shut
+- **Parcels and purchases:** cash on delivery (the Огляд line «ще N посилки до
+  оплати», the forecast's `CodChipsRow`, a parcel row's «До сплати при
+  отриманні»); the parcel page's «Оплата» (до сплати, післяплата, доставка,
+  платне зберігання); a return's «до повернення» on its row and page; «💸 Мені
+  винні».
+- **Payments:** a promo's «150 ₴ до …», the cancelled and paused tiles, «Списали
+  двічі», «Списали після скасування», the «Погасити достроково?» dialog.
+- **The plan:** the hero caption («Платежі … · на життя …», «З фондів …»), the
+  «Лишається» caption and «Плани не сходяться»; «Скільки можна сьогодні» (the
+  figure, «не вистачає …», «на картках … − …»); «Розкласти зарплату» (what leaves
+  before payday, each plan's sum, «Плани не влазять у вільні …», «Відкладаєте … —
+  з вільних лишиться …», «Відкладено …»); «Місяць наперед» (detail, «дорожчий на
+  …»); «Чи потягну?» (the monobank line, the verdict, «N днів: ≈… → … ₴ на день»,
+  the plans that move, the levers, «частинами», «Вільно по місяцях»; the
+  remembered balance as dots); Фонди (heading, «зібрано X з Y», «по N ₴/міс»,
+  «бракує …», «фонд покрив …», «цього місяця відкладено …», the offer); the fund
+  sheet's «Для платежу … · … ₴»; the «Пропустити» price on a wish, a fund sheet and
+  its dialog; the annual rows' fund line and «Вільно після …» on a wish; in
+  Налаштування «Дохід і день зарплати» and «Витрати на життя».
+- **Snackbars:** `say()` passes every message through `personalNow()` («Фонд
+  покрив …», «Записано: відкладено …», «У «X» відкладено …», «Додано «X» — N
+  платежів по …»).
+- **monobank:** an account's balance is hidden whole (`personalFigure`), whatever
+  its currency.
+
+### Shown on purpose
+Percentages and rings; days («до зарплати ще 31 день», «Подушка = 9 днів»);
+counts («позначено 1 з 6», «Справді подешевшали: 3 з 12»); shop prices, Hotline
+and the rate (the prices UI is untouched); a field being edited keeps its figure
+(the fund sheet, «Ціна» in «Чи потягну?», «Відклав у …», «На життя», the income
+dialog).
+
+### New mask rules (`maskSums`, Privacy.kt)
+- A bare figure before «з» plus money is hidden too: «2 140 з 6 400 ₴», «покрив
+  800 з 1 199 ₴» (`BEFORE_OF`). A count such as «3 з 6» stays.
+- A currency's ISO letters count as money only when they are real codes from the
+  phone's own list (`java.util.Currency`): «PLN» is money, «iPhone 16 PRO» stays a
+  name. `currencyLabel` (MonoUi.kt) now returns the letters for any numeric code —
+  a złoty account used to show «985», which no mask recognised.
+
+### Recap «Без сум»
+«Акція скінчилась» keeps its card («було ••• → стало ••• ₴»); «Що справді
+порадувало» and §23's «Чорна п'ятниця» have no sums.
+
+### Writers of the marks
+`MonoSync.apply` ticks through `Store.updatePaidMarks`, and each pass ends with
+`refreshWidget`; `PriceWorker` redraws through `refreshWidget`;
+`updatePaidMarks` writes nothing when nothing changed; `payOffMarks` and
+«Списали» go through `setPaid`, rebased under the lock. **Still unlocked:**
+background writes of the payments list (`bankResumed`, `recordPromoEnds`); the app
+re-reads them on `QuickMarks` and ON_START.
+
+### Digest links (§21 × §22)
+A link takes a free slot (one when there are payments to mark, two when none);
+it survives a press, an undo and the JSON round trip; never more than three
+buttons. Six tests in `QuickActionsTest`; in `QuickButtonsCheck` «Як скасувати
+Netflix» stays third through the press and the undo.
+
+### Rule for new code
+A screen that shows a personal sum wraps it in `personal()` or
+`personalFigure()`; snackbars go through `say()`; anything said once outside
+composition uses `personalNow()`.
+
+### Known gaps
+`CommittedBar` in MainActivity is unused and unwrapped; a parcel's listed price (a
+shop price) shows next to its hidden cash-on-delivery sum; a wish's ring plus its
+shop price lets someone estimate the savings.
+
+### Open with the owner
+- With the eye shut, dialogs that confirm a sum («Пропустити», «Погасити
+  достроково») show dots — the eye has to be opened to read the figure. Fine?
+- Days to payday and the cushion's days stay visible. Fine?
