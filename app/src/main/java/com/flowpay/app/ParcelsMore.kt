@@ -70,13 +70,15 @@ fun isNovaPoshtaLink(url: String): Boolean {
  * again. A return waybill counts too: that parcel is the purchase being returned.
  */
 fun knownParcel(orders: List<Order>, number: String): Order? {
-    val wanted = number.filter { it.isDigit() }
+    val wanted = trackingKey(number)
     if (wanted.isEmpty()) return null
     return orders.firstOrNull { order ->
-        order.tracking.filter { it.isDigit() } == wanted ||
-            order.refund?.tracking?.filter { it.isDigit() } == wanted
+        trackingKey(order.tracking) == wanted || order.refund?.let { trackingKey(it.tracking) } == wanted
     }
 }
+
+/** A tracking number as compared: no spaces, one case — «2045 0000 0000 01» is 20450000000001. */
+private fun trackingKey(number: String): String = number.filter { !it.isWhitespace() }.uppercase(Locale.ROOT)
 
 // ------------------------------------------------------------ the owner's phone
 
@@ -479,7 +481,10 @@ fun pickupUntilLine(point: PickupPoint, now: LocalDateTime): String? {
         PointHours.ALL_DAY -> "забрати можна цілодобово"
         PointHours.OPEN, PointHours.CLOSING_SOON, PointHours.BEFORE_OPENING ->
             "забрати можна до ${clockOf(today!!.close)}"
-        PointHours.CLOSED -> nextOpening(point, now)?.let { "сьогодні вже зачинено, відкриється $it" }
+        // A day it does not open at all is not one it has «already» shut on.
+        PointHours.CLOSED -> nextOpening(point, now)?.let {
+            if (today == null) "сьогодні не працює, відкриється $it" else "сьогодні вже зачинено, відкриється $it"
+        }
         PointHours.UNKNOWN -> null
     }
 }
@@ -639,6 +644,18 @@ fun moneyBack(order: Order, today: Long): Order {
 
 /** «Не повертаю»: the return undone, the purchase as it was. */
 fun cancelReturn(order: Order): Order = order.copy(refund = null)
+
+/**
+ * «Гроші ще не прийшли»: a «Гроші повернулись» tapped too soon, taken back.
+ *
+ * The pill that files a return sits on its tile one tap away, and a money-back
+ * marked by mistake would quietly drop the reminder that the shop still owes it.
+ * The shop's receipt stays, and so does the closed return window.
+ */
+fun undoMoneyBack(order: Order): Order {
+    val refund = order.refund ?: return order
+    return order.copy(refund = refund.copy(backDay = 0L))
+}
 
 /** Whether the background pass should ask the carrier about the return waybill. */
 fun followsReturn(order: Order): Boolean {

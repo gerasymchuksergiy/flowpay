@@ -93,6 +93,11 @@ class ParcelsMoreTest {
         assertEquals("a", knownParcel(listOf(going, back), "2045 0000 0000 01")?.id)
         assertEquals("b", knownParcel(listOf(going, back), "20450000000099")?.id)
         assertNull(knownParcel(listOf(going, back), "20450000000555"))
+        // A postal number is matched whole, letters and all.
+        val temu = parcel(id = "t", tracking = "RL778364634EE")
+        assertEquals("t", knownParcel(listOf(temu), "rl778364634ee")?.id)
+        assertNull(knownParcel(listOf(temu), "LP778364634CN"))
+        assertNull(knownParcel(listOf(parcel(id = "none", tracking = "")), " "))
     }
 
     // ------------------------------------------------------------ the phone number
@@ -437,6 +442,9 @@ class ParcelsMoreTest {
         assertTrue(shut.hours.containsKey(DayOfWeek.SUNDAY))
         assertEquals("відкриється завтра о 08:00", hoursChip(shut, sunday.atTime(10, 0))!!.text)
         assertEquals("у понеділок о 08:00", nextOpening(shut, LocalDate.of(2026, 10, 3).atTime(20, 0)))
+        // The morning message tells a day off from a day already over.
+        assertEquals("сьогодні не працює, відкриється завтра о 08:00", pickupUntilLine(shut, sunday.atTime(9, 0)))
+        assertEquals("сьогодні вже зачинено, відкриється завтра о 08:00", pickupUntilLine(branch(), monday.atTime(21, 5)))
     }
 
     @Test
@@ -644,6 +652,11 @@ class ParcelsMoreTest {
         assertFalse(countsAsBought(back))
         assertTrue(countsAsBought(cancelReturn(back)))
         assertNull(cancelReturn(back).refund)
+        // Tapped too soon: back among the returns, the shop's receipt kept.
+        val again = undoMoneyBack(back)
+        assertTrue(isReturning(again))
+        assertEquals(day + 9, again.refund!!.shopGotDay)
+        assertEquals(filed(), undoMoneyBack(filed()))
     }
 
     @Test

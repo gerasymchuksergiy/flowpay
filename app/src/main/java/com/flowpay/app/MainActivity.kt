@@ -6829,6 +6829,9 @@ fun OrdersScreen(
                         },
                         onAgain = { yes ->
                             update { now -> now.map { if (it.id == order.id) answerAgain(it, yes) else it } }
+                        },
+                        onUndoRefund = {
+                            update { now -> now.map { if (it.id == order.id) undoMoneyBack(it) else it } }
                         }
                     )
                 }
@@ -7955,7 +7958,9 @@ fun ArchivedPurchase(
     /** «Як тобі …?» answered. */
     onDelight: (Delight) -> Unit = {},
     /** «Купити таке ще раз?» answered. */
-    onAgain: (Boolean) -> Unit = {}
+    onAgain: (Boolean) -> Unit = {},
+    /** «Гроші ще не прийшли»: a money-back marked too soon, back among the returns. */
+    onUndoRefund: () -> Unit = {}
 ) {
     val review = purchaseReview(order.paid, order.lowestSeen, order.uses)
     val today = remember { LocalDate.now().toEpochDay() }
@@ -8046,8 +8051,14 @@ fun ArchivedPurchase(
                 }
             }
             Row(Modifier.padding(top = Space.sm), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onEdit) {
-                    Text(if (order.uses > 0) "Оновити користування" else "Порахувати користування")
+                if (givenBack) {
+                    // A thing given back is not used; what can still go wrong here is
+                    // «Гроші повернулись» tapped before they had.
+                    TextButton(onUndoRefund) { Text("Гроші ще не прийшли") }
+                } else {
+                    TextButton(onEdit) {
+                        Text(if (order.uses > 0) "Оновити користування" else "Порахувати користування")
+                    }
                 }
                 Spacer(Modifier.weight(1f))
                 IconButton(onDelete) { Icon(Icons.Default.DeleteOutline, "Видалити з архіву") }
