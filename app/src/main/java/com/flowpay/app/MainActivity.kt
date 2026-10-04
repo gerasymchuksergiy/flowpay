@@ -174,7 +174,15 @@ data class WishSource(
      * The crossed-out "was" price the page declares beside [price], in hryvnia.
      * Zero when it declares none. See Discounts.kt.
      */
-    val listPrice: Double = 0.0
+    val listPrice: Double = 0.0,
+    /**
+     * What this shop asks a member of its loyalty programme — Rozetka's card — in
+     * hryvnia. Zero when the page states none. A field of the shop, never an
+     * edition to pick and never the price: see [memberOfferIn] and PricesMore.kt.
+     */
+    val memberPrice: Double = 0.0,
+    /** The programme [memberPrice] is for, as the page names it. Empty with no price. */
+    val memberTier: String = ""
 )
 
 data class Wish(
@@ -299,7 +307,23 @@ data class Wish(
      * The monobank jar this wish is saved in. Empty when none. While set, [saved]
      * follows the jar's balance on every monobank pass — see MonoSync.kt.
      */
-    val jar: String = ""
+    val jar: String = "",
+    /**
+     * History points the owner set aside as a shop's glitch («Це був збій»), each
+     * with the point that followed it. Moved out of [history], so nothing that reads
+     * the history sees them; «Повернути» moves one back. See PricesMore.kt.
+     */
+    val excluded: List<SetAside> = emptyList(),
+    /** Points the owner said were real prices, so the glitch hint stops asking. */
+    val realPoints: List<PricePoint> = emptyList(),
+    /** When the thing was sold out, so the chart's line stops there. PricesMore.kt. */
+    val stockGaps: List<StockGap> = emptyList(),
+    /**
+     * Hotline's product page for the same thing, bound by the owner: the market's
+     * lowest price and how many shops offer it. A yardstick — never the price,
+     * never a push. Null on every wish nobody has bound one to. PricesMore.kt.
+     */
+    val market: Market? = null
 )
 
 data class Pay(
@@ -536,6 +560,8 @@ class MainActivity : ComponentActivity() {
         }
         PriceWorker.schedule(this)
         ReminderWorker.schedule(this)
+        // The dollar's corridor: an hourly check only while something is watched.
+        RateWorker.schedule(this)
         // Only for an owner who connected monobank; nothing is asked of anyone else.
         if (MonoStore(this).connected()) MonoSync.schedule(this)
         // Enqueued whether or not a folder has been chosen: the worker checks, and
@@ -1029,6 +1055,13 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     // model was asked and said nothing. So the key is written only when there is
     // an answer, and [wishOf] reads its absence back as null.
     .let { if (wish.appraisal != null) it.put("ap", appraisalJson(wish.appraisal)) else it }
+    // Set-aside glitches, points said to be real, sold-out spans (PricesMore.kt).
+    // The owner's own answers and part of the history, so they travel with it.
+    .put("wpx", setAsideJson(wish.excluded))
+    .put("wpr", pointsJson(wish.realPoints))
+    .put("wpg", gapsJson(wish.stockGaps))
+    // The bound Hotline market, only when there is one, like "ap" above.
+    .let { if (wish.market != null) it.put("wpmk", marketJson(wish.market)) else it }
 
 /**
  * Which shape a stored review is written in.
@@ -1125,6 +1158,8 @@ fun sourceJson(source: WishSource): JSONObject = JSONObject()
     // and adding a value later cannot silently renumber the ones already written.
     .put("av", source.availability.name)
     .put("lp", source.listPrice)
+    // The card member's price and its programme (PricesMore.kt).
+    .put("wpm", source.memberPrice).put("wpt", source.memberTier)
 
 fun sourceOf(o: JSONObject): WishSource = WishSource(
     url = o.optString("u"),
@@ -1142,7 +1177,10 @@ fun sourceOf(o: JSONObject): WishSource = WishSource(
     // data reads back behaving precisely as it did.
     availability = availabilityStored(o.optString("av")),
     // Absent on everything read before the crossed-out price was: nothing declared.
-    listPrice = o.optDouble("lp", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0
+    listPrice = o.optDouble("lp", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+    // Absent on everything read before member prices were: none stated.
+    memberPrice = o.optDouble("wpm", 0.0).takeIf { it.isFinite() && it > 0.0 } ?: 0.0,
+    memberTier = o.optString("wpt")
 )
 
 /**
@@ -1234,7 +1272,14 @@ fun wishOf(o: JSONObject): Wish {
         // Absent on every wish saved before this existed and on every wish nobody
         // has asked about, both of which are the same thing: no model has written
         // about it, so the section offers to.
-        appraisal = appraisalOf(o.optJSONObject("ap"))
+        appraisal = appraisalOf(o.optJSONObject("ap")),
+        // Absent on everything saved before 4 October's second pass: nothing set
+        // aside, nothing confirmed, no sold-out span recorded.
+        excluded = setAsideOf(o.optJSONArray("wpx")),
+        realPoints = pointsOf(o.optJSONArray("wpr")),
+        stockGaps = gapsOf(o.optJSONArray("wpg")),
+        // Absent on every wish no Hotline page was bound to.
+        market = marketOf(o.optJSONObject("wpmk"))
     )
 }
 
@@ -1806,6 +1851,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // A letter about a subscription from the share sheet, waiting for Платежі to
     // open «Новий платіж» filled in, or to offer the new price (SubscriptionText.kt).
     var sharedLetter by remember { mutableStateOf<SharedLetter?>(null) }
+    // A Hotline product page that arrived through the share sheet, waiting for the
+    // owner to say which wish it is the market for. PricesMore.kt.
+    var marketShare by remember { mutableStateOf<String?>(null) }
     // Both read pruned: a month that fell out of the year, or an entry past its
     // thirty days, is dropped on the way out of the store rather than lingering
     // in memory until something happens to write the list back.
@@ -1904,8 +1952,20 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     sharedTracking = number
                     tab = TAB_ORDERS
                 } ?: say("У повідомленні немає ні посилання, ні трек-номера")
-                is SharedLink.Known -> say("«${link.wish.name}» вже у списку")
+                // Already watched: its page and its chart, not a line saying so —
+                // see [wishToOpen].
+                is SharedLink.Known -> {
+                    openedWish = wishToOpen(link)
+                    say(knownShareNote(link.wish))
+                }
                 is SharedLink.New -> {
+                    // A Hotline product page is a market for a wish, not a wish:
+                    // it asks which one to bind it to — see [hotlineProductUrl].
+                    val market = hotlineProductUrl(link.url)
+                    if (market != null) {
+                        marketShare = market
+                        return@launch
+                    }
                     // The link is saved before the page is read, so a shop that
                     // blocks the fetch costs a name and a price, never the item.
                     val id = System.currentTimeMillis().toString()
@@ -2093,6 +2153,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // starts from them (QuickActions.kt).
     val quickVersion = QuickMarks.version
     LaunchedEffect(quickVersion) { if (quickVersion > 0) paid = store.paidMarks() }
+    // The sheet over a shop (ShopSheet.kt) writes a new wish straight into the store
+    // while this screen may still be alive behind it; the list is read again at
+    // once, so nothing here saves its older copy over the new wish.
+    val sheetVersion = ShopSheetSignal.version
+    LaunchedEffect(sheetVersion) { if (sheetVersion > 0) reload() }
     val monoBalance = remember(monoVersion) {
         MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
     }
@@ -2475,6 +2540,23 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                         onOpenNotifications = { openNotificationSettings(context) }
                     )
                 }
+            }
+            // A Hotline page shared into the app: which wish is it the market for?
+            // Bound onto the list as it is when the owner answers, then that wish's
+            // page opens with the market line under its price. PricesUi.kt.
+            marketShare?.let { page ->
+                BindMarketSheet(
+                    url = page,
+                    wishes = wishes,
+                    onClose = { marketShare = null },
+                    onBind = { id, market ->
+                        val next = wishes.map { if (it.id == id) it.copy(market = market) else it }
+                        wishes = next
+                        store.saveWishes(next)
+                        marketShare = null
+                        openedWish = id
+                    }
+                )
             }
         }
     }
@@ -4086,6 +4168,9 @@ fun SharedTransitionScope.WishDetailScreen(
     var specsOpen by remember { mutableStateOf(store.sectionOpen(SECTION_ABOUT_SPECS)) }
 
     val today = remember { LocalDate.now() }
+    // «У мене є Картка Rozetka» — read on each opening, so a switch flipped in
+    // Налаштування reaches the next wish opened.
+    val hasCard = remember(wish.id) { PriceStore(context).rozetkaCard() }
     // The day the stored rate was fetched, so a converted price can say how old
     // the rate behind it is. Zero until a rate has ever been loaded.
     val rateDay = remember {
@@ -4287,6 +4372,10 @@ fun SharedTransitionScope.WishDetailScreen(
                         )
                     }
                 }
+                // The Rozetka card's price, only for an owner who holds the card.
+                cardLine(wish, hasCard)?.let { PriceAside(it) }
+                // The market on Hotline, when one is bound: a yardstick, not the price.
+                MarketRow(wish, today.toEpochDay()) { openLink(context, it) }
                 // Why the figure above is the colour it is, in one sentence. The
                 // card can only carry a two-word badge; this is where it is explained.
                 freshnessNote(wish.freshness)?.let { note ->
@@ -4481,10 +4570,11 @@ fun SharedTransitionScope.WishDetailScreen(
                                 // the hryvnia moving underneath it.
                                 CHART_REBASED -> RebasedPriceAndRate(wish.history)
                                 CHART_DOLLAR -> PriceChart(usdPoints, format = ::dollars)
-                                else -> PriceChart(
-                                    remember(wish.history, wish.price, wish.checkedDay) {
-                                        chartSeries(wish.history, wish.price, wish.checkedDay)
-                                    },
+                                // The step line breaks where the thing was sold out,
+                                // and a point the scrub ends on can be set aside as a
+                                // shop's glitch — see PricesUi.kt.
+                                else -> WishHistoryChart(
+                                    wish,
                                     // Every chart here is drawn on its own scale, so two
                                     // of them side by side cannot be compared by eye.
                                     // This figure is what makes them comparable, and it
@@ -4494,9 +4584,12 @@ fun SharedTransitionScope.WishDetailScreen(
                                     // while the reading is doubtful, like everything else
                                     // on this card that depends on the price being real.
                                     note = "від першої ціни ${signedPercent(change)}"
-                                        .takeIf { wish.history.isNotEmpty() && !stale }
+                                        .takeIf { wish.history.isNotEmpty() && !stale },
+                                    onChange = onChange
                                 )
                             }
+                            // «Схоже на збій» and the points already set aside.
+                            GlitchNotes(wish, onChange)
                             if (view == CHART_DOLLAR && usdPoints.isNotEmpty()) {
                                 Text(
                                     "Зараз ${dollars(usdPoints.last().price)} " +
@@ -4675,6 +4768,15 @@ fun SharedTransitionScope.WishDetailScreen(
                                 { addingSource = true },
                                 Modifier.padding(top = Space.sm)
                             ) { Text("Додати магазин") }
+                            // The market on Hotline: bound here, read with the prices.
+                            MarketShopRow(
+                                wish,
+                                onSearch = {
+                                    openLink(context, hotlineSearch(searchText.ifBlank { wishSearchTerms(wish) }))
+                                },
+                                onOpen = { openLink(context, it) },
+                                onUnbind = { onChange(wish.copy(market = null)) }
+                            )
                         }
                     }
                 }
@@ -4877,7 +4979,12 @@ fun SharedTransitionScope.WishDetailScreen(
                     }
                 }
                 Spacer(Modifier.height(Space.md))
-                Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+                // Three in a row since «Hotline ↗» joined (4 October): tighter gaps,
+                // tighter insides and one-word labels, so all three fit a 360 dp
+                // phone without a label wrapping — and where a larger font would
+                // not let them, [ActionsRow] puts the third under the other two.
+                // Checked on the JVM render (PricesShots).
+                ActionsRow(gap = Space.sm) {
                     OutlinedButton(
                         {
                             scope.launch {
@@ -4930,26 +5037,39 @@ fun SharedTransitionScope.WishDetailScreen(
                                 refreshing = false
                             }
                         },
-                        Modifier.weight(1f),
+                        Modifier,
                         enabled = !refreshing,
                         shape = Radius.sm,
                         border = BorderStroke(1.dp, HairLine),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        contentPadding = CompactButtonPadding
                     ) {
                         if (refreshing) {
                             BusyMark()
                         } else {
-                            Icon(Icons.Default.Refresh, null)
+                            Icon(Icons.Default.Refresh, null, Modifier.size(18.dp))
                         }
-                        Text(" Оновити")
+                        Text(" Оновити", maxLines = 1, softWrap = false)
                     }
                     OutlinedButton(
                         { openLink(context, wish.url) },
-                        Modifier.weight(1f),
+                        Modifier,
                         shape = Radius.sm,
                         border = BorderStroke(1.dp, HairLine),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
-                    ) { Text("До магазину ↗") }
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        contentPadding = CompactButtonPadding
+                    ) { Text("Магазин ↗", maxLines = 1, softWrap = false) }
+                    // Any wish, in one tap: its bound Hotline page, or the Hotline
+                    // search with the wish's own query — the same words the card
+                    // for a thing nobody sells uses. See [hotlineLink].
+                    OutlinedButton(
+                        { openLink(context, hotlineLink(wish, searchText.ifBlank { wishSearchTerms(wish) })) },
+                        Modifier,
+                        shape = Radius.sm,
+                        border = BorderStroke(1.dp, HairLine),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary),
+                        contentPadding = CompactButtonPadding
+                    ) { Text("Hotline ↗", maxLines = 1, softWrap = false) }
                 }
                 message?.let {
                     Text(
@@ -5320,8 +5440,11 @@ fun CalculatorScreen(store: Store) {
     var loading by remember { mutableStateOf(false) }
     var rateError by remember { mutableStateOf(false) }
     var history by remember { mutableStateOf(store.rateHistory()) }
-    var rateTarget by remember { mutableStateOf(store.rateTarget()) }
-    var targetInput by remember { mutableStateOf("") }
+    // The corridor that replaced the single threshold (RateWatch.kt). Reading it
+    // the first time turns an old threshold into its edge.
+    val rateContext = LocalContext.current
+    val prices = remember(rateContext) { PriceStore(rateContext) }
+    var corridor by remember { mutableStateOf(prices.rateCorridor(store)) }
     var askingTarget by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
@@ -5586,7 +5709,7 @@ fun CalculatorScreen(store: Store) {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    rateTargetNote(rateTarget, rate),
+                                    corridorNote(corridor, rate),
                                     Modifier.weight(1f),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
@@ -5594,20 +5717,14 @@ fun CalculatorScreen(store: Store) {
                                 )
                                 Spacer(Modifier.width(Space.sm))
                                 OutlinedButton(
-                                    onClick = {
-                                        // Prefilled with whatever is being watched, so
-                                        // nudging a threshold is a keystroke rather than
-                                        // remembering the number and typing it again.
-                                        targetInput = amountText(rateTarget?.rate ?: 0.0)
-                                        askingTarget = true
-                                    },
+                                    onClick = { askingTarget = true },
                                     shape = Radius.sm,
                                     border = BorderStroke(1.dp, HairLine),
                                     colors = ButtonDefaults.outlinedButtonColors(
                                         contentColor = TextPrimary
                                     )
                                 ) {
-                                    Text(if (rateTarget == null) "Стежити" else "Змінити")
+                                    Text(if (!corridor.watching) "Стежити" else "Змінити")
                                 }
                             }
                         }
@@ -5657,58 +5774,17 @@ fun CalculatorScreen(store: Store) {
         CollapsingTitle("Курс", listState)
     }
     if (askingTarget) {
-        AlertDialog(
-            onDismissRequest = { askingTarget = false },
-            title = { Text("Поріг по курсу") },
-            text = {
-                Column {
-                    Text(
-                        "Скажу один раз у ранковому зведенні, коли курс дійде до цього " +
-                            "числа. Далі поріг перестає нагадувати про себе.",
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        lineHeight = Type.captionLine
-                    )
-                    Spacer(Modifier.height(Space.md))
-                    NumberField("Курс", targetInput) { targetInput = it }
-                    // No rate at all, or only the NBU's: the threshold is watched on
-                    // Monobank's figure, and its direction is read off it.
-                    rateTargetBlocked(rate)?.let {
-                        Text(
-                            it,
-                            color = Negative,
-                            fontSize = Type.captionSize,
-                            lineHeight = Type.captionLine,
-                            modifier = Modifier.padding(top = Space.sm)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        armRateTarget(parseAmount(targetInput), rate)?.let {
-                            rateTarget = it
-                            store.saveRateTarget(it)
-                        }
-                        askingTarget = false
-                    },
-                    enabled = rateTargetBlocked(rate) == null
-                ) { Text("Стежити") }
-            },
-            dismissButton = {
-                // Removing a threshold lives here rather than beside the caption:
-                // it is the rarer action of the two and does not deserve a button
-                // on the screen that the eye has to step over every time.
-                if (rateTarget != null) {
-                    TextButton({
-                        rateTarget = null
-                        store.saveRateTarget(null)
-                        askingTarget = false
-                    }) { Text("Прибрати", color = Negative) }
-                } else {
-                    TextButton({ askingTarget = false }) { Text("Скасувати") }
-                }
+        // Two optional edges and «Сплеск» — see RateWatch.kt. Saving schedules the
+        // hourly check, and clearing everything stops it.
+        RateCorridorDialog(
+            corridor = corridor,
+            rate = rate,
+            onDismiss = { askingTarget = false },
+            onSave = { next ->
+                corridor = next
+                prices.saveRateCorridor(next)
+                RateWorker.schedule(rateContext)
+                askingTarget = false
             }
         )
     }
@@ -9077,6 +9153,8 @@ fun SettingsScreen(
                     onClick = { phoneOpen = true }
                 )
                 HideSumsOutsideRow()
+                // Off until the owner says they hold the card — PricesMore.kt.
+                RozetkaCardRow(Modifier.padding(top = Space.sm))
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 MonoSettingsItem { monoOpen = true }
                 ListItem(

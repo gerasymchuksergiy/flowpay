@@ -13,6 +13,20 @@ import kotlinx.coroutines.coroutineScope
 import java.util.concurrent.TimeUnit
 
 /**
+ * Reads a wish's bound Hotline page and folds the reading into its market.
+ *
+ * The product page and nothing else: hotline's robots.txt disallows `/sr/`, the
+ * search, and the app never fetches it — the search only ever opens in the owner's
+ * browser. A page that does not answer, or answers without an aggregate offer,
+ * leaves the market exactly as it was, the way a shop that times out keeps its price.
+ */
+suspend fun withMarketRead(wish: Wish, today: Long): Wish {
+    val market = wish.market ?: return wish
+    val reading = runCatching { parseMarket(pageHtml(market.url)) }.getOrNull() ?: return wish
+    return wish.copy(market = withMarketReading(market, reading, today))
+}
+
+/**
  * The twice-daily background pass: what did prices do, and where are the parcels.
  *
  * Both exist so the app can tell you rather than needing to be opened and asked.
@@ -39,12 +53,14 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         // this budget the remaining wishes keep what they had and the pass saves
         // what it did read; the next pass starts from the top again.
         val deadline = System.currentTimeMillis() + PASS_BUDGET_MS
+        // «У мене є Картка Rozetka»: the target is then also met by the card's price.
+        val hasCard = PriceStore(applicationContext).rozetkaCard()
         val old = store.wishes()
         var pricesRead = 0
         var pagesAnswered = 0
         val fresh = old.map { previous ->
             if (System.currentTimeMillis() > deadline) return@map previous
-            when (val reading = refreshed(previous, today, stamp)) {
+            val read = when (val reading = refreshed(previous, today, stamp)) {
                 Reading.Failed -> previous
                 // A page that answered without a price is still news about the item,
                 // so the new freshness is saved. It is deliberately not counted as a
@@ -68,20 +84,28 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                         // asked for by name, and stock that came back and can go
                         // again by morning. A new low and an ordinary fall are good
                         // news that keeps, so they go into the digest instead.
-                        when (alert.kind) {
-                            AlertKind.TARGET_REACHED -> notify(
+                        when {
+                            alert.kind == AlertKind.TARGET_REACHED -> notify(
                                 previous.name,
                                 "Досягнуто ціль ${money(previous.targetPrice)} — зараз ${money(current.price)}",
                                 CHANNEL_PRICES,
                                 "Зміни цін"
                             )
-                            AlertKind.BACK_IN_STOCK -> notify(
+                            // Reached only with the Rozetka card: said as exactly that,
+                            // with the ordinary price beside it — see PricesMore.kt.
+                            cardTargetReached(previous, current, hasCard) -> notify(
+                                previous.name,
+                                cardTargetText(previous.targetPrice, cardPrice(current, true), current.price),
+                                CHANNEL_PRICES,
+                                "Зміни цін"
+                            )
+                            alert.kind == AlertKind.BACK_IN_STOCK -> notify(
                                 previous.name,
                                 "Знову в наявності — ${money(current.price)}",
                                 CHANNEL_PRICES,
                                 "Зміни цін"
                             )
-                            AlertKind.NEW_LOW, AlertKind.DROP, AlertKind.NONE -> Unit
+                            else -> Unit
                         }
                     }
                     // Still recorded for the falls that are no longer announced: it
@@ -89,6 +113,9 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
                     current.copy(notifiedPrice = alert.notifyPrice)
                 }
             }
+            // The market on Hotline, read with the prices and only its product page.
+            // Never a push, whatever it says — the morning digest has the one line.
+            if (System.currentTimeMillis() > deadline) read else withMarketRead(read, today)
         }
         // Laid onto the list as it is now, not saved over it. A pass takes minutes,
         // and a wish added, deleted or edited on the phone meanwhile used to be
