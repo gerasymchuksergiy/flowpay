@@ -73,6 +73,14 @@ class ScreenShots {
         // back to the emoji font, which is what any other phone shows.
         val pack = java.io.File(System.getProperty("flowpay.emojiPack") ?: "C:/Temp/flowpay-emoji")
         if (pack.isDirectory) pack.copyRecursively(java.io.File(app.filesDir, "emoji"), overwrite = true)
+        // monobank as if connected: no token (the keystore does not exist on the
+        // JVM), only what a pass would have stored — a card, a jar, a statement.
+        app.getSharedPreferences("flowpay-mono", 0).edit()
+            .putString("tok", "screenshot")
+            .putString("client", com.flowpay.app.monoClientJson(sampleMonoClient()).toString())
+            .putString("tx", org.json.JSONArray(sampleStatement().map { com.flowpay.app.monoTxJson(it) }).toString())
+            .putLong("sync", System.currentTimeMillis())
+            .commit()
         Store(app).run {
             saveWishes(sampleWishes())
             savePays(samplePays())
@@ -121,6 +129,10 @@ class ScreenShots {
     @Test fun recap() = page(TAB_OVERVIEW, "9-recap", "МІСЯЦЬ ГОТОВИЙ")
     @Test fun duel() = page(TAB_WISHES, "10-duel", "Дуель бажань")
 
+    // Tall, so the settings row is on screen to be tapped.
+    @Test @Config(qualifiers = "uk-rUA-w393dp-h2600dp-440dpi")
+    fun monoSheet() = page(TAB_OVERVIEW, "11-mono", "Налаштувати")
+
     // ------------------------------------------------------------ motion, as frames
 
     /**
@@ -143,8 +155,12 @@ class ScreenShots {
         }
     }
 
-    @Test fun clipPaid() = frames(TAB_PAYMENTS, "paid", count = 40, stepMs = 33, settleMs = 3_000) {
-        rule.onAllNodesWithContentDescription("Позначити оплаченим")[0].performClick()
+    @Test fun clipPaid() {
+        // Without the monobank tiles, which push the payment tiles below the fold.
+        RuntimeEnvironment.getApplication().getSharedPreferences("flowpay-mono", 0).edit().clear().commit()
+        frames(TAB_PAYMENTS, "paid", count = 40, stepMs = 33, settleMs = 3_000) {
+            rule.onAllNodesWithContentDescription("Позначити оплаченим")[0].performClick()
+        }
     }
 
     @Test fun clipOpen() = frames(TAB_OVERVIEW, "open", count = 36, stepMs = 33, settleMs = 0) {}
@@ -158,6 +174,30 @@ class ScreenShots {
     }
 
     // ------------------------------------------------------------ sample data
+
+    private fun sampleMonoClient() = com.flowpay.app.MonoClient(
+        "Власник",
+        listOf(com.flowpay.app.MonoAccount("acc", com.flowpay.app.UAH_CODE, 1_234_000, 0, "black", listOf("537541******1234"), "")),
+        listOf(com.flowpay.app.MonoJar("jar1", "Навушники", com.flowpay.app.UAH_CODE, 400_000, 1_050_000))
+    )
+
+    private fun noon(date: LocalDate): Long = date.atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toEpochSecond()
+
+    private fun sampleStatement(): List<com.flowpay.app.MonoTx> {
+        val lastMonth = today.minusMonths(1)
+        fun tx(id: String, date: LocalDate, description: String, amount: Long, mcc: Int = 4899) =
+            com.flowpay.app.MonoTx(id, noon(date), description, mcc, amount, amount, com.flowpay.app.UAH_CODE, false, "acc")
+        val spotify = today.minusDays(3)
+        return listOf(
+            tx("n", lastMonth.withDayOfMonth(28), "NETFLIX.COM", -29900),
+            tx("y", lastMonth.withDayOfMonth(20), "Google *YouTube", -17900),
+            tx("v", today.withDayOfMonth(1), "VOLIA", -30000),
+            tx("s1", spotify, "SPOTIFY", -16900),
+            tx("s2", spotify.minusDays(30), "SPOTIFY", -16900),
+            tx("s3", spotify.minusDays(60), "SPOTIFY", -16900),
+            tx("g", today.minusDays(1), "SILPO", -84530, mcc = 5411)
+        )
+    }
 
     private fun sampleWishes() = listOf(
         Wish(

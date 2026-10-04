@@ -158,9 +158,92 @@ const val DAYS_IN_YEAR = 365.25
  */
 fun isAnnual(pay: Pay): Boolean = pay.billingMonth in 1..MONTHS_IN_YEAR
 
-/** Whether a charge from this expense lands in the month [month] falls in. */
-fun chargesIn(pay: Pay, month: LocalDate): Boolean =
-    !isAnnual(pay) || pay.billingMonth == month.monthValue
+/**
+ * Whether a charge from this expense lands in the month [month] falls in.
+ *
+ * A plan «частинами» charges only between its first and last payment, so every
+ * figure built on this — the month's total, the record of a past month, the
+ * strip, the weather — sees the plan start and stop without being told.
+ */
+fun chargesIn(pay: Pay, month: LocalDate): Boolean = when {
+    isInstalment(pay) ->
+        java.time.YearMonth.from(month) in
+            java.time.YearMonth.from(instalmentFirst(pay))..java.time.YearMonth.from(instalmentLast(pay))
+    else -> !isAnnual(pay) || pay.billingMonth == month.monthValue
+}
+
+// ------------------------------------------------------------ частинами
+
+/*
+ * A purchase paid off in a fixed number of monthly payments — «Оплата частинами»,
+ * a phone on six instalments, a course in ten. Owner's request, 4 October 2026,
+ * from the research into other apps: the payment that ends by itself, and the
+ * month the money comes back.
+ *
+ * Kept as an ordinary expense with two fields more, so the reminders, the tick,
+ * the history and the weather all work on it unchanged; [chargesIn] is what
+ * starts and stops it. Monthly only: nobody pays anything off once a year.
+ */
+
+/** Whether this expense is a plan with a fixed number of payments. */
+fun isInstalment(pay: Pay): Boolean = pay.instalments > 0 && pay.instalmentStart > 0L && !isAnnual(pay)
+
+/** The month of the plan's first payment. */
+fun instalmentFirst(pay: Pay): LocalDate = instalmentDate(pay, 1)
+
+/** The date of payment number [n], counting from one, on the expense's day. */
+fun instalmentDate(pay: Pay, n: Int): LocalDate {
+    val month = LocalDate.ofEpochDay(pay.instalmentStart).withDayOfMonth(1).plusMonths((n - 1).toLong())
+    return month.withDayOfMonth(effectivePaymentDay(pay.day, month.lengthOfMonth()))
+}
+
+/** The date of the last payment. */
+fun instalmentLast(pay: Pay): LocalDate = instalmentDate(pay, pay.instalments)
+
+/** How many payments fell before [today]. Today's own is still to come. */
+fun instalmentsBehind(pay: Pay, today: LocalDate): Int =
+    if (!isInstalment(pay)) 0 else (1..pay.instalments).count { instalmentDate(pay, it).isBefore(today) }
+
+/** How many payments are still to come, today's included. */
+fun instalmentsLeft(pay: Pay, today: LocalDate): Int =
+    if (!isInstalment(pay)) 0 else pay.instalments - instalmentsBehind(pay, today)
+
+/** Every payment of the plan is behind it: it no longer belongs on the schedule. */
+fun isFinished(pay: Pay, today: LocalDate): Boolean = isInstalment(pay) && instalmentLast(pay).isBefore(today)
+
+/**
+ * The first payment's epoch day for a plan of payments on [day] of which [done]
+ * are already behind — what the form asks, because nobody remembers the date of
+ * their first instalment but everyone knows «сплачено 2 з 6».
+ */
+fun instalmentStartFor(day: Int, done: Int, today: LocalDate): Long {
+    val next = nextCharge(Pay("", 0.0, day), today)
+    val month = next.withDayOfMonth(1).minusMonths(done.coerceAtLeast(0).toLong())
+    return month.withDayOfMonth(effectivePaymentDay(day, month.lengthOfMonth())).toEpochDay()
+}
+
+/** «платіж 3 з 6 · останній 15 січня» — what a plan says under its name. Null when it is not one. */
+fun instalmentLine(pay: Pay, today: LocalDate): String? {
+    if (!isInstalment(pay)) return null
+    val behind = instalmentsBehind(pay, today)
+    return when {
+        isFinished(pay, today) -> "усі ${paymentsLabel(pay.instalments)} позаду"
+        behind == 0 -> "перший з ${pay.instalments} — ${dayMonth(instalmentFirst(pay))}"
+        else -> "платіж ${behind + 1} з ${pay.instalments} · останній ${dayMonth(instalmentLast(pay))}"
+    }
+}
+
+/**
+ * When money comes back: the soonest plan to end within half a year, and what it
+ * frees each month. Plans ending in the same month are added together.
+ */
+fun freedLine(items: List<Pay>, today: LocalDate, usdSellRate: Double): String? {
+    val ending = items.filter { isInstalment(it) && !isFinished(it, today) && instalmentLast(it).isBefore(today.plusMonths(6)) }
+    val soonest = ending.minByOrNull { instalmentLast(it) } ?: return null
+    val sameMonth = ending.filter { java.time.YearMonth.from(instalmentLast(it)) == java.time.YearMonth.from(instalmentLast(soonest)) }
+    val freed = totalOf(sameMonth.map { it.currency to it.amount }, usdSellRate)
+    return "Після ${dayMonth(instalmentLast(soonest))} звільниться ${totalLabel(freed)} на місяць"
+}
 
 /**
  * What this expense actually takes out of the month [month] falls in.
@@ -196,13 +279,25 @@ fun perDay(pay: Pay): Double = yearlyCost(pay) / DAYS_IN_YEAR
  */
 fun monthlyEquivalent(pay: Pay): Double = yearlyCost(pay) / MONTHS_IN_YEAR
 
-/** What one recurring expense costs in a year, in the currency it was entered in. */
-fun yearlyCost(pay: Pay): Double =
-    if (isAnnual(pay)) pay.amount else pay.amount * MONTHS_IN_YEAR
+/**
+ * What one recurring expense costs in a year, in the currency it was entered in.
+ * For a plan, what the whole plan costs: it has no year, it has an end.
+ */
+fun yearlyCost(pay: Pay): Double = when {
+    isInstalment(pay) -> pay.amount * pay.instalments
+    isAnnual(pay) -> pay.amount
+    else -> pay.amount * MONTHS_IN_YEAR
+}
 
-/** What this expense takes over the coming year. Nought while it is still free. */
-fun yearlyCharge(pay: Pay, today: LocalDate): Double =
-    if (onTrial(pay, today.toEpochDay())) 0.0 else yearlyCost(pay)
+/**
+ * What this expense takes over the coming year. Nought while it is still free; for
+ * a plan, only the payments it still has, at most twelve.
+ */
+fun yearlyCharge(pay: Pay, today: LocalDate): Double = when {
+    onTrial(pay, today.toEpochDay()) -> 0.0
+    isInstalment(pay) -> pay.amount * instalmentsLeft(pay, today).coerceAtMost(MONTHS_IN_YEAR)
+    else -> yearlyCost(pay)
+}
 
 /**
  * A year of the same standing costs.
@@ -274,8 +369,11 @@ fun annualChargeDay(pay: Pay): String {
  * have said it was charged twelve times a year in the one place a person goes to
  * check what they are about to get back.
  */
-fun rhythmNote(pay: Pay): String =
-    if (isAnnual(pay)) "раз на рік, ${annualChargeDay(pay)}" else "щомісяця, ${pay.day} числа"
+fun rhythmNote(pay: Pay): String = when {
+    isInstalment(pay) -> "частинами, ${paymentsLabel(pay.instalments)}, ${pay.day} числа"
+    isAnnual(pay) -> "раз на рік, ${annualChargeDay(pay)}"
+    else -> "щомісяця, ${pay.day} числа"
+}
 
 /** "14 березня · 1 200 ₴" — one dormant annual charge, said in a row's worth of line. */
 fun annualDueLine(pay: Pay, today: LocalDate): String =
@@ -734,6 +832,9 @@ data class NextPayment(
  * has no ceiling to outgrow.
  */
 fun nextPayment(items: List<Pay>, today: LocalDate, usdSellRate: Double): NextPayment? {
+    // A plan whose last payment is behind it has nothing left to be next.
+    @Suppress("NAME_SHADOWING")
+    val items = items.filterNot { isFinished(it, today) }
     if (items.isEmpty()) return null
     // Charged rather than merely due: this panel says when money next leaves,
     // and during a trial the next renewal is not a day money leaves.
@@ -790,7 +891,7 @@ fun paymentGroups(items: List<Pay>, today: LocalDate): List<PaymentGroup> =
         // expense always falls inside the window, so this only ever removes an
         // annual charge that is not due — and [annualElsewhere] is where it goes,
         // rather than nowhere, which is what used to happen to it.
-        .filter { daysUntilDue(items[it], today) <= TIMELINE_DAYS }
+        .filter { !isFinished(items[it], today) && daysUntilDue(items[it], today) <= TIMELINE_DAYS }
         .groupBy { nextDateFor(items[it], today) }
         .toSortedMap()
         .map { (date, positions) -> PaymentGroup(date, positions) }
@@ -803,6 +904,11 @@ fun paymentGroups(items: List<Pay>, today: LocalDate): List<PaymentGroup> =
  * of a February fee has to land somewhere real.
  */
 private fun nextDateFor(pay: Pay, today: LocalDate): LocalDate {
+    // A plan that has not started yet comes round first on its first payment.
+    if (isInstalment(pay)) {
+        val first = instalmentFirst(pay)
+        if (!today.isAfter(first)) return first
+    }
     if (isAnnual(pay)) {
         val thisYear = chargeDate(today.year, pay.billingMonth, pay.day)
         return if (!thisYear.isBefore(today)) {
@@ -936,7 +1042,7 @@ const val LONG_NOTICE_DAYS = 3
  * looked at.
  */
 fun stillOwing(items: List<Pay>, marks: List<PaidMark>, today: LocalDate): List<Pay> =
-    items.filterNot { isPaid(marks, it.name, monthKey(nextCharge(it, today))) }
+    items.filterNot { isFinished(it, today) || isPaid(marks, it.name, monthKey(nextCharge(it, today))) }
 
 /**
  * Everything worth saying on [today], soonest first.

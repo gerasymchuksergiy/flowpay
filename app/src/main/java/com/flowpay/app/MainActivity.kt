@@ -294,7 +294,12 @@ data class Wish(
     val appraisal: Appraisal? = null,
     /** Duels this wish won and took part in — see Ideas.kt. Nought before any. */
     val duelWins: Int = 0,
-    val duelsPlayed: Int = 0
+    val duelsPlayed: Int = 0,
+    /**
+     * The monobank jar this wish is saved in. Empty when none. While set, [saved]
+     * follows the jar's balance on every monobank pass — see MonoSync.kt.
+     */
+    val jar: String = ""
 )
 
 data class Pay(
@@ -354,7 +359,20 @@ data class Pay(
      * Stored only when a person chose one, so a rename still re-guesses for every
      * payment nobody has touched, and an improved guess reaches them too.
      */
-    val emoji: String = ""
+    val emoji: String = "",
+    /**
+     * «Частинами»: how many monthly payments the plan has. Nought means it runs
+     * until it is deleted, which is every expense that is not a plan.
+     */
+    val instalments: Int = 0,
+    /** The epoch day of the plan's first payment. Nought when it is not a plan. */
+    val instalmentStart: Long = 0L,
+    /**
+     * The monobank merchant the owner confirmed as this payment — [merchantKey] of
+     * the description he said «так» to. Empty until then. With it, the next charge
+     * from that merchant ticks this payment by itself; see Mono.kt.
+     */
+    val monoMerchant: String = ""
 )
 data class Order(
     val id: String,
@@ -469,6 +487,8 @@ class MainActivity : ComponentActivity() {
         }
         PriceWorker.schedule(this)
         ReminderWorker.schedule(this)
+        // Only for an owner who connected monobank; nothing is asked of anyone else.
+        if (MonoStore(this).connected()) MonoSync.schedule(this)
         // Enqueued whether or not a folder has been chosen: the worker checks, and
         // scheduling only once a folder exists would mean a folder chosen while the
         // app was already running never got a job at all.
@@ -932,6 +952,7 @@ fun wishJson(wish: Wish): JSONObject = JSONObject()
     .put("fr", wish.freshness.name).put("ad", wish.addedDay).put("hu", wish.holdUntil).put("why", wish.why)
     // The duel record is the owner's own answers, so it travels with the wish.
     .put("dw", wish.duelWins).put("dp", wish.duelsPlayed)
+    .put("jr", wish.jar)
     .put("ab", aboutJson(wish.about))
     // Written exactly as held, empty included, so that what comes back out of the
     // bin is what went in. A wish that predates the list is not filled in here:
@@ -1139,6 +1160,8 @@ fun wishOf(o: JSONObject): Wish {
         // Absent on every wish saved before the duel existed: never dueled.
         duelWins = o.optInt("dw", 0).coerceAtLeast(0),
         duelsPlayed = o.optInt("dp", 0).coerceAtLeast(0),
+        // Absent on every wish not tied to a monobank jar.
+        jar = o.optString("jr"),
         about = aboutOf(o.optJSONObject("ab")),
         // A wish saved with only `u` has no array here at all, and stays empty
         // rather than being filled in on the way past: [wishSources] is the one
@@ -1187,6 +1210,10 @@ fun payJson(pay: Pay): JSONObject = JSONObject()
     .put("bm", pay.billingMonth)
     // A choice somebody made by hand, so it travels through the bin and the backup.
     .put("em", pay.emoji)
+    // A plan forgotten here would come back from the bin as a payment for ever.
+    .put("ic", pay.instalments).put("is", pay.instalmentStart)
+    // The owner's own «так», so a restore does not ask him again.
+    .put("mm", pay.monoMerchant)
 
 fun payOf(o: JSONObject): Pay = Pay(
     o.optString("n"),
@@ -1210,7 +1237,12 @@ fun payOf(o: JSONObject): Pay = Pay(
     // charge on a date [LocalDate] refuses to build.
     o.optInt("bm", 0).takeIf { it in 1..MONTHS_IN_YEAR } ?: 0,
     // Absent on everything saved before emoji existed: guessed from the name.
-    emoji = o.optString("em")
+    emoji = o.optString("em"),
+    // Absent on everything saved before plans existed: an ordinary expense.
+    instalments = o.optInt("ic", 0).coerceAtLeast(0),
+    instalmentStart = o.optLong("is", 0L).coerceAtLeast(0L),
+    // Absent until a monobank charge was confirmed for it.
+    monoMerchant = o.optString("mm")
 )
 
 fun orderJson(order: Order): JSONObject = JSONObject()
@@ -1899,6 +1931,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         bin = store.bin()
     }
 
+    // A monobank pass writes ticks and jar balances straight into the store; the
+    // lists here are read again when it ends, as after any background pass.
+    val monoVersion = MonoStore.version
+    LaunchedEffect(monoVersion) { if (monoVersion > 0) reload() }
+    val monoBalance = remember(monoVersion) {
+        MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
+    }
+
     // The background pass writes prices, histories and parcel statuses straight
     // into the store. The lists here were read at launch and never again, so the
     // first edit after a pass saved the launch-time list over everything the pass
@@ -2196,6 +2236,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                     onOpenRecap = { recapOpen = true },
                                     summary = summary,
                                     weather = moneyWeather(pays, paid, today, usdSell, monthBudget.income, summary.freeCash),
+                                    balance = monoBalance,
                                     treat = monthTreat(wishes, summary.freeCash - summary.plannedMonthly, today.toEpochDay()),
                                     onOpenWish = { id ->
                                         tab = TAB_WISHES
@@ -3900,6 +3941,12 @@ fun SharedTransitionScope.WishDetailScreen(
         if (kept != wish.searchQuery) onChange(wish.copy(searchQuery = kept))
     }
 
+    // A jar's balance arrives from a monobank pass; the field follows it, so the
+    // next edit to the plan does not write the old figure back over the jar's.
+    LaunchedEffect(wish.saved, wish.jar) {
+        if (wish.jar.isNotBlank()) savedText = amountText(wish.saved)
+    }
+
     // Persist only when something the user typed or picked actually changed.
     LaunchedEffect(savedText, monthlyText, deadlineDay) {
         val saved = parseAmount(savedText)
@@ -4453,7 +4500,19 @@ fun SharedTransitionScope.WishDetailScreen(
                         }
                     )
 
-                    NumberField("Вже відкладено, ₴", savedText) { savedText = it }
+                    // Kept in a monobank jar: the jar is what has been saved.
+                    JarLink(
+                        wish,
+                        onLink = { jar, fromJar ->
+                            val saved = fromJar ?: wish.saved
+                            savedText = amountText(saved)
+                            onChange(wish.copy(jar = jar, saved = saved))
+                        },
+                        onUnlink = { onChange(wish.copy(jar = "")) }
+                    )
+                    if (wish.jar.isBlank()) {
+                        NumberField("Вже відкладено, ₴", savedText) { savedText = it }
+                    }
 
                     // The plan can be read from either end. Say what you can put aside
                     // and it answers when; say when you want it and it answers how much.
@@ -5672,6 +5731,27 @@ fun PaymentsScreen(
     // Which half of the screen is showing. Not remembered: the schedule is what
     // the tab is opened for, and the history is a question asked on purpose.
     var view by remember { mutableIntStateOf(PAYMENTS_SCHEDULE) }
+    // monobank: charges that look like payments, and subscriptions not on the list.
+    // Worked out here from the stored statement — no network on this screen.
+    val context = LocalContext.current
+    val monoVersion = MonoStore.version
+    val mono = remember { MonoStore(context) }
+    val monoView = remember(monoVersion, items, paid, today) {
+        if (!mono.connected()) {
+            null
+        } else {
+            val client = mono.client()
+            val txs = mono.txs()
+            val currencies = accountCurrencies(client)
+            MonoView(
+                matches = monoMatches(items, txs, paid, mono.rejected(), currencies, today, rate.sell)
+                    // A confirmed merchant ticks by itself on the next pass, unless that is off.
+                    .filter { it.kind != MonoMatchKind.LEARNED || !mono.auto() },
+                found = findSubscriptions(txs, items, mono.ignored(), currencies, System.currentTimeMillis() / 1000),
+                drifts = monoDrifts(items, paid, today)
+            )
+        }
+    }
     // The tiles rise in the first time this tab opens — see [Entrance].
     val entrance = LocalEntrance.current
     Box {
@@ -5797,6 +5877,16 @@ fun PaymentsScreen(
                                     // A year of the same costs, because that is the scale at
                                     // which a subscription is worth arguing with.
                                     LeaderRow("Разом на рік", money(yearly.total))
+                                    // When a plan «частинами» ends, the month gets that much back.
+                                    freedLine(items, today, rate.sell)?.let { line ->
+                                        Text(
+                                            line,
+                                            Modifier.padding(top = Space.xs),
+                                            color = TextPrimary,
+                                            fontSize = Type.captionSize,
+                                            lineHeight = Type.captionLine
+                                        )
+                                    }
                                     // And what that same year cost before the quiet
                                     // raises. Each one is a few tens of hryvnia and
                                     // reads as nothing; twelve months of all of them
@@ -5837,6 +5927,63 @@ fun PaymentsScreen(
                                 }
                             }
                         }
+                    }
+                }
+                monoView?.matches?.takeIf { it.isNotEmpty() }?.let { matches ->
+                    item(key = "mono-matches") {
+                        MonoMatchesTile(
+                            matches,
+                            Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                            onYes = { match ->
+                                touch.switched(true)
+                                setPaid(withMonoMark(paid, match))
+                                // Remembered, so the next charge from this merchant ticks itself.
+                                val merchant = merchantKey(match.tx.description)
+                                save(items.map { if (it.name == match.pay.name) it.copy(monoMerchant = merchant) else it })
+                            },
+                            onNo = { match ->
+                                mono.reject("${match.tx.id}|${match.pay.name}")
+                                MonoStore.bump()
+                            }
+                        )
+                    }
+                }
+                monoView?.drifts?.takeIf { it.isNotEmpty() }?.let { drifts ->
+                    item(key = "mono-drifts") {
+                        MonoDriftsTile(
+                            drifts,
+                            Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md)
+                        ) { pay, charged ->
+                            // Through the history, so «було → стало» and the digest see it.
+                            save(items.map { if (it.name == pay.name) withAmount(it, charged, today.toEpochDay()) else it })
+                        }
+                    }
+                }
+                monoView?.found?.takeIf { it.isNotEmpty() }?.let { found ->
+                    item(key = "mono-found") {
+                        FoundSubscriptionsTile(
+                            found,
+                            Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                            onAdd = { item ->
+                                val amount = kotlin.math.round(item.amount * 100) / 100.0
+                                save(
+                                    items + Pay(
+                                        prettyMerchant(item.title),
+                                        amount,
+                                        item.day.coerceIn(1, 31),
+                                        item.currency,
+                                        amounts = listOf(PricePoint(amount, today.toEpochDay())),
+                                        monoMerchant = item.key
+                                    )
+                                )
+                                // Opened at once, to name it properly and check the day.
+                                editing = items.size
+                            },
+                            onIgnore = { item ->
+                                mono.ignore(item.key)
+                                MonoStore.bump()
+                            }
+                        )
                     }
                 }
                 if (items.isEmpty()) {
@@ -5892,6 +6039,45 @@ fun PaymentsScreen(
                                 )
                             }
                             if (pair.size == 1) Spacer(Modifier.weight(1f))
+                        }
+                    }
+                }
+                // Plans whose last payment is behind them: off the schedule, kept until
+                // deleted, so what they cost stays readable.
+                val finishedPlans = items.withIndex().filter { isFinished(it.value, today) }
+                if (finishedPlans.isNotEmpty()) {
+                    item(key = "plans-done") {
+                        Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg, bottom = Space.sm)) {
+                            SectionTitle("Розстрочки, які закінчились")
+                        }
+                    }
+                    finishedPlans.forEach { (position, pay) ->
+                        item(key = "plan-done-$position-${pay.name}") {
+                            BentoTile(
+                                SurfaceRaised,
+                                Modifier.padding(horizontal = Space.screen).padding(bottom = Space.sm).fillMaxWidth(),
+                                onClick = { editing = position },
+                                onClickLabel = "Змінити"
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    EmojiGlyph(shownEmoji(pay), 32.dp)
+                                    Spacer(Modifier.width(Space.md))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(
+                                            pay.name,
+                                            fontSize = Type.bodySize,
+                                            fontWeight = Type.medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        TileCaption(
+                                            "${instalmentLine(pay, today)} · останній ${formatDate(instalmentLast(pay))}",
+                                            SurfaceRaised
+                                        )
+                                    }
+                                    EmojiGlyph("✅", 24.dp)
+                                }
+                            }
                         }
                     }
                 }
@@ -6082,7 +6268,10 @@ fun PaymentTile(
         )
         // The annual figure is the one that changes minds about a subscription;
         // an annual charge says both denominators. See [billingLine].
-        TileCaption(billingLine(pay), shown)
+        TileCaption(instalmentLine(pay, today) ?: billingLine(pay), shown)
+        if (isInstalment(pay)) {
+            InstalmentBar(instalmentsBehind(pay, today), pay.instalments, inkOn(shown), Modifier.padding(top = Space.xs))
+        }
         // The date the free ride ends: the one fact about this expense that expires.
         trialLabel(pay, today)?.let { free ->
             Text(
@@ -6167,6 +6356,9 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var trialEnd by remember { mutableLongStateOf(0L) }
     var billingMonth by remember { mutableIntStateOf(0) }
     var emoji by remember { mutableStateOf("") }
+    var plan by remember { mutableStateOf(false) }
+    var planCount by remember { mutableStateOf("") }
+    var planDone by remember { mutableStateOf("0") }
     // A free trial or a yearly fee is a decision as well as a charge, and a day's
     // notice at nine in the morning is often too late to make it. So the notice
     // moves to three days the moment either is set — visibly, on the chips, and
@@ -6196,7 +6388,9 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
                         listOf(PricePoint(value, today.toEpochDay())),
                         trialEnd,
                         billingMonth,
-                        emoji
+                        emoji,
+                        instalments = planTotal(plan, planCount),
+                        instalmentStart = planStart(plan, planCount, planDone, day, today)
                     )
                 )
             }
@@ -6219,8 +6413,22 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
         EmojiField(emoji, payEmoji(name)) { emoji = it }
         CurrencySegments(currency) { currency = it }
         NumberField(if (currency == USD) "Сума, $" else "Сума, ₴", amount) { amount = it }
-        BillingSegments(billingMonth, today) { billingMonth = it }
+        // A plan is monthly by definition, so the rhythm choice steps aside.
+        if (!plan) BillingSegments(billingMonth, today) { billingMonth = it }
         NumberField("День оплати", day) { day = it }
+        InstalmentFields(
+            on = plan,
+            count = planCount,
+            done = planDone,
+            day = day.toIntOrNull()?.coerceIn(1, 31) ?: 1,
+            today = today,
+            setOn = {
+                plan = it
+                if (it) billingMonth = 0
+            },
+            setCount = { planCount = it },
+            setDone = { planDone = it }
+        )
         TrialField(trialEnd, today) { trialEnd = it }
         firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today, billingMonth)
             ?.let { note ->
@@ -7635,6 +7843,8 @@ fun SettingsScreen(
     onOpenTab: (Int) -> Unit,
     /** The next seven days as weather — see Ideas.kt. */
     weather: List<MoneyDay>,
+    /** The card's own money from monobank, null when it is not connected. */
+    balance: Double?,
     /** The one wish that could be bought now without hurting the month. */
     treat: Treat?,
     onOpenWish: (String) -> Unit,
@@ -7708,6 +7918,7 @@ fun SettingsScreen(
     // The owner's Apple emoji, from a file of his own — see [EmojiPack] for why
     // they are not inside the app. Counted into state so the row updates.
     var emojiCount by remember { mutableIntStateOf(EmojiPack.count(context)) }
+    var monoOpen by remember { mutableStateOf(false) }
     var importingEmoji by remember { mutableStateOf(false) }
     val pickEmoji = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -7792,7 +8003,7 @@ fun SettingsScreen(
                     // The week ahead as weather: a rainy Wednesday seen on Monday.
                     if (weather.isNotEmpty()) {
                         Spacer(Modifier.height(Space.md))
-                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance))
+                        WeatherTile(weather, LocalDate.ofEpochDay(today), Modifier.revealOnEnter(2, entrance), balance)
                     }
                     // Four tiles, each the one figure its own tab is about, each a door
                     // into that tab. Bento rather than a column of rows: the four
@@ -8135,6 +8346,7 @@ fun SettingsScreen(
                         "надсилає Google назву й опис товару — без ціни і без ваших сум."
                 )
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
+                MonoSettingsItem { monoOpen = true }
                 ListItem(
                     leadingContent = { EmojiGlyph("😀", 28.dp) },
                     headlineContent = { Text("Емодзі Apple", fontWeight = FontWeight.Bold) },
@@ -8331,6 +8543,7 @@ fun SettingsScreen(
         }
         CollapsingTitle("Огляд", listState)
     }
+    if (monoOpen) MonoSheet { monoOpen = false }
     available?.let { update ->
         AlertDialog(
             onDismissRequest = { available = null },
@@ -8409,6 +8622,9 @@ fun EditPaymentSheet(
     var billingMonth by remember { mutableIntStateOf(pay.billingMonth) }
     var emoji by remember { mutableStateOf(pay.emoji) }
     val today = remember { LocalDate.now() }
+    var plan by remember { mutableStateOf(isInstalment(pay)) }
+    var planCount by remember { mutableStateOf(if (isInstalment(pay)) pay.instalments.toString() else "") }
+    var planDone by remember { mutableStateOf(instalmentsBehind(pay, today).toString()) }
     FormSheet(
         title = "Змінити витрату",
         confirmLabel = "Зберегти",
@@ -8426,8 +8642,16 @@ fun EditPaymentSheet(
                         day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
                         warnDays = warnDays,
                         trialEnd = trialEnd,
-                        billingMonth = billingMonth,
-                        emoji = emoji
+                        billingMonth = if (plan) 0 else billingMonth,
+                        emoji = emoji,
+                        instalments = planTotal(plan, planCount),
+                        instalmentStart = planStart(
+                            plan,
+                            planCount,
+                            planDone,
+                            day,
+                            today
+                        )
                     )
                 )
             }
@@ -8456,8 +8680,18 @@ fun EditPaymentSheet(
                 lineHeight = Type.captionLine
             )
         }
-        BillingSegments(billingMonth, today) { billingMonth = it }
+        if (!plan) BillingSegments(billingMonth, today) { billingMonth = it }
         NumberField("День оплати", day) { day = it }
+        InstalmentFields(
+            on = plan,
+            count = planCount,
+            done = planDone,
+            day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+            today = today,
+            setOn = { plan = it },
+            setCount = { planCount = it },
+            setDone = { planDone = it }
+        )
         TrialField(trialEnd, today) { trialEnd = it }
         // The reminder counts to this date, not to the free renewal before it.
         firstChargeNote(
@@ -8786,6 +9020,75 @@ fun TrialField(trialEnd: Long, today: LocalDate, set: (Long) -> Unit) {
  * of them — a week — is the difference between cancelling a subscription and
  * paying for another year of it.
  */
+/** How many payments a plan has, from the form: nought when it is not a plan. */
+fun planTotal(on: Boolean, count: String): Int =
+    if (on) (count.trim().toIntOrNull() ?: 0).coerceIn(0, MAX_INSTALMENTS) else 0
+
+/** The plan's first payment, from «усього» and «уже сплачено». Nought when it is not a plan. */
+fun planStart(on: Boolean, count: String, done: String, day: String, today: LocalDate): Long {
+    val total = planTotal(on, count)
+    if (total <= 0) return 0L
+    val behind = (done.trim().toIntOrNull() ?: 0).coerceIn(0, total)
+    return instalmentStartFor(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, behind, today)
+}
+
+/** Nobody pays anything off in more than ten years of monthly payments. */
+const val MAX_INSTALMENTS = 120
+
+/**
+ * «Частинами»: a switch, then how many payments and how many are already behind,
+ * and the date it all ends — said back, because that date is the point.
+ */
+@Composable
+fun InstalmentFields(
+    on: Boolean,
+    count: String,
+    done: String,
+    day: Int,
+    today: LocalDate,
+    setOn: (Boolean) -> Unit,
+    setCount: (String) -> Unit,
+    setDone: (String) -> Unit
+) {
+    Row(
+        Modifier.fillMaxWidth().clip(Radius.sm).clickable { setOn(!on) }.padding(vertical = Space.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(Modifier.weight(1f).padding(end = Space.md)) {
+            Text("Частинами", fontSize = Type.bodySize, fontWeight = Type.medium)
+            Text(
+                "Розстрочка чи кредит: після останнього платежу зникне з розкладу сама",
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
+        Switch(on, setOn)
+    }
+    if (on) {
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.md)) {
+            Box(Modifier.weight(1f)) { NumberField("Усього платежів", count, setCount) }
+            Box(Modifier.weight(1f)) { NumberField("Уже сплачено", done, setDone) }
+        }
+        val total = planTotal(true, count)
+        if (total > 0) {
+            val behind = (done.trim().toIntOrNull() ?: 0).coerceIn(0, total)
+            val sample = Pay("", 0.0, day, instalments = total, instalmentStart = instalmentStartFor(day, behind, today))
+            Text(
+                if (behind >= total) {
+                    "Усі платежі вже позаду"
+                } else {
+                    "Останній платіж — ${formatDate(instalmentLast(sample))}"
+                },
+                Modifier.padding(top = Space.xs),
+                color = TextSecondary,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
+    }
+}
+
 @Composable
 fun WarnDaysChips(warnDays: Int, set: (Int) -> Unit) {
     Column(Modifier.fillMaxWidth().padding(top = Space.md)) {

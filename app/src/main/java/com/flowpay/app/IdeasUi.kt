@@ -49,7 +49,13 @@ import java.time.LocalDate
  * leaves, and one sentence naming the worst day.
  */
 @Composable
-fun WeatherTile(days: List<MoneyDay>, today: LocalDate, modifier: Modifier = Modifier) {
+fun WeatherTile(
+    days: List<MoneyDay>,
+    today: LocalDate,
+    modifier: Modifier = Modifier,
+    /** The card's own money from monobank, when connected — see Mono.kt. */
+    balance: Double? = null
+) {
     BentoTile(TileSky, modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -88,6 +94,16 @@ fun WeatherTile(days: List<MoneyDay>, today: LocalDate, modifier: Modifier = Mod
         }
         Spacer(Modifier.height(Space.sm))
         TileCaption(weatherLine(days, today), TileSky)
+        balance?.let {
+            Text(
+                balanceLine(it, days),
+                Modifier.padding(top = Space.xs),
+                color = TileInk,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine,
+                fontWeight = Type.medium
+            )
+        }
     }
 }
 

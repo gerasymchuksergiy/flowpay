@@ -338,6 +338,18 @@ fun EmojiHeader(emoji: String, colour: Color, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * How far a plan «частинами» has got: a bar on the tile, filled to the share of
+ * payments behind it — and grown from nought when the tab opens.
+ */
+@Composable
+fun InstalmentBar(done: Int, total: Int, ink: Color, modifier: Modifier = Modifier) {
+    val share = entranceFraction(if (total > 0) done.toFloat() / total else 0f, delayMs = 320L)
+    Box(modifier.fillMaxWidth().height(6.dp).clip(Radius.pill).background(ink.copy(alpha = 0.15f))) {
+        Box(Modifier.fillMaxWidth(share.coerceIn(0f, 1f)).height(6.dp).background(ink, Radius.pill))
+    }
+}
+
 /** The quieter text of a tile, in one place so every tile reads alike. */
 @Composable
 fun TileCaption(text: String, colour: Color, modifier: Modifier = Modifier, maxLines: Int = 2) {

@@ -877,3 +877,55 @@ tiles in `IdeasUi.kt`. Rendered on the JVM; **not seen on the phone.**
 Kept in reserve, proposed to the owner and not built: price in hours of work, a
 savings plant that grows with the savings.
 
+---
+
+## 18. «Частинами» and monobank (4 October 2026)
+
+Both asked for by the owner («роби monobank і частинами») after the ten-app
+research (artifact «Що взяти в інших»). Tested on the JVM; **monobank has never
+talked to the real API from this code** — the owner's own token is the first
+real test.
+
+### «Частинами» (Payments.kt)
+- Two fields on `Pay`: `instalments` (count, JSON `ic`) and `instalmentStart`
+  (epoch day of the first payment, `is`). Monthly only (`isInstalment` is false
+  for an annual fee).
+- **`chargesIn` is what starts and stops a plan** — every total, record, strip and
+  the weather follow from it. `nextDateFor` returns the first payment before a
+  plan starts. `isFinished` (last payment behind today) removes a plan from
+  `stillOwing`, `nextPayment` and `paymentGroups`; finished plans are listed under
+  «Розстрочки, які закінчились» until deleted.
+- The form asks «Усього платежів» and «Уже сплачено» (`instalmentStartFor`), not a
+  first date nobody remembers, and says back the last date. The tile shows
+  «платіж 3 з 6 · останній 15 січня» and a bar; the year card says
+  «Після … звільниться …» (`freedLine`, plans ending within six months).
+- `yearlyCost` of a plan is the whole plan; `yearlyCharge` only its payments still
+  to come (≤ 12).
+
+### monobank (Mono.kt pure, MonoSync.kt Android, MonoUi.kt screens)
+- **Token:** the owner's personal read-only token from api.monobank.ua, sealed
+  with an AES-GCM key in the Android keystore (`MonoVault`); prefs file
+  `flowpay-mono` holds token, accounts, jars and ~100 days of operations. Not in
+  any export or backup (Android backup is off in the manifest). «Відключити»
+  deletes the file, the key and every wish's jar link.
+- **Calls:** `/personal/client-info`, `/personal/statement/{acc}/{from}/{to}`;
+  61 s between calls (limit 1/60 s), windows ≤ 31 days, paging at 500. First pass
+  reads 93 days (three months for the subscription finder), later passes from the
+  last read minus two days. `MonoWorker` every 6 h (network required), plus
+  «Оновити зараз»; a `Mutex` keeps passes from overlapping in-process.
+- **Ask before deciding** (the research's strongest rule): `monoMatches` finds,
+  per unmarked month (this one and last), the charge on the due date −4…+6 days
+  that fits: LEARNED (merchant the owner confirmed; ±40%), NAMED (description
+  names the payment, incl. transliteration and aliases; ±25%), AMOUNT_ONLY (near
+  exact, ±2 days). Only LEARNED ticks by itself (switchable); the rest are asked
+  on Платежі — «Так, сплачено» marks the month at the charged amount and stores
+  `Pay.monoMerchant` (JSON `mm`); «Ні» is remembered per operation and payment.
+  Transfers and cash (`NOT_A_PAYMENT_MCC`) never match.
+- **Also:** `findSubscriptions` (same merchant 2+ times 25–36 days apart, ±10%,
+  not on the list) with «Додати» / «Не підписка»; `monoDrifts` («Ціна змінилась»
+  → `withAmount`, so «було → стало» and the digest see it); the card's own money
+  (balance − credit line) under «Фінансова погода» with «не вистачить … до …»;
+  `Wish.jar` (JSON `jr`) — a wish's «Вже відкладено» follows a monobank jar.
+- The JVM screenshots seed `flowpay-mono` with a fake token string and a sample
+  statement (the keystore does not exist under Robolectric).
+
