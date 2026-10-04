@@ -27,8 +27,14 @@ import com.flowpay.app.TAB_WISHES
 import com.flowpay.app.UAH
 import com.flowpay.app.Wish
 import com.flowpay.app.WishSource
+import com.flowpay.app.FlowPayOverlayTheme
+import com.flowpay.app.SheetRoute
+import com.flowpay.app.ShopSheet
+import com.flowpay.app.ShopSheetSignal
+import com.flowpay.app.addFromSheet
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.github.takahirom.roborazzi.captureScreenRoboImage
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -45,6 +51,7 @@ import java.time.LocalDate
  * tall, so the whole wish page is one picture. Run with `-Pshots`; the PNGs land in
  * app/build/outputs/roborazzi/ as `p*.png`.
  */
+@OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34], qualifiers = "uk-rUA-w360dp-h2600dp-440dpi")
@@ -112,6 +119,50 @@ class PricesShots {
     // The same at a larger system font, where three buttons in a row are tightest.
     @Test @Config(qualifiers = "uk-rUA-w360dp-h2600dp-440dpi", fontScale = 1.15f)
     fun wishPageLargeFont() = page("p1b-wish-page-font115", "Навушники JBL Tune 520BT Black")
+
+    /**
+     * The sheet over a shop, for a wish already watched. A sheet is a second window,
+     * so the clock is driven by hand and the whole screen captured, as for the dialog.
+     */
+    @Test fun shopSheet() {
+        rule.setContent {
+            FlowPayOverlayTheme { ShopSheet(SheetRoute.Known("w1"), onClose = {}, onOpenApp = {}) }
+        }
+        rule.mainClock.autoAdvance = false
+        repeat(20) {
+            rule.mainClock.advanceTimeBy(100)
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        }
+        captureScreenRoboImage("build/outputs/roborazzi/p4-shop-sheet.png")
+    }
+
+    /**
+     * Not a picture: the check that a wish the sheet adds survives the main screen.
+     *
+     * The main screen holds the list in memory and saves that copy on the next
+     * change. The sheet writes to the store and bumps [ShopSheetSignal]; the screen
+     * must read the list again, so a hold put on another wish afterwards — a save of
+     * the whole list — keeps the sheet's wish.
+     */
+    @Test fun sheetWishSurvivesTheMainScreen() {
+        val app = RuntimeEnvironment.getApplication()
+        rule.setContent { FlowPayApp(rule.activity, AppCommand.OpenTab(TAB_WISHES)) }
+        rule.waitForIdle()
+        val added = Wish(
+            "w9", "Новий з аркуша", "https://prom.ua/ua/p9.html", "", 500.0,
+            history = listOf(PricePoint(500.0, day))
+        )
+        assertTrue(addFromSheet(app, added))
+        rule.waitForIdle()
+        rule.onAllNodesWithText("Навушники JBL Tune 520BT Black")[0].performClick()
+        rule.waitForIdle()
+        rule.onAllNodesWithText("Тиждень")[0].performClick()
+        rule.waitForIdle()
+
+        val stored = Store(app).wishes()
+        assertTrue("the sheet's wish was saved over", stored.any { it.id == "w9" })
+        assertTrue("the hold was not saved", stored.first { it.id == "w1" }.holdUntil > day)
+    }
 
     private fun rozetkaWish(): Wish {
         val url = "https://rozetka.com.ua/ua/jbl_jblt520btblkeu/p369896649/"

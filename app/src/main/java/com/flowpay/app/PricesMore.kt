@@ -360,6 +360,108 @@ fun gapsOf(array: JSONArray?): List<StockGap> {
     }.filter { it.from > 0L }
 }
 
+// ------------------------------------------------- the sheet over the shop's app
+
+/** What a share into the sheet (ShopSheet.kt) turns out to be. */
+sealed interface SheetRoute {
+    /** A link already watched: its chart and verdict, over the shop. */
+    data class Known(val id: String) : SheetRoute
+
+    /** A shop's page not on the list yet: today's price and «Стежити». */
+    data class New(val url: String) : SheetRoute
+
+    /** Anything else goes to the app's own router, exactly as before. */
+    data object Forward : SheetRoute
+}
+
+/**
+ * More text than this around the link and it is not a shop's share — a shop puts a
+ * title or a slogan beside the address — but a letter or a message with a link in
+ * it, which the app's own router reads (a subscription e-mail, a carrier's SMS).
+ */
+const val SHARE_TEXT_LIMIT = 280
+
+/**
+ * Where a share goes: the sheet over the shop, or the app's own router.
+ *
+ * The sheet takes only a shop's link — one already watched, or a new one — shared
+ * with little around it. A parcel number anywhere in the text, a Hotline page (bound
+ * as a market in the app), no link at all, or a long text with a link in it all go
+ * on to [AppCommand.AddShared] untouched, so every rule that router has, and any it
+ * gains, still applies to them.
+ */
+fun shopSheetRoute(text: String?, wishes: List<Wish>): SheetRoute {
+    val body = text.orEmpty()
+    if (body.isBlank() || trackingNumberIn(body) != null) return SheetRoute.Forward
+    return when (val link = sharedLink(body, wishes)) {
+        is SharedLink.Known -> SheetRoute.Known(link.wish.id)
+        is SharedLink.New -> when {
+            hotlineProductUrl(link.url) != null -> SheetRoute.Forward
+            body.trim().length - link.url.length > SHARE_TEXT_LIMIT -> SheetRoute.Forward
+            else -> SheetRoute.New(link.url)
+        }
+        SharedLink.Missing -> SheetRoute.Forward
+    }
+}
+
+/**
+ * What the thing usually cost over the reference window: each price weighted by the
+ * days it stood, today's included. Nought when there is nothing dated to weigh.
+ *
+ * Weighted by time rather than averaged over points, because only changes are
+ * recorded: a price that held for four weeks and one that held for an afternoon are
+ * one point each, and only one of them is what the thing "usually" cost.
+ */
+fun usualPrice(history: List<PricePoint>, current: Double, today: Long): Double {
+    val points = windowPrices(history, current, today)
+    if (points.size < 2) return 0.0
+    val opens = today - REFERENCE_WINDOW_DAYS + 1
+    var weighted = 0.0
+    var days = 0L
+    points.zipWithNext { held, next ->
+        val from = maxOf(held.day, opens)
+        if (next.day > from) {
+            weighted += held.price * (next.day - from)
+            days += next.day - from
+        }
+    }
+    // Today's price stands for today.
+    weighted += points.last().price
+    days += 1
+    return weighted / days
+}
+
+/**
+ * «Нижче звичайного на 6%» — the sheet's one-line verdict, or null while the history
+ * is too short for the verdict itself to speak ([BuyVerdict.UNKNOWN]).
+ */
+fun usualLine(insight: PriceInsight, usual: Double): String? {
+    if (insight.verdict == BuyVerdict.UNKNOWN || usual <= 0.0 || insight.current <= 0.0) return null
+    val difference = (insight.current - usual) / usual * 100
+    return when {
+        kotlin.math.abs(difference) < 1.0 -> "Звичайна ціна за ${daysLabel(insight.referenceDays)}"
+        difference < 0 -> "Нижче звичайного на ${figure(-difference, 0)}%"
+        else -> "Вище звичайного на ${figure(difference, 0)}%"
+    }
+}
+
+/** The target, in the sheet's words. */
+fun sheetTargetLine(wish: Wish): String = when {
+    wish.targetPrice <= 0.0 -> "Ціль не задано — її можна поставити у FlowPay"
+    wish.price > 0.0 && wish.price <= wish.targetPrice && !isStale(wish.freshness) ->
+        "Ціль ${money(wish.targetPrice)} — досягнуто"
+    wish.price > wish.targetPrice -> "Ціль ${money(wish.targetPrice)} — ще ${money(wish.price - wish.targetPrice)}"
+    else -> "Ціль ${money(wish.targetPrice)}"
+}
+
+/** How fresh the figure in the sheet is: «перевірено сьогодні», «перевірено 3 жовтня». */
+fun checkedLine(checkedDay: Long, today: Long): String? = when {
+    checkedDay <= 0L -> null
+    checkedDay >= today -> "перевірено сьогодні"
+    checkedDay == today - 1 -> "перевірено вчора"
+    else -> "перевірено ${dayMonth(java.time.LocalDate.ofEpochDay(checkedDay))}"
+}
+
 // ------------------------------------------------- Black Friday in the November recap
 
 /**

@@ -17,14 +17,9 @@
    android:exported="true"
    android:launchMode="singleTask">
    <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
-   <!-- Browsers and shop apps hand a link over as text/plain; a few send it as
-        text/html instead, which is the same string with a tag around it. -->
-   <intent-filter>
-    <action android:name="android.intent.action.SEND"/>
-    <category android:name="android.intent.category.DEFAULT"/>
-    <data android:mimeType="text/plain"/>
-    <data android:mimeType="text/html"/>
-   </intent-filter>
+   <!-- «Поділитися» now reaches ShopSheetActivity below first. It hands on to this
+        activity, as an explicit intent, everything that is not a shop's link: a
+        parcel number, an e-mail, a Hotline page, text with no link. -->
    <!-- What a long press on the Quick Settings tile looks for. Without it the
         system falls back to the App info screen; the ACTIVITY_NAME meta-data on
         the service below is not a key the platform reads. -->
@@ -33,6 +28,25 @@
     <category android:name="android.intent.category.DEFAULT"/>
    </intent-filter>
    <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
+  </activity>
+  <!-- «Аркуш поверх магазину» (ShopSheet.kt): the share target. A see-through
+       window over the shop's app, never in recents, gone once the owner leaves
+       it, and outside the app's own task so «Готово» lands back in the shop.
+       Browsers and shop apps hand a link over as text/plain; a few send it as
+       text/html instead, which is the same string with a tag around it. -->
+  <activity
+   android:name=".ShopSheetActivity"
+   android:exported="true"
+   android:theme="@style/Theme.FlowPay.Sheet"
+   android:excludeFromRecents="true"
+   android:noHistory="true"
+   android:taskAffinity="">
+   <intent-filter>
+    <action android:name="android.intent.action.SEND"/>
+    <category android:name="android.intent.category.DEFAULT"/>
+    <data android:mimeType="text/plain"/>
+    <data android:mimeType="text/html"/>
+   </intent-filter>
   </activity>
   <!-- One figure in the notification shade, reachable without leaving whatever
        is on screen. Exported because Quick Settings binds it from the system

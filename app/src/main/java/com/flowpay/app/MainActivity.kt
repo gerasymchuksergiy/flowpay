@@ -2030,6 +2030,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // lists here are read again when it ends, as after any background pass.
     val monoVersion = MonoStore.version
     LaunchedEffect(monoVersion) { if (monoVersion > 0) reload() }
+    // The sheet over a shop (ShopSheet.kt) writes a new wish straight into the store
+    // while this screen may still be alive behind it; the list is read again at
+    // once, so nothing here saves its older copy over the new wish.
+    val sheetVersion = ShopSheetSignal.version
+    LaunchedEffect(sheetVersion) { if (sheetVersion > 0) reload() }
     val monoBalance = remember(monoVersion) {
         MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
     }

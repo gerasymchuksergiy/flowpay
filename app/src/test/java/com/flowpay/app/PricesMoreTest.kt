@@ -535,6 +535,72 @@ class PricesMoreTest {
         assertNull(wishOf(wishJson(rozetkaWish())).market)
     }
 
+    // ------------------------------------------------- the sheet over the shop's app
+
+    @Test
+    fun `a shop's share goes to the sheet, a known one as known`() {
+        val wishes = listOf(rozetkaWish())
+
+        assertEquals(SheetRoute.Known("w1"), shopSheetRoute("Навушники JBL $rozetkaUrl", wishes))
+        assertEquals(
+            SheetRoute.New("https://prom.ua/ua/p2928860537-komplekt.html"),
+            shopSheetRoute("Подивись, що я знайшов на Prom.ua: https://prom.ua/ua/p2928860537-komplekt.html", wishes)
+        )
+    }
+
+    @Test
+    fun `everything else goes on to the app's own router untouched`() {
+        val wishes = listOf(rozetkaWish())
+
+        // A carrier's SMS with a link and a parcel number: Покупки decides.
+        assertEquals(
+            SheetRoute.Forward,
+            shopSheetRoute("Ваше відправлення 2045 0000 0000 01 прямує. Деталі: https://novaposhta.ua/t", wishes)
+        )
+        // A Hotline page is bound as a market in the app.
+        assertEquals(SheetRoute.Forward, shopSheetRoute(hotlineUrl, wishes))
+        // A letter with a link in it is not a shop's share.
+        val letter = "Дякуємо за підписку! ".repeat(20) + "Керувати: https://example.com/account"
+        assertEquals(SheetRoute.Forward, shopSheetRoute(letter, wishes))
+        assertEquals(SheetRoute.Forward, shopSheetRoute("просто текст", wishes))
+        assertEquals(SheetRoute.Forward, shopSheetRoute(null, wishes))
+    }
+
+    @Test
+    fun `the usual price weighs each price by the days it stood`() {
+        // 1 000 for the first twenty days of the window, 900 since.
+        val today = 20_400L
+        val history = listOf(PricePoint(1000.0, today - 40), PricePoint(900.0, today - 9))
+
+        val usual = usualPrice(history, 900.0, today)
+
+        // Window opens on today - 29: 20 days at 1 000, 9 days at 900, and today at 900.
+        assertEquals((20 * 1000.0 + 9 * 900.0 + 900.0) / 30, usual, 0.001)
+        val insight = priceInsight(history, 900.0, today)
+        // 900 against 966,67: 6,9 per cent under; 1 000 would be 3,4 per cent over.
+        assertEquals("Нижче звичайного на 7%", usualLine(insight, usual))
+        assertEquals("Вище звичайного на 3%", usualLine(insight.copy(current = 1000.0), usual))
+    }
+
+    @Test
+    fun `with too little history the sheet makes no claim about usual`() {
+        val young = priceInsight(listOf(PricePoint(1000.0, 20_398L)), 1000.0, 20_400L)
+
+        assertNull(usualLine(young, usualPrice(listOf(PricePoint(1000.0, 20_398L)), 1000.0, 20_400L)))
+    }
+
+    @Test
+    fun `the target and the check, in the sheet's words`() {
+        val wish = rozetkaWish()
+
+        assertEquals("Ціль не задано — її можна поставити у FlowPay", sheetTargetLine(wish))
+        assertEquals("Ціль 1 550 ₴ — ще 49 ₴", plain(sheetTargetLine(wish.copy(targetPrice = 1550.0))))
+        assertEquals("Ціль 1 600 ₴ — досягнуто", plain(sheetTargetLine(wish.copy(targetPrice = 1600.0))))
+        assertEquals("перевірено сьогодні", checkedLine(20_400L, 20_400L))
+        assertEquals("перевірено вчора", checkedLine(20_399L, 20_400L))
+        assertNull(checkedLine(0L, 20_400L))
+    }
+
     // ------------------------------------------------- Black Friday in the November recap
 
     private val friday = blackFriday(2026).toEpochDay()
