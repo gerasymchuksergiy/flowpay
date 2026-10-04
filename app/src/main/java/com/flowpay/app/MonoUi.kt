@@ -87,7 +87,8 @@ fun MonoSettingsItem(onOpen: () -> Unit) {
     ListItem(
         leadingContent = { EmojiGlyph("🏦", 28.dp) },
         headlineContent = { Text("monobank", fontWeight = FontWeight.Bold) },
-        supportingContent = { Text(line, color = if (alarm) Negative else TextSecondary) },
+        // The card's balance hides with the eye on Огляд (Privacy.kt).
+        supportingContent = { Text(personal(line), color = if (alarm) Negative else TextSecondary) },
         trailingContent = {
             OutlinedButton(
                 onClick = onOpen,
@@ -194,7 +195,7 @@ fun MonoSheet(onClose: () -> Unit) {
                         Column(Modifier.weight(1f)) {
                             Text("${account.label} · ${currencyLabel(account.currencyCode)}", fontSize = Type.bodySize)
                             Text(
-                                "${account.type} · ${amountLabelMinor(account.own, account.currencyCode)}",
+                                personal("${account.type} · ${amountLabelMinor(account.own, account.currencyCode)}"),
                                 color = TextSecondary,
                                 fontSize = Type.captionSize
                             )
@@ -305,7 +306,7 @@ fun MonoMatchesTile(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    TileCaption(matchLine(match), TileMint, maxLines = 3)
+                    TileCaption(personal(matchLine(match)), TileMint, maxLines = 3)
                 }
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -351,7 +352,7 @@ fun MonoDriftsTile(drifts: List<Pair<Pay, Double>>, modifier: Modifier = Modifie
                 Column(Modifier.weight(1f)) {
                     Text(pay.name, fontSize = Type.bodySize, fontWeight = Type.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     TileCaption(
-                        "у FlowPay ${amountLabel(pay.amount, pay.currency)} → списано ${amountLabel(charged, pay.currency)}",
+                        personal("у FlowPay ${amountLabel(pay.amount, pay.currency)} → списано ${amountLabel(charged, pay.currency)}"),
                         TilePeach
                     )
                 }
@@ -388,7 +389,7 @@ fun FoundSubscriptionsTile(
                 Column(Modifier.weight(1f)) {
                     Text(prettyMerchant(item.title), fontSize = Type.bodySize, fontWeight = Type.medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     TileCaption(
-                        "${amountLabel(item.amount, item.currency)} щомісяця, близько ${item.day} числа · списань поспіль: ${item.times}",
+                        personal("${amountLabel(item.amount, item.currency)} щомісяця, близько ${item.day} числа · списань поспіль: ${item.times}"),
                         TileLavender
                     )
                 }
@@ -446,13 +447,15 @@ fun JarLink(wish: Wish, onLink: (jar: String, saved: Double?) -> Unit, onUnlink:
                 fontWeight = Type.medium
             )
             Text(
-                if (linked != null) {
-                    "${amountLabelMinor(linked.balance, linked.currencyCode)}" +
-                        (if (linked.goal > 0) " з ${amountLabelMinor(linked.goal, linked.currencyCode)}" else "") +
-                        " · «Вже відкладено» береться з банки"
-                } else {
-                    "Прив'яжіть — і відкладене братиметься з банки само"
-                },
+                personal(
+                    if (linked != null) {
+                        "${amountLabelMinor(linked.balance, linked.currencyCode)}" +
+                            (if (linked.goal > 0) " з ${amountLabelMinor(linked.goal, linked.currencyCode)}" else "") +
+                            " · «Вже відкладено» береться з банки"
+                    } else {
+                        "Прив'яжіть — і відкладене братиметься з банки само"
+                    }
+                ),
                 color = TextSecondary,
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine
@@ -474,7 +477,7 @@ fun JarLink(wish: Wish, onLink: (jar: String, saved: Double?) -> Unit, onUnlink:
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(jar.title, Modifier.weight(1f), fontSize = Type.bodySize)
-                            Text(amountLabelMinor(jar.balance, jar.currencyCode), color = TextSecondary, fontSize = Type.captionSize)
+                            Text(personalFigure(amountLabelMinor(jar.balance, jar.currencyCode)), color = TextSecondary, fontSize = Type.captionSize)
                         }
                     }
                 }

@@ -24,7 +24,6 @@ import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.lifecycleScope
-import androidx.glance.appwidget.updateAll
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -543,6 +542,9 @@ class MainActivity : ComponentActivity() {
         // scheduling only once a folder exists would mean a folder chosen while the
         // app was already running never got a job at all.
         BackupWorker.schedule(this)
+        // The eye on Огляд, as it was left — set before the first frame, so a
+        // hidden sum is never drawn even once. See Privacy.kt.
+        SumsMask.set(TouchPrefs(this).hideInside())
         setContent { FlowPayApp(this, command) { command = null } }
     }
 
@@ -556,7 +558,9 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         // Leaving the app is the moment the home screen is about to be looked at,
         // and by then anything edited in this session has already been saved.
-        lifecycleScope.launch { FlowPayWidget().updateAll(this@MainActivity) }
+        // Through refreshWidget: a bare updateAll is ignored by a widget session
+        // that is still running (Widget.kt).
+        lifecycleScope.launch { refreshWidget(this@MainActivity) }
     }
 
     // Read as a CharSequence: a text/html share arrives as a styled Spanned, and
@@ -1799,6 +1803,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // A tracking number that arrived through the share sheet, waiting for the
     // purchases tab to open its add form with it.
     var sharedTracking by remember { mutableStateOf<String?>(null) }
+    // A letter about a subscription from the share sheet, waiting for Платежі to
+    // open «Новий платіж» filled in, or to offer the new price (SubscriptionText.kt).
+    var sharedLetter by remember { mutableStateOf<SharedLetter?>(null) }
     // Both read pruned: a month that fell out of the year, or an entry past its
     // thirty days, is dropped on the way out of the store rather than lingering
     // in memory until something happens to write the list back.
@@ -1867,15 +1874,29 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     staleMessage(staleCount(merged))?.let { say(it) }
                 }
             }
-            // A Nova Poshta waybill anywhere in the words of the message makes it a
-            // parcel, link or no link: an SMS from a shop carries the order's link
-            // beside the number, and the link used to win. Its own early branch, so
-            // whatever else the router learns to do with links comes after it. See
-            // [sharedParcelNumber]; a waybill already on the list opens its parcel.
-            is AppCommand.AddShared -> sharedParcelNumber(command.text)?.let { number ->
-                sharedTracking = number
-                tab = TAB_ORDERS
-            } ?: noticeScope.launch { when (val link = sharedLink(command.text, wishes)) {
+            is AppCommand.AddShared -> noticeScope.launch {
+                // A letter about a subscription, asked first: such a letter nearly
+                // always carries a link, and an order number in it can look like a
+                // waybill. It has to use a subscription's own words — SubscriptionText.kt.
+                subscriptionLetter(command.text, pays, LocalDate.now())?.let { letter ->
+                    if (letter is SharedLetter.SamePrice) {
+                        say("«${letter.pay.name}» уже є в платежах — ціна та сама")
+                    } else {
+                        sharedLetter = letter
+                    }
+                    tab = TAB_PAYMENTS
+                    return@launch
+                }
+                // A Nova Poshta waybill anywhere in the words of the message makes it a
+                // parcel, link or no link: an SMS from a shop carries the order's link
+                // beside the number, and the link used to win. See [sharedParcelNumber];
+                // a waybill already on the list opens its parcel.
+                sharedParcelNumber(command.text)?.let { number ->
+                    sharedTracking = number
+                    tab = TAB_ORDERS
+                    return@launch
+                }
+                when (val link = sharedLink(command.text, wishes)) {
                 // No link, but a parcel number — an SMS or a Viber message from the
                 // carrier. That is a purchase on its way, so it goes to Покупки
                 // with the number already typed.
@@ -2067,6 +2088,11 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // lists here are read again when it ends, as after any background pass.
     val monoVersion = MonoStore.version
     LaunchedEffect(monoVersion) { if (monoVersion > 0) reload() }
+    // «Сплачено» from the widget or the morning message, made while this screen
+    // was open: the marks are read again so it shows, and so the next tick here
+    // starts from them (QuickActions.kt).
+    val quickVersion = QuickMarks.version
+    LaunchedEffect(quickVersion) { if (quickVersion > 0) paid = store.paidMarks() }
     val monoBalance = remember(monoVersion) {
         MonoStore(context).let { mono -> mono.client()?.takeIf { mono.connected() }?.let { ownUah(it, mono.accountsToRead(it)) } }
     }
@@ -2239,7 +2265,8 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                 // compact title both want the top strip, and one covering the other
                 // would leave you unable to read either.
                 StatusPill(
-                    note,
+                    // A payment's sum hides with the eye on Огляд; a shop's price does not.
+                    note?.let { if (it.kind == StatusKind.PAYMENT) it.copy(detail = personal(it.detail)) else it },
                     onDismiss = { shown ->
                         val mark = NoteDismissal(shown.key, today.toEpochDay())
                         dismissedNote = mark
@@ -2330,7 +2357,13 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             adding = adding,
                             setAdding = { adding = it },
                             paid = paid,
-                            setPaid = { marks -> paid = marks; store.savePaidMarks(marks) },
+                            // Onto the marks as the store has them, not over them: the
+                            // widget and the morning message may have marked something
+                            // since this list was read (QuickActions.kt, HANDOFF §15).
+                            setPaid = { marks ->
+                                val before = paid
+                                paid = store.updatePaidMarks { now -> rebaseMarks(now, before, marks) }
+                            },
                             onDelete = { deletePay(it) },
                             orders = orders,
                             // A plan's purchase went back: the purchase says so.
@@ -2338,7 +2371,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                                 val next = orders.map { if (it.id == id) it.copy(planReturned = day) else it }
                                 orders = next
                                 store.saveOrders(next)
-                            }
+                            },
+                            shared = sharedLetter,
+                            onSharedUsed = { sharedLetter = null }
                         )
                         TAB_ORDERS -> OrdersScreen(
                             items = orders,
@@ -3957,10 +3992,11 @@ fun PlanTile(label: String, value: String, modifier: Modifier = Modifier, muted:
         shape = Radius.sm
     ) {
         Column(Modifier.padding(Space.lg)) {
-            Text(label, color = TextSecondary, fontSize = Type.captionSize)
+            // Only ever a savings plan, which is the owner's own money (Privacy.kt).
+            Text(personal(label), color = TextSecondary, fontSize = Type.captionSize)
             Spacer(Modifier.height(Space.xs))
             Text(
-                value,
+                personal(value),
                 fontSize = Type.sectionSize,
                 lineHeight = Type.sectionLine,
                 fontWeight = if (muted) Type.regular else Type.strong,
@@ -4648,15 +4684,16 @@ fun SharedTransitionScope.WishDetailScreen(
             // the reason for opening it.
             CollapsibleSection(
                 title = "План накопичення",
-                summary = planSummary,
+                summary = personal(planSummary),
                 open = planOpen,
                 onToggle = { planOpen = it; store.saveSectionOpen(SECTION_PLAN, it) }
             ) {
                 Column(Modifier.padding(horizontal = Space.screen)) {
                     HeroPanel(
                         label = if (plan.reached) "Сума зібрана" else "Залишилось зібрати",
-                        value = money(plan.remaining),
-                        caption = "${money(plan.saved)} з ${money(plan.goal)}",
+                        // Savings are the owner's; the goal beside them would give them away.
+                        value = personalFigure(money(plan.remaining)),
+                        caption = personal("${money(plan.saved)} з ${money(plan.goal)}"),
                         muted = plan.reached,
                         trailing = {
                             ProgressRing(plan.progress, diameter = 84.dp, stroke = 9.dp) {
@@ -4681,7 +4718,7 @@ fun SharedTransitionScope.WishDetailScreen(
                         onUnlink = { onChange(wish.copy(jar = "")) }
                     )
                     if (wish.jar.isBlank()) {
-                        NumberField("Вже відкладено, ₴", savedText) { savedText = it }
+                        PersonalNumberField("Вже відкладено, ₴", savedText) { savedText = it }
                     }
 
                     // The plan can be read from either end. Say what you can put aside
@@ -4714,7 +4751,7 @@ fun SharedTransitionScope.WishDetailScreen(
                         ) {
                             Column(Modifier.weight(1f)) {
                                 Text(
-                                    "Вільно після витрат ${money(freeCash)} на місяць",
+                                    personal("Вільно після витрат ${money(freeCash)} на місяць"),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine
@@ -4746,7 +4783,7 @@ fun SharedTransitionScope.WishDetailScreen(
                             )
                         }
                     } else {
-                        NumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
+                        PersonalNumberField("Відкладаю щомісяця, ₴", monthlyText) { monthlyText = it }
                     }
 
                     Spacer(Modifier.height(Space.lg))
@@ -5877,7 +5914,10 @@ fun PaymentsScreen(
     /** Purchases a plan «частинами» can be tied to — see PaymentsLife.kt. */
     orders: List<Order> = emptyList(),
     /** A plan's purchase went back: the purchase says so. */
-    onOrderReturned: (orderId: String, day: Long) -> Unit = { _, _ -> }
+    onOrderReturned: (orderId: String, day: Long) -> Unit = { _, _ -> },
+    /** A letter about a subscription shared into the app, waiting here. */
+    shared: SharedLetter? = null,
+    onSharedUsed: () -> Unit = {}
 ) {
     val touch = rememberTouch()
     // The rate the exchange screen already fetched and cached. Dollar entries are
@@ -5999,13 +6039,13 @@ fun PaymentsScreen(
                             } else {
                                 "Разом на місяць"
                             },
-                            value = money(next?.total?.total ?: monthly.total),
+                            value = personalFigure(money(next?.total?.total ?: monthly.total)),
                             caption = when {
                                 next == null -> null
                                 next.total.rateMissing ->
                                     "${dayMonth(next.date)} · плюс ${dollars(next.total.usd)}, курс ще не завантажено"
                                 else -> "${dayMonth(next.date)} · ${dueSummary(next.items)}"
-                            },
+                            }?.let { personal(it) },
                             muted = next == null,
                             // The next thirty days belong to the next payment's panel —
                             // one thought, "what leaves and when", in one block. On the
@@ -6040,7 +6080,7 @@ fun PaymentsScreen(
                                     EmojiGlyph("✅", 24.dp, Modifier.popOnRise(record.paidCount))
                                 }
                                 Spacer(Modifier.height(Space.xs))
-                                SplitFigure(totalLabel(record.paid), 22.sp)
+                                SplitFigure(personalFigure(totalLabel(record.paid)), 22.sp)
                                 Spacer(Modifier.weight(1f))
                                 Spacer(Modifier.height(Space.sm))
                                 TileCaption(
@@ -6063,11 +6103,11 @@ fun PaymentsScreen(
                                 Column(Modifier.padding(Space.lg)) {
                                     // A year of the same costs, because that is the scale at
                                     // which a subscription is worth arguing with.
-                                    LeaderRow("Разом на рік", money(yearly.total))
+                                    LeaderRow("Разом на рік", personalFigure(money(yearly.total)))
                                     // When a plan «частинами» ends, the month gets that much back.
                                     freedLine(items, today, rate.sell)?.let { line ->
                                         Text(
-                                            line,
+                                            personal(line),
                                             Modifier.padding(top = Space.xs),
                                             color = TextPrimary,
                                             fontSize = Type.captionSize,
@@ -6080,7 +6120,7 @@ fun PaymentsScreen(
                                     // is the figure that gets something cancelled.
                                     yearlyShiftNote(shift)?.let { note ->
                                         Text(
-                                            note,
+                                            personal(note),
                                             Modifier.padding(top = Space.xs),
                                             color = TextSecondary,
                                             fontSize = Type.captionSize,
@@ -6096,20 +6136,20 @@ fun PaymentsScreen(
                                         LeaderRow(
                                             // A promo is a discount, not a free period.
                                             if (trials.any { isPromo(it) }) "Після знижок і пробних" else "Після пробних періодів",
-                                            money(committed.total)
+                                            personalFigure(money(committed.total))
                                         )
                                     }
                                     if (monthly.rateMissing) {
                                         // Both totals are short by this much, so it is said as
                                         // a gap rather than folded in as a smaller number.
                                         LeaderRow(
-                                            "Плюс ${dollars(yearly.usd)} на рік",
+                                            personal("Плюс ${dollars(yearly.usd)} на рік"),
                                             "курс ще не завантажено"
                                         )
                                     } else if (monthly.hasUsd) {
                                         LeaderRow(
-                                            "З них ${dollars(yearly.usd)} на рік",
-                                            "≈ ${approxMoney(yearly.usdInUah)}"
+                                            personal("З них ${dollars(yearly.usd)} на рік"),
+                                            personalFigure("≈ ${approxMoney(yearly.usdInUah)}")
                                         )
                                     }
                                 }
@@ -6412,7 +6452,7 @@ fun PaymentsScreen(
                             SectionTitle("Раз на рік")
                             annualElsewhereNote(items, today, rate.sell)?.let { note ->
                                 Text(
-                                    note,
+                                    personal(note),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine
@@ -6452,7 +6492,7 @@ fun PaymentsScreen(
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        annualDueLine(pay, today),
+                                        personal(annualDueLine(pay, today)),
                                         color = TextSecondary,
                                         fontSize = Type.captionSize,
                                         maxLines = 1,
@@ -6464,10 +6504,10 @@ fun PaymentsScreen(
                                 // The smoothed figure, and only ever here beside the
                                 // real one above it.
                                 Text(
-                                    "≈${amountLabel(
+                                    personal("≈${amountLabel(
                                         kotlin.math.round(monthlyEquivalent(pay)),
                                         pay.currency
-                                    )}/міс",
+                                    )}/міс"),
                                     color = TextDisabled,
                                     fontSize = Type.captionSize,
                                     // Right-aligned against the row's edge, so unequal
@@ -6482,9 +6522,25 @@ fun PaymentsScreen(
         }
         CollapsingTitle("Платежі", listState, trailing = { AddButton("Додати витрату") { setAdding(true) } })
     }
-    if (adding) AddPaymentSheet({ setAdding(false) }) {
-        save(items + it)
-        setAdding(false)
+    // A shared letter opens the same form, filled in; nothing is saved until «Додати».
+    val letter = shared
+    if (adding || letter is SharedLetter.NewPayment) {
+        AddPaymentSheet(
+            { setAdding(false); onSharedUsed() },
+            prefill = (letter as? SharedLetter.NewPayment)?.draft
+        ) {
+            save(items + it)
+            setAdding(false)
+            onSharedUsed()
+        }
+    }
+    // A payment on the list at a new price: one button, through its own history.
+    if (letter is SharedLetter.PriceChange) {
+        PriceChangeDialog(letter, today, close = onSharedUsed) {
+            val day = LocalDate.now().toEpochDay()
+            save(items.map { if (it.name == letter.pay.name) withAmount(it, letter.draft.amount, day) else it })
+            onSharedUsed()
+        }
     }
     if (editingIncome) {
         IncomeDialog(income, { editingIncome = false }) { value ->
@@ -6600,7 +6656,7 @@ fun PaymentTile(
         )
         // The annual figure is the one that changes minds about a subscription;
         // an annual charge says both denominators. See [billingLine].
-        TileCaption(instalmentLine(pay, today) ?: billingLine(pay), shown)
+        TileCaption(personal(instalmentLine(pay, today) ?: billingLine(pay)), shown)
         if (isInstalment(pay)) {
             InstalmentBar(instalmentsBehind(pay, today), pay.instalments, inkOn(shown), Modifier.padding(top = Space.xs))
         }
@@ -6618,12 +6674,12 @@ fun PaymentTile(
             )
         }
         // What it used to cost: the whole defence against a quiet raise.
-        amountMoveLine(pay)?.let { TileCaption(it, shown) }
+        amountMoveLine(pay)?.let { TileCaption(personal(it), shown) }
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.height(Space.sm))
-        SplitFigure(amountLabel(pay.amount, pay.currency), 20.sp)
+        SplitFigure(personalFigure(amountLabel(pay.amount, pay.currency)), 20.sp)
         if (pay.currency == USD && usdSell > 0) {
-            TileCaption("≈ ${approxMoney(pay.amount * usdSell)}", shown, maxLines = 1)
+            TileCaption(personal("≈ ${approxMoney(pay.amount * usdSell)}"), shown, maxLines = 1)
         }
     }
 }
@@ -6650,9 +6706,9 @@ fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: (
         }
         Spacer(Modifier.height(Space.xs))
         when (bar.state) {
-            CommittedState.KNOWN -> SplitFigure(money(bar.left), 22.sp)
-            CommittedState.OVERSPENT -> SplitFigure(money(-bar.left), 22.sp, colour = Negative)
-            CommittedState.UNKNOWN -> SplitFigure(money(bar.committed), 22.sp)
+            CommittedState.KNOWN -> SplitFigure(personalFigure(money(bar.left)), 22.sp)
+            CommittedState.OVERSPENT -> SplitFigure(personalFigure(money(-bar.left)), 22.sp, colour = Negative)
+            CommittedState.UNKNOWN -> SplitFigure(personalFigure(money(bar.committed)), 22.sp)
         }
         // No bar without an income: its denominator would be invented.
         if (bar.state != CommittedState.UNKNOWN) {
@@ -6669,7 +6725,7 @@ fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: (
         Spacer(Modifier.weight(1f))
         Spacer(Modifier.height(Space.sm))
         TileCaption(
-            if (bar.state == CommittedState.UNKNOWN) "Торкніться, щоб вказати дохід" else committedDetail(bar),
+            if (bar.state == CommittedState.UNKNOWN) "Торкніться, щоб вказати дохід" else personal(committedDetail(bar)),
             SurfaceRaised,
             maxLines = 3
         )
@@ -6677,7 +6733,12 @@ fun MonthLeftTile(bar: Committed, modifier: Modifier = Modifier, onEditIncome: (
 }
 
 @Composable
-fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
+fun AddPaymentSheet(
+    close: () -> Unit,
+    /** What a letter about a subscription said, to start the form from — SubscriptionText.kt. */
+    prefill: SubscriptionDraft? = null,
+    add: (Pay) -> Unit
+) {
     // The chips fill the name in, they are not the name. Two subscriptions are
     // rarely the same subscription, so the field is always present and always
     // editable: tapping a chip simply types the word for you.
@@ -6695,6 +6756,21 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var plan by remember { mutableStateOf(false) }
     var planCount by remember { mutableStateOf("") }
     var planDone by remember { mutableStateOf("0") }
+    // A letter — shared into the app, or pasted below — fills what it says and
+    // leaves the rest as it is. Nothing is saved until «Додати».
+    var fromLetter by remember { mutableStateOf<String?>(null) }
+    fun fill(draft: SubscriptionDraft) {
+        name = draft.name
+        if (draft.amount > 0.0) amount = amountText(draft.amount)
+        draft.day?.let { day = it.toString() }
+        currency = draft.currency
+        billingMonth = draft.billingMonth
+        trialEnd = draft.trialEnd
+        plan = false
+        // «199 ₴/міс» kept on one line: a break inside it reads as two figures.
+        fromLetter = "З листа: ${draftLine(draft)}".replace(" ₴", "\u00A0₴").replace("/", "/\u2060")
+    }
+    LaunchedEffect(prefill) { prefill?.let(::fill) }
     // A free trial or a yearly fee is a decision as well as a charge, and a day's
     // notice at nine in the morning is often too late to make it. So the notice
     // moves to three days the moment either is set — visibly, on the chips, and
@@ -6734,6 +6810,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
         },
         onDismiss = close
     ) {
+        // A letter copied from the mail is easier to paste than to share.
+        PasteLetterButton(fromLetter, ::fill) { fromLetter = it }
         LazyRow(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
             items(presets) { preset ->
                 FilterChip(name == preset, { name = preset }, { Text(preset) })
@@ -7010,12 +7088,14 @@ fun OrdersScreen(
                     // standing in the way of the parcels still on their way.
                     CollapsibleSection(
                         title = "Архів покупок",
-                        summary = purchasesLabel(archived.size) + " · " + purchaseTallyLine(
-                            purchaseTally(
-                                // A purchase given back was not kept, so it is not
-                                // a purchase made on time or in a hurry.
-                                archived.filter { countsAsBought(it) }
-                                    .map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
+                        summary = purchasesLabel(archived.size) + " · " + personal(
+                            purchaseTallyLine(
+                                purchaseTally(
+                                    // A purchase given back was not kept, so it is not
+                                    // a purchase made on time or in a hurry.
+                                    archived.filter { countsAsBought(it) }
+                                        .map { purchaseReview(it.paid, it.lowestSeen, it.uses) }
+                                )
                             )
                         ),
                         open = archiveOpen,
@@ -7614,14 +7694,15 @@ fun OrderDetailScreen(
             payerLabel(details.payerType).takeIf { it.isNotBlank() }?.let { "платить $it" }
         ).joinToString(" · ").ifBlank { "Нічого доплачувати" }
         if (carrier) item {
-            CollapsibleSection("Оплата", paySummary, payOpen, {
+            // Cash on delivery is the owner's money to hand over (Privacy.kt).
+            CollapsibleSection("Оплата", personal(paySummary), payOpen, {
                 payOpen = it
                 store.saveSectionOpen(SECTION_PARCEL_PAY, it)
             }, icon = Icons.Default.Payments) {
                 Column {
                     Fact(
                         "До сплати при отриманні",
-                        money(order.amountToPay).takeIf { order.amountToPay > 0 }.orEmpty()
+                        personalFigure(money(order.amountToPay)).takeIf { order.amountToPay > 0 }.orEmpty()
                     )
                     // The next three arrive only when the request carries the
                     // recipient's phone; without it they are blank and not drawn.
@@ -7809,13 +7890,13 @@ fun PaidMonths(
                 // The figure the screen is opened for, as the loudest thing on
                 // the tile. What it was meant to be follows in the line below.
                 SplitFigure(
-                    totalLabel(record.paid),
+                    personalFigure(totalLabel(record.paid)),
                     26.sp,
                     Modifier.padding(top = Space.xs),
                     colour = if (record.paidCount > 0) ink else soft
                 )
                 Text(
-                    monthRecordLine(record),
+                    personal(monthRecordLine(record)),
                     // A month that ended with nothing marked is not a month with
                     // nothing to pay, and the difference is worth a colour.
                     color = if (record.state == MonthState.UNRECORDED) TileAlarm else soft,
@@ -7876,7 +7957,7 @@ fun PaidMonths(
                             // actually took. Underlined, because nothing else in
                             // a row of figures says it is a control.
                             Text(
-                                amountLabel(line.amount, line.currency),
+                                personalFigure(amountLabel(line.amount, line.currency)),
                                 color = if (line.paid) ink else soft,
                                 fontSize = Type.bodySize,
                                 fontWeight = Type.medium,
@@ -7894,7 +7975,7 @@ fun PaidMonths(
                         Spacer(Modifier.height(Space.sm))
                         LeaderRow(
                             "Різниця з планом",
-                            money(record.gap),
+                            personalFigure(money(record.gap)),
                             alarm = record.state != MonthState.RUNNING,
                             ink = ink,
                             softInk = soft,
@@ -8234,8 +8315,8 @@ fun ArchivedPurchase(
             }
             Text(
                 order.refund?.takeIf { givenBack }?.let { refund ->
-                    "Гроші повернулись ${formatDate(LocalDate.ofEpochDay(refund.backDay))} · ${money(refund.amount)}"
-                } ?: purchaseVerdictDetail(review),
+                    personal("Гроші повернулись ${formatDate(LocalDate.ofEpochDay(refund.backDay))} · ${money(refund.amount)}")
+                } ?: personal(purchaseVerdictDetail(review)),
                 color = TextSecondary,
                 fontSize = Type.captionSize,
                 lineHeight = Type.captionLine,
@@ -8262,7 +8343,7 @@ fun ArchivedPurchase(
                     Box(Modifier.weight(1f).padding(horizontal = Space.sm)) {
                         DottedLeader(Modifier.fillMaxWidth())
                     }
-                    Text(it, color = TextPrimary, fontSize = Type.captionSize, fontWeight = Type.strong)
+                    Text(personal(it), color = TextPrimary, fontSize = Type.captionSize, fontWeight = Type.strong)
                 }
             }
             Text(
@@ -8583,25 +8664,33 @@ fun SettingsScreen(
                             summary.overspent -> "Не сходиться цього місяця"
                             else -> "Вільно до кінця місяця"
                         },
-                        value = if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash),
-                        caption = committedDetail(bar),
+                        value = personalFigure(if (summary.budgetUnknown) money(summary.monthlyExpenses) else money(summary.freeCash)),
+                        caption = personal(committedDetail(bar)),
                         muted = summary.budgetUnknown,
                         emoji = "💰",
-                        footer = if (summary.budgetUnknown) null else {
-                            {
-                                Box(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .height(8.dp)
-                                        .background(AccentInk.copy(alpha = 0.18f), Radius.pill)
-                                ) {
+                        // The bar, and the eye that hides the sums on every screen
+                        // (Privacy.kt) — always here, so the way back is in sight.
+                        footer = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (summary.budgetUnknown) {
+                                    Spacer(Modifier.weight(1f))
+                                } else {
                                     Box(
                                         Modifier
-                                            .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 350L).coerceIn(0f, 1f))
+                                            .weight(1f)
                                             .height(8.dp)
-                                            .background(AccentInk, Radius.pill)
-                                    )
+                                            .background(AccentInk.copy(alpha = 0.18f), Radius.pill)
+                                    ) {
+                                        Box(
+                                            Modifier
+                                                .fillMaxWidth(entranceFraction(bar.share.coerceIn(0f, 1f), delayMs = 350L).coerceIn(0f, 1f))
+                                                .height(8.dp)
+                                                .background(AccentInk, Radius.pill)
+                                        )
+                                    }
+                                    Spacer(Modifier.width(Space.sm))
                                 }
+                                SumsEye()
                             }
                         }
                     )
@@ -8625,8 +8714,9 @@ fun SettingsScreen(
                     ) {
                         OverviewTile(
                             "Відкладено",
-                            money(summary.savedTotal),
-                            if (summary.wishTotal > 0) "${(summary.savedProgress * 100).toInt()}% з ${money(summary.wishTotal)}"
+                            personalFigure(money(summary.savedTotal)),
+                            // The percentage stays; the total beside it would give the savings away.
+                            if (summary.wishTotal > 0) personal("${(summary.savedProgress * 100).toInt()}% з ${money(summary.wishTotal)}")
                             else "бажань ще немає",
                             emoji = "🐷",
                             colour = TileLavender,
@@ -8667,7 +8757,7 @@ fun SettingsScreen(
                         ) { onOpenTab(TAB_RATE) }
                         OverviewTile(
                             "Наступний платіж",
-                            next?.let { money(it.total.total) } ?: "—",
+                            next?.let { personalFigure(money(it.total.total)) } ?: "—",
                             next?.let { "${dayMonth(it.date)} · ${dueSummary(it.items)}" } ?: "усе сплачено",
                             emoji = next?.items?.singleOrNull()?.let { shownEmoji(it) } ?: "🗓️",
                             colour = TileSky,
@@ -8710,9 +8800,11 @@ fun SettingsScreen(
                                     fontWeight = Type.medium
                                 )
                                 Text(
-                                    "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
-                                        "а вільно ${money(summary.freeCash)}. " +
-                                        "Не вистачає ${money(summary.plansOverBudget)}.",
+                                    personal(
+                                        "Плани по бажаннях просять ${money(summary.plannedMonthly)} на місяць, " +
+                                            "а вільно ${money(summary.freeCash)}. " +
+                                            "Не вистачає ${money(summary.plansOverBudget)}."
+                                    ),
                                     color = TextSecondary,
                                     fontSize = Type.captionSize,
                                     lineHeight = Type.captionLine,
@@ -8907,7 +8999,8 @@ fun SettingsScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                         listOfNotNull(
-                                            entry.detail.takeIf { it.isNotBlank() },
+                                            // A payment's amount is the owner's; a wish's price is the shop's.
+                                            entry.detail.takeIf { it.isNotBlank() }?.let { if (entry.kind == BIN_PAY) personal(it) else it },
                                             binLeftLabel(entry, today)
                                         ).joinToString(" · ").let {
                                             Text(
@@ -8983,6 +9076,7 @@ fun SettingsScreen(
                     },
                     onClick = { phoneOpen = true }
                 )
+                HideSumsOutsideRow()
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 MonoSettingsItem { monoOpen = true }
                 ListItem(

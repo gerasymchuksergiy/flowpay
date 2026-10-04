@@ -1,13 +1,6 @@
 package com.flowpay.app
 
-import android.Manifest
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.Context
-import android.content.pm.PackageManager
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
-import androidx.core.net.toUri
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -105,7 +98,17 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         // Nothing happened, so nothing is sent. A daily message saying there is no
         // news is a daily interruption carrying no information.
         if (!summary.empty) {
-            notify(summary.title, summary.body, summary.actions)
+            // A «Сплачено · …» button under each payment line and «Як скасувати» under
+            // a trial about to charge — three buttons in all, Android shows no more —
+            // and the card kept so a button can redraw the message (QuickActions.kt).
+            val card = DigestCard(
+                summary.title,
+                summary.body,
+                digestOffers(pays, today, store.holidaysAround(today), marks),
+                links = summary.actions
+            )
+            TouchPrefs(applicationContext).saveDigestCard(card)
+            postDigest(applicationContext, card)
             // Asked of the message, like the rate threshold below: only what it
             // carried is remembered as said.
             memory.markSaid(summary.said)
@@ -134,40 +137,6 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
         return Result.success()
     }
 
-    private fun notify(title: String, text: String, actions: List<DigestAction> = emptyList()) {
-        val manager = applicationContext.getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Щоденне зведення", NotificationManager.IMPORTANCE_DEFAULT)
-        )
-        val allowed = android.os.Build.VERSION.SDK_INT < 33 ||
-            applicationContext.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
-            PackageManager.PERMISSION_GRANTED
-        if (allowed) {
-            val builder = NotificationCompat.Builder(applicationContext, CHANNEL)
-                .setSmallIcon(R.drawable.ic_tile)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                // The digest is mostly about money going out, so it opens
-                // the payments tab. See Notifications.kt.
-                .setContentIntent(openTabIntent(applicationContext, TAB_PAYMENTS))
-                .setAutoCancel(true)
-            // «Як скасувати» under a trial about to charge: the service's own page,
-            // opened in the browser straight from the notification.
-            actions.forEachIndexed { index, action ->
-                val open = android.app.PendingIntent.getActivity(
-                    applicationContext,
-                    ACTION_REQUEST_BASE + index,
-                    android.content.Intent(android.content.Intent.ACTION_VIEW, action.url.toUri())
-                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
-                    android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
-                )
-                builder.addAction(0, action.label, open)
-            }
-            NotificationManagerCompat.from(applicationContext).notify(CHANNEL.hashCode(), builder.build())
-        }
-    }
-
     /**
      * What the stored statement adds to the morning, each line said once: a
      * charge after a cancellation, a double charge, a missed charge. Nothing
@@ -194,11 +163,6 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
     }
 
     companion object {
-        private const val CHANNEL = "payment_reminders"
-
-        /** Request codes for the message's buttons, apart from every other PendingIntent. */
-        private const val ACTION_REQUEST_BASE = 7_100
-
         /**
          * Schedules the digest for the hour the user chose.
          *

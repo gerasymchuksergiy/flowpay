@@ -39,8 +39,10 @@ fun nextTileFace(current: String): String =
  */
 data class TileFace(val label: String, val subtitle: String, val active: Boolean)
 
-fun tileFace(face: String, rate: FxRate, month: Budget): TileFace = when (face) {
-    TILE_FREE -> TileFace(
+fun tileFace(face: String, rate: FxRate, month: Budget, hideSums: Boolean = false): TileFace = when (face) {
+    // «Ховати суми поза застосунком»: the shade opens on a locked phone, so the
+    // month says whether there is money left, not how much. The rate is no secret.
+    TILE_FREE -> if (hideSums) hiddenFreeFace(month) else TileFace(
         label = when {
             month.unknown -> "—"
             month.overspent -> money(-month.free)
@@ -62,6 +64,13 @@ fun tileFace(face: String, rate: FxRate, month: Budget): TileFace = when (face) 
         },
         active = rate.sell > 0
     )
+}
+
+/** The free-money face with the figure left out: «Вільно: є», «Бракує». */
+fun hiddenFreeFace(month: Budget): TileFace = when {
+    month.unknown -> TileFace("—", "Дохід не вказано", active = false)
+    month.overspent -> TileFace("Бракує", "до кінця місяця · суми сховано", active = true)
+    else -> TileFace(hiddenFreeLine(month), "на місяць · суми сховано", active = true)
 }
 
 class FlowPayTileService : TileService() {
@@ -95,7 +104,8 @@ class FlowPayTileService : TileService() {
             rate,
             // A subscription still inside its free trial takes nothing yet, and the
             // tile's whole job is one honest figure for what is left this month.
-            budget(store.income(), monthlyTotal(store.pays(), rate.sell, LocalDate.now()))
+            budget(store.income(), monthlyTotal(store.pays(), rate.sell, LocalDate.now())),
+            hideSums = TouchPrefs(applicationContext).hideOutside()
         )
         tile.label = face.label
         tile.state = if (face.active) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE

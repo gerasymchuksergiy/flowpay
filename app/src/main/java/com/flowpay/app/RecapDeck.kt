@@ -31,6 +31,9 @@ import androidx.compose.ui.graphics.layer.drawLayer
 import kotlinx.coroutines.launch
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -87,6 +90,12 @@ private const val BACK_ZONE = 0.3f
  */
 @Composable
 fun RecapDeck(recap: Recap, onClose: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // «Без сум»: the deck as it will be shared, amounts as «•••» and the cards that
+    // are nothing but a sum left out (Privacy.kt). Remembered between months, and
+    // on whenever the eye on Огляд is hiding sums.
+    var noSums by remember { mutableStateOf(SumsMask.on || TouchPrefs(context).recapWithoutSums()) }
+    val deck = remember(recap, noSums) { if (noSums) recapWithoutSums(recap) else recap }
     var index by remember { mutableIntStateOf(0) }
     var held by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -94,8 +103,7 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
     // is motion, and shortening it would still be motion: the deck simply waits
     // for a tap, which it was always going to accept anyway.
     val reduced = LocalReducedMotion.current
-    val card = recap.cards.getOrNull(index) ?: recap.cards.lastOrNull() ?: return
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val card = deck.cards.getOrNull(index) ?: deck.cards.lastOrNull() ?: return
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     val poster = androidx.compose.ui.graphics.rememberGraphicsLayer()
 
@@ -104,7 +112,17 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
     BackHandler { onClose() }
 
     fun forward() {
-        if (index < recap.cards.lastIndex) index++ else onClose()
+        if (index < deck.cards.lastIndex) index++ else onClose()
+    }
+
+    /** Switches «Без сум», staying on the card being read when it survives the switch. */
+    fun setNoSums(on: Boolean) {
+        val reading = card.kind
+        val next = if (on) recapWithoutSums(recap) else recap
+        index = next.cards.indexOfFirst { it.kind == reading }.takeIf { it >= 0 }
+            ?: index.coerceAtMost(next.cards.lastIndex).coerceAtLeast(0)
+        noSums = on
+        TouchPrefs(context).saveRecapWithoutSums(on)
     }
 
     fun back() {
@@ -127,7 +145,7 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
             // No background. The theme has already painted the ground and laid the
             // grain over it; a fill here would cover the grain up on the largest
             // flat surface in the app.
-            .pointerInput(index, recap.cards.size) {
+            .pointerInput(index, deck.cards.size) {
                 detectTapGestures(
                     // Pausing on press rather than on a long press, because the
                     // gesture people actually make is to hold still while they
@@ -148,7 +166,7 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(Space.xs)
             ) {
-                recap.cards.indices.forEach { at ->
+                deck.cards.indices.forEach { at ->
                     Box(
                         Modifier
                             .weight(1f)
@@ -180,6 +198,20 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                     fontWeight = Type.medium
                 )
                 Spacer(Modifier.weight(1f))
+                // «Без сум» before sharing: the picture keeps the emoji, the names,
+                // the dates and the percentages, and the amounts become «•••».
+                Row(
+                    Modifier
+                        .clip(Radius.pill)
+                        .clickable(role = Role.Checkbox, onClickLabel = if (noSums) "Показати суми" else "Сховати суми") {
+                            setNoSums(!noSums)
+                        }
+                        .padding(end = Space.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(noSums, null)
+                    Text("Без сум", color = TextSecondary, fontSize = Type.captionSize, fontWeight = Type.medium)
+                }
                 // The card on screen, as a picture, into whatever the phone shares
                 // to. Holds the deck while the share sheet is up.
                 IconButton({
@@ -226,7 +258,7 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                     },
                     label = "recap card"
                 ) { at ->
-                    val shown = recap.cards.getOrNull(at) ?: card
+                    val shown = deck.cards.getOrNull(at) ?: card
                     val colour = TILE_COLOURS[at % TILE_COLOURS.size]
                     BentoTile(colour, Modifier.fillMaxWidth()) {
                         EmojiGlyph(recapEmoji(shown.kind), 56.dp)
@@ -265,7 +297,7 @@ fun RecapDeck(recap: Recap, onClose: () -> Unit) {
                 }
             }
             Text(
-                if (index == recap.cards.lastIndex) {
+                if (index == deck.cards.lastIndex) {
                     "Торкніться, щоб закрити"
                 } else {
                     "Торкніться, щоб далі"
