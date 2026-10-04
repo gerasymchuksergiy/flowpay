@@ -572,6 +572,8 @@ class MainActivity : ComponentActivity() {
         RateWorker.schedule(this)
         // Only for an owner who connected monobank; nothing is asked of anyone else.
         if (MonoStore(this).connected()) MonoSync.schedule(this)
+        // The same for the Telegram inbox: every 15 minutes, only once a bot is connected.
+        if (InboxStore(this).connected()) InboxSync.schedule(this)
         // Enqueued whether or not a folder has been chosen: the worker checks, and
         // scheduling only once a folder exists would mean a folder chosen while the
         // app was already running never got a job at all.
@@ -1958,73 +1960,57 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                 }
             }
             is AppCommand.AddShared -> noticeScope.launch {
-                // A letter about a subscription, asked first: such a letter nearly
-                // always carries a link, and an order number in it can look like a
-                // waybill. It has to use a subscription's own words — SubscriptionText.kt.
-                subscriptionLetter(command.text, pays, LocalDate.now())?.let { letter ->
+                // What the message is — a subscription letter, a parcel, a link —
+                // decided once, in order, by [shareRoute]: the Telegram inbox asks the
+                // same function, so a text pasted on the PC goes where the same text
+                // shared on the phone goes (Inbox.kt).
+                when (val route = shareRoute(command.text, wishes, pays, LocalDate.now())) {
+                // A letter about a subscription: «Новий платіж» filled in, or the new
+                // price offered — SubscriptionText.kt.
+                is ShareRoute.Letter -> {
+                    val letter = route.letter
                     if (letter is SharedLetter.SamePrice) {
                         say("«${letter.pay.name}» уже є в платежах — ціна та сама")
                     } else {
                         sharedLetter = letter
                     }
                     tab = TAB_PAYMENTS
-                    return@launch
                 }
-                // A Nova Poshta waybill anywhere in the words of the message makes it a
-                // parcel, link or no link: an SMS from a shop carries the order's link
-                // beside the number, and the link used to win. See [sharedParcelNumber];
-                // a waybill already on the list opens its parcel.
-                sharedParcelNumber(command.text)?.let { number ->
-                    sharedTracking = number
+                // A Nova Poshta waybill anywhere in the words, link or no link, or a
+                // tracking number in a message with no link: a purchase on its way,
+                // so it goes to Покупки with the number already typed. A waybill
+                // already on the list opens its parcel.
+                is ShareRoute.Parcel -> {
+                    sharedTracking = route.number
                     tab = TAB_ORDERS
-                    return@launch
                 }
-                when (val link = sharedLink(command.text, wishes)) {
-                // No link, but a parcel number — an SMS or a Viber message from the
-                // carrier. That is a purchase on its way, so it goes to Покупки
-                // with the number already typed.
-                SharedLink.Missing -> trackingNumberIn(command.text)?.let { number ->
-                    sharedTracking = number
-                    tab = TAB_ORDERS
-                } ?: say("У повідомленні немає ні посилання, ні трек-номера")
+                ShareRoute.Unclear -> say("У повідомленні немає ні посилання, ні трек-номера")
                 // Already watched: its page and its chart, not a line saying so —
                 // see [wishToOpen].
-                is SharedLink.Known -> {
-                    openedWish = wishToOpen(link)
-                    say(knownShareNote(link.wish))
+                is ShareRoute.Known -> {
+                    openedWish = wishToOpen(route.link)
+                    say(knownShareNote(route.link.wish))
                 }
-                is SharedLink.New -> {
-                    // A Hotline product page is a market for a wish, not a wish:
-                    // it asks which one to bind it to — see [hotlineProductUrl].
-                    val market = hotlineProductUrl(link.url)
-                    if (market != null) {
-                        marketShare = market
-                        return@launch
-                    }
+                // A Hotline product page is a market for a wish, not a wish: it asks
+                // which one to bind it to — see [hotlineProductUrl].
+                is ShareRoute.Market -> marketShare = route.url
+                is ShareRoute.NewLink -> {
                     // The link is saved before the page is read, so a shop that
                     // blocks the fetch costs a name and a price, never the item.
                     val id = System.currentTimeMillis().toString()
                     val day = LocalDate.now().toEpochDay()
                     val rate = store.fxRate().first
-                    val saved = wishes + placeholderWish(link.url, id, day)
+                    val saved = wishes + placeholderWish(route.url, id, day)
                     wishes = saved
                     store.saveWishes(saved)
                     say("Додано до бажань, шукаю ціну…")
                     val read = runCatching {
-                        readForAdd(pricedPageHtml(link.url), link.url, id, day, rate)
+                        readForAdd(pricedPageHtml(route.url), route.url, id, day, rate)
                     }.getOrNull()
 
-                    /** The shop's own title, photograph and words replace the
-                     * placeholder's, but the row keeps its id so nothing else has
-                     * to be told it changed. */
+                    /** The placeholder filled from its page, by [filledWish]. */
                     fun fill(fetched: Wish) {
-                        val filled = wishes.map {
-                            if (it.id == id) {
-                                refreshedWish(it, fetched, day, rate).copy(name = fetched.name)
-                            } else {
-                                it
-                            }
-                        }
+                        val filled = wishes.map { if (it.id == id) filledWish(it, fetched, day, rate) else it }
                         wishes = filled
                         store.saveWishes(filled)
                     }
@@ -2302,6 +2288,9 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         // (PaymentsLife.kt) — so that is applied before the lists are read.
         sweepPayments(context, store, LocalDate.now())
         reload()
+        // What was sent to the Telegram inbox from the PC, picked up on the way in;
+        // it lands through ShopSheetSignal like the sheet's own writes (InboxSync.kt).
+        InboxSync.passNow(context)
     }
 
     // Read afresh every time the overview is opened rather than once per session:
@@ -7086,12 +7075,15 @@ fun AddPaymentSheet(
     // leaves the rest as it is. Nothing is saved until «Додати».
     var fromLetter by remember { mutableStateOf<String?>(null) }
     fun fill(draft: SubscriptionDraft) {
-        name = draft.name
-        if (draft.amount > 0.0) amount = amountText(draft.amount)
-        draft.day?.let { day = it.toString() }
-        currency = draft.currency
-        billingMonth = draft.billingMonth
-        trialEnd = draft.trialEnd
+        // The payment the Telegram inbox saves from the same letter (Inbox.kt): the
+        // form shows it, and «Додати» untouched saves it.
+        val letter = letterPay(draft, LocalDate.now())
+        name = letter.name
+        if (letter.amount > 0.0) amount = amountText(letter.amount)
+        draft.day?.let { day = letter.day.toString() }
+        currency = letter.currency
+        billingMonth = letter.billingMonth
+        trialEnd = letter.trialEnd
         plan = false
         // «199 ₴/міс» kept on one line: a break inside it reads as two figures.
         fromLetter = "З листа: ${draftLine(draft)}".replace(" ₴", "\u00A0₴").replace("/", "/\u2060")
@@ -7101,8 +7093,8 @@ fun AddPaymentSheet(
     // notice at nine in the morning is often too late to make it. So the notice
     // moves to three days the moment either is set — visibly, on the chips, and
     // only while it is still the default, so a choice already made is kept.
-    LaunchedEffect(trialEnd > 0L || billingMonth > 0) {
-        if ((trialEnd > 0L || billingMonth > 0) && warnDays == DEFAULT_WARN_DAYS) {
+    LaunchedEffect(longNotice(trialEnd, billingMonth)) {
+        if (longNotice(trialEnd, billingMonth) && warnDays == DEFAULT_WARN_DAYS) {
             warnDays = LONG_NOTICE_DAYS
         }
     }
@@ -8741,8 +8733,8 @@ fun AddOrderSheet(close: () -> Unit, initialTracking: String = "", add: (Order) 
         confirmEnabled = !loading && (isSupportedWebUrl(link) || (!digital && trackingNumber.isNotBlank())),
         onConfirm = {
             if (!isSupportedWebUrl(link)) {
-                val number = trackingNumber.filter { !it.isWhitespace() }
-                add(Order(System.currentTimeMillis().toString(), parcelNameFor(number), "", ORDERED, tracking = number))
+                // The same purchase the Telegram inbox saves from a waybill (Inbox.kt).
+                add(parcelOrder(trackingNumber, System.currentTimeMillis().toString()))
                 return@FormSheet
             }
             scope.launch {
@@ -8936,6 +8928,8 @@ fun SettingsScreen(
     // they are not inside the app. Counted into state so the row updates.
     var emojiCount by remember { mutableIntStateOf(EmojiPack.count(context)) }
     var monoOpen by remember { mutableStateOf(false) }
+    // «Telegram-скринька» — InboxUi.kt.
+    var inboxOpen by remember { mutableStateOf(false) }
     var importingEmoji by remember { mutableStateOf(false) }
     val pickEmoji = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -9477,6 +9471,7 @@ fun SettingsScreen(
                 RozetkaCardRow(Modifier.padding(top = Space.sm))
                 HorizontalDivider(color = HairLine, modifier = Modifier.padding(vertical = Space.lg))
                 MonoSettingsItem { monoOpen = true }
+                InboxSettingsItem { inboxOpen = true }
                 ListItem(
                     leadingContent = { EmojiGlyph("😀", 28.dp) },
                     headlineContent = { Text("Емодзі Apple", fontWeight = FontWeight.Bold) },
@@ -9674,6 +9669,7 @@ fun SettingsScreen(
         CollapsingTitle("Огляд", listState)
     }
     if (monoOpen) MonoSheet { monoOpen = false }
+    if (inboxOpen) InboxSheet { inboxOpen = false }
     if (phoneOpen) {
         NovaPhoneDialog(novaPhone, { phoneOpen = false }) { typed ->
             parcelPrefs.savePhone(typed).also { saved -> if (saved) novaPhone = parcelPrefs.phone() }
