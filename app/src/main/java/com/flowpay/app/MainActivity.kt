@@ -1934,6 +1934,7 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         onCommandHandled()
         when (command) {
             is AppCommand.AddWish -> adding = true
+            is AppCommand.Scan -> scanCode(context, { text -> shareIntoApp(context, text) }, { say(it) })
             is AppCommand.OpenTab -> Unit
             is AppCommand.RefreshPrices -> noticeScope.launch {
                 if (wishes.isEmpty()) {
@@ -2905,6 +2906,11 @@ fun WishlistScreen(
                             }
                         }
                         refreshAction()
+                        // A link on the computer's screen, read with the camera — the
+                        // same as sharing it (QrScan.kt).
+                        IconButton({ scanCode(context, { text -> shareIntoApp(context, text) }, { message = it }) }) {
+                            Icon(Icons.Default.QrCodeScanner, "Сканувати QR", tint = TextSecondary)
+                        }
                         AddButton("Додати бажання") { setAdding(true) }
                     }
                 }

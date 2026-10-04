@@ -17,6 +17,7 @@ import androidx.core.net.toUri
 // would also let any other app trigger them.
 const val ACTION_ADD_WISH = "com.flowpay.app.action.ADD_WISH"
 const val ACTION_REFRESH_PRICES = "com.flowpay.app.action.REFRESH_PRICES"
+const val ACTION_SCAN = "com.flowpay.app.action.SCAN"
 
 /** Opens one tab. Sent only by this app's own notifications, as a PendingIntent. */
 const val ACTION_OPEN_TAB = "com.flowpay.app.action.OPEN_TAB"
@@ -29,6 +30,9 @@ sealed interface AppCommand {
     data object AddWish : AppCommand
 
     data object RefreshPrices : AppCommand
+
+    /** «Сканувати QR» from the launcher: open the scanner. See QrScan.kt. */
+    data object Scan : AppCommand
 
     /** A notification was tapped: show the tab it was about. */
     data class OpenTab(val tab: Int) : AppCommand
@@ -44,6 +48,7 @@ fun appCommand(action: String?, sharedText: String?, tab: Int = -1): AppCommand?
     Intent.ACTION_SEND -> sharedText?.takeIf { it.isNotBlank() }?.let { AppCommand.AddShared(it) }
     ACTION_ADD_WISH -> AppCommand.AddWish
     ACTION_REFRESH_PRICES -> AppCommand.RefreshPrices
+    ACTION_SCAN -> AppCommand.Scan
     ACTION_OPEN_TAB -> AppCommand.OpenTab(tab.takeIf { it in TAB_WISHES..TAB_OVERVIEW } ?: TAB_WISHES)
     else -> null
 }

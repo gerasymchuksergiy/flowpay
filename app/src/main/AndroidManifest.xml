@@ -16,6 +16,11 @@
   android:allowBackup="false"
   android:fullBackupContent="false"
   android:dataExtractionRules="@xml/data_extraction_rules">
+  <!-- The QR scanner's module, fetched by Google Play services ahead of the first
+       scan rather than on it (QrScan.kt). -->
+  <meta-data
+   android:name="com.google.mlkit.vision.DEPENDENCIES"
+   android:value="barcode_ui"/>
   <!-- singleTask so a share, or a shortcut, reaches the copy of the app that is
        already open instead of stacking a second one behind it. -->
   <activity

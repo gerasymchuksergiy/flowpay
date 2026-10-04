@@ -97,6 +97,9 @@ dependencies {
  // its own version. The AAR declares minSdk 23, below this app's floor of 26.
  implementation("androidx.graphics:graphics-shapes:1.1.0")
  implementation("io.coil-kt:coil-compose:2.7.0")
+ // «Сканувати QR»: Google Play services' own scanner screen — FlowPay asks for no
+ // camera permission and gets back only the text that was read. QrScan.kt.
+ implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
  // Frosted glass under the navigation bar. Pinned: 1.7.3 and 2.x are built with
  // Kotlin 2.3+ and pull a newer Compose than the BOM, which this project's Kotlin
  // 2.1 cannot read. Below Android 12 it draws a plain tint instead of blurring.

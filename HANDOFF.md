@@ -3,7 +3,7 @@
 Everything the next session needs to work on this app without relearning it the
 expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
 to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed), and
-again at the end of 4 October 2026 at `v3.21.2` / 1515 tests. **Start with §19**:
+again at the end of 4 October 2026 at `v3.22.0` / 1518 tests. **Start with §19**:
 where things stand and what to do first.
 
 Nearly every rule below exists because breaking it cost something real — a failed
@@ -1034,6 +1034,7 @@ from the tag, the new strings found in the DEX):
 | `v3.21.0` | One «Вільно», funds, payday, «Чи потягну?», month ahead (§24) |
 | `v3.21.1` | The eye covers every new sum (§25) |
 | `v3.21.2` | Taken back out at the owner's word: «На життя» and the monobank balance as «your money» (§26) |
+| `v3.22.0` | «Сканувати QR»: a link read with the camera goes the way «Поділитися» does (§27) |
 
 How 3.17–3.21 were made: the owner said «додай все» to the research page, five
 builders worked in parallel worktrees (`.claude/worktrees/{parcels,prices,touch,
@@ -1730,3 +1731,27 @@ whether to take the balance-based pieces out, they said «так, роби». So
 - **Kept on purpose:** the digest's first line «Завтра … а на картці … —
   докиньте» (§21 `shortTomorrowLine`): it counts only payments confirmed as charged
   from monobank, so it really is about that card's money.
+
+---
+
+## 27. «Сканувати QR» (5 October 2026, v3.22.0)
+
+The owner works at a PC and picking the phone up for every find annoyed them;
+asked what a scanner should read, the answer was «посилання». `QrScan.kt`:
+Google Play services' ML Kit code scanner (`play-services-code-scanner:16.1.0`) —
+it brings its own camera screen, so FlowPay asks for **no CAMERA permission** and
+only ever gets the text that was read. Formats: QR, Code 128 and Data Matrix (a
+parcel sticker carries its waybill that way).
+
+What was read goes into the app as an explicit `ACTION_SEND` to MainActivity
+(`shareIntoApp`), so the **same share router** decides — a subscription letter,
+then a Nova Poshta waybill, then a link (a shop's link becomes a wish). Entry
+points: a QR icon beside «+» on Бажання, and the launcher shortcut «Сканувати QR»
+(`ACTION_SCAN` → `AppCommand.Scan`). The manifest asks Play services to fetch the
+module ahead (`com.google.mlkit.vision.DEPENDENCIES` = `barcode_ui`); until it has,
+a scan answers «Сканер ще завантажується в сервісах Google — спробуйте за хвилину».
+
+Tested: `QrScanTest` (what is handed over; the shortcut's command). **Not seen on
+the phone**; it needs Google Play services (the owner's Redmi has them). Tip for
+the owner: Chrome on the PC makes a QR of the open page (address bar →
+«Поділитися» → «Створити QR-код»).

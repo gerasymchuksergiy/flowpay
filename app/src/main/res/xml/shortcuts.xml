@@ -23,4 +23,15 @@
             android:targetPackage="com.flowpay.app"
             android:targetClass="com.flowpay.app.MainActivity"/>
     </shortcut>
+    <shortcut
+        android:shortcutId="scan_qr"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_scan"
+        android:shortcutShortLabel="@string/shortcut_scan_short"
+        android:shortcutLongLabel="@string/shortcut_scan_long">
+        <intent
+            android:action="com.flowpay.app.action.SCAN"
+            android:targetPackage="com.flowpay.app"
+            android:targetClass="com.flowpay.app.MainActivity"/>
+    </shortcut>
 </shortcuts>
