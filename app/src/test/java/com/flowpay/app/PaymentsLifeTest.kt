@@ -161,6 +161,40 @@ class PaymentsLifeTest {
         assertEquals(listOf(trial), trialsRunning(listOf(trial), today))
     }
 
+    /**
+     * Every place that counts a future charge, asked about one payment that should
+     * charge nothing from [day] on: the one check has to hold in all of them.
+     */
+    private fun assertChargesNothingFrom(pay: Pay, day: LocalDate) {
+        val month = day.withDayOfMonth(1).plusMonths(1)
+        assertFalse("live", isLive(pay, day))
+        assertEquals("next month", 0.0, monthlyTotal(listOf(pay), 41.0, day, month).total, 0.0)
+        assertEquals("year", 0.0, yearlyTotal(listOf(pay), 41.0, day).total, 0.0)
+        assertNull("next payment", nextPayment(listOf(pay), day, 41.0))
+        assertTrue("still owing", stillOwing(listOf(pay), emptyList(), day).isEmpty())
+        assertTrue("reminders", remindersDue(listOf(pay.copy(warnDays = 7)), day).isEmpty())
+        assertTrue("timeline", paymentGroups(listOf(pay), day).isEmpty())
+        assertTrue("strip", paymentOffsets(listOf(pay), day.plusDays(1)).isEmpty())
+        val week = moneyWeather(listOf(pay), emptyList(), day.plusDays(1), 41.0, 30_000.0, 20_000.0)
+        assertTrue("weather", week.all { it.leaving == 0.0 })
+        assertTrue("digest", digest(emptyList(), listOf(pay.copy(warnDays = 7)), emptyList(), day, 41.0, 0.0).empty)
+        assertFalse("widget", widgetSummary(listOf(pay), emptyList(), 30_000.0, 41.0, day).hasPayment)
+        assertNull("pill", statusNote(emptyList(), listOf(pay.copy(warnDays = 7)), emptyList(), day, 41.0))
+        assertTrue("csv", expenseRows(listOf(pay), emptyList(), emptyList(), day.year, 41.0, day).isEmpty())
+        assertEquals("next month's record", 0, monthRecord(listOf(pay), emptyList(), monthKey(month), day, 41.0).plannedCount)
+    }
+
+    @Test
+    fun `cancelled, paused and returned all go through the one check`() {
+        assertChargesNothingFrom(cancelled(netflix, LocalDate.of(2026, 10, 27), today), today)
+        assertChargesNothingFrom(paused(Pay("Megogo", 199.0, day = 5), today), today)
+        assertChargesNothingFrom(returned(phone, today), today)
+        assertChargesNothingFrom(
+            paused(internet, today),
+            today
+        )
+    }
+
     // ------------------------------------------------------------ paused
 
     @Test
@@ -234,6 +268,16 @@ class PaymentsLifeTest {
         assertEquals(150.0, monthRecord(listOf(internet), emptyList(), "2026-11", today, 0.0).planned.total, 0.0)
         assertEquals(300.0, monthRecord(listOf(internet), emptyList(), "2027-02", today, 0.0).planned.total, 0.0)
         assertEquals(150.0, monthLines(listOf(internet), emptyList(), "2026-12").single().amount, 0.0)
+    }
+
+    @Test
+    fun `a tick in a promo month records the promo price`() {
+        assertEquals(PaidMark("Інтернет", "2026-11", 150.0, UAH), togglePaid(emptyList(), internet, "2026-11").single())
+        assertEquals(300.0, togglePaid(emptyList(), internet, "2027-02").single().amount, 0.0)
+        assertEquals(150.0, monthLines(listOf(internet), emptyList(), "2026-12").single().planned, 0.0)
+        // A free month's tick can only be for the charge after it.
+        val trial = Pay("Spotify", 199.0, day = 12, trialEnd = LocalDate.of(2026, 10, 30).toEpochDay())
+        assertEquals(199.0, togglePaid(emptyList(), trial, "2026-10").single().amount, 0.0)
     }
 
     @Test

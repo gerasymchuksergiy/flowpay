@@ -1502,8 +1502,16 @@ fun togglePaid(marks: List<PaidMark>, pay: Pay, month: String): List<PaidMark> =
     if (isPaid(marks, pay.name, month)) {
         marks.filterNot { it.name == pay.name && it.month == month }
     } else {
-        marks + PaidMark(pay.name, month, pay.amount, pay.currency)
+        marks + PaidMark(pay.name, month, markAmount(pay, month), pay.currency)
     }
+
+/**
+ * What a tick records for [month]: what that month's charge takes — the promo
+ * price in a promo month ([priceOn]) — and the regular price otherwise, including
+ * for a free month, where a tick can only mean the charge after it.
+ */
+fun markAmount(pay: Pay, month: String): Double =
+    monthKeyDate(month)?.let { priceOn(pay, chargeDateIn(pay, it).toEpochDay()) }?.takeIf { it > 0.0 } ?: pay.amount
 
 /**
  * The same mark with what was really charged.
@@ -1704,7 +1712,12 @@ data class MonthLine(
     /** The marked amount once paid — what that month really cost — else the plan. */
     val amount: Double,
     val currency: String,
-    val paid: Boolean
+    val paid: Boolean,
+    /**
+     * What that month's charge was meant to take: the promo price in a promo
+     * month ([priceOn]). What a corrected figure is compared with.
+     */
+    val planned: Double = amount
 )
 
 /**
@@ -1734,8 +1747,8 @@ fun monthLines(pays: List<Pay>, marks: List<PaidMark>, month: String): List<Mont
             val mark = forMonth.firstOrNull { it.name == pay.name }
             // Unpaid, a row asks for what that month's charge takes — the promo
             // price in a promo month.
-            val planned = monthStart?.let { priceOn(pay, chargeDateIn(pay, it).toEpochDay()) } ?: pay.amount
-            MonthLine(pay, mark?.amount ?: planned, mark?.currency ?: pay.currency, mark != null)
+            val planned = monthStart?.let { priceOn(pay, chargeDateIn(pay, it).toEpochDay()) }?.takeIf { it > 0.0 } ?: pay.amount
+            MonthLine(pay, mark?.amount ?: planned, mark?.currency ?: pay.currency, mark != null, planned)
         }
     val gone = forMonth
         .filter { mark -> pays.none { it.name == mark.name } }

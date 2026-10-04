@@ -6180,7 +6180,7 @@ fun PaymentsScreen(
                                     save(items.mapIndexed { i, item -> if (i == position) unstopped(item) else item })
                                     val month = monthKey(LocalDate.ofEpochDay(pay.stopsAfter + 1))
                                     if (!isPaid(paid, pay.name, month)) {
-                                        setPaid(paid + PaidMark(pay.name, month, pay.amount, pay.currency))
+                                        setPaid(paid + PaidMark(pay.name, month, markAmount(pay, month), pay.currency))
                                     }
                                 }
                             )
@@ -7654,7 +7654,9 @@ fun PaidMonths(
 fun ChargedDialog(line: MonthLine, close: () -> Unit, save: (Double, Boolean) -> Unit) {
     var text by remember { mutableStateOf(amountText(line.amount)) }
     val charged = parseAmount(text)
-    val drifted = amountDrifted(line.pay.amount, charged)
+    // Against what that month was meant to take. A promo month is never offered as
+    // the payment's new price: its regular price is another figure — PaymentsLife.kt.
+    val drifted = line.planned == line.pay.amount && amountDrifted(line.planned, charged)
     var update by remember(drifted) { mutableStateOf(drifted) }
     AlertDialog(
         onDismissRequest = close,
