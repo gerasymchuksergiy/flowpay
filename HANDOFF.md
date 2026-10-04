@@ -1269,3 +1269,114 @@ back to monobank.ua), the jar notification, and every monobank part on real data
 - «Мовчать» thresholds 40 days / 10 days — keep?
 - «Завтра не вистачить» counts only payments already confirmed from monobank.
 - During a promo the big figure is the regular price — or the promo one?
+
+---
+
+## 22. Acting without opening the app, and hiding sums (4 October 2026, v3.19.0)
+
+Research idea №2, the «Без сум» quick win, YNAB's «Сховати суми», monobank's
+«Інкогніто» and Rocket Money's «Поділись листом про підписку», built for «додай
+все». The screens were rendered on the JVM (`screens/TouchShots`, `-Pshots`).
+**The widget, the Quick Settings tile and the notification were not drawn
+anywhere, and none of it was seen on the phone** — Glance and the shade have no
+renderer here, and HyperOS is known to redraw widgets late.
+
+### New files
+| File | Holds |
+|---|---|
+| `QuickActions.kt` | `QuickMark`, `chargeMonth`, `markKept`, `markPaid`/`unmarkPaid`/`quickMarked`, `rebaseMarks`, `widgetTick`/`widgetUndo`, `digestOffers`, `DigestCard` (with `links`) and `digestTitle`/`digestButtons`/`digestLinks`/`digestPressed`/`digestUndone`/`digestGone`, its JSON |
+| `QuickReceiver.kt` | `QuickMarkReceiver` (the digest's buttons; not exported, no filter), `QuickMarks.version`, `Store.updatePaidMarks` (one lock for every writer of the marks), `TouchPrefs` (every `tc_*` key) |
+| `Privacy.kt` | `maskSums`/`maskFigure`/`onlyMasks`, `recapWithoutSums`, `widgetWithoutSums`, `hiddenFreeLine`, `SumsMask`, `personal()`/`personalFigure()` |
+| `SubscriptionText.kt` | `parseSubscription`, `subscriptionLetter` → `SharedLetter.NewPayment`/`PriceChange`/`SamePrice`, `paymentNamedIn`, `draftLine`, `priceChangeLabel`, `oldPriceChargeBefore`, `shortDate` |
+| `TouchUi.kt` | `SumsEye`, `HideSumsOutsideRow`, `PersonalNumberField`, `PasteLetterButton`, `PriceChangeDialog` |
+| `res/drawable/widget_tick.xml` | the widget's ring with a tick |
+| Tests | `QuickActionsTest`, `PrivacyTest`, `SubscriptionTextTest`; with `-Pshots` only `screens/TouchShots` (33 PNGs) and `screens/QuickButtonsCheck` (the digest's buttons through Robolectric: posted, sent, received, marked, redrawn, undone) |
+
+### «Сплачено» from the widget and the morning message
+- **Which month.** `chargeMonth` is the month of the charge being shown — what
+  `stillOwing` asks about — so a mark takes the payment off the widget, the pill
+  and the digest at once. Whenever the reminder is asking it equals `tickMonth`
+  (pinned over 62 days and six rhythms); outside the notice period the widget
+  marks what it shows (the charge ahead), while a tile's tick in the app answers
+  for the one behind. A month the store would prune is never offered
+  (`markKept`), so an annual fee months away has no tick. A tap from outside never
+  takes a mark off.
+- **Widget.** A ring beside the next payment (`WidgetMarkPaid`); with several
+  payments that day it opens Платежі instead. Undo: the header line «✓ Інтернет ·
+  Скасувати» (`WidgetUndoMark`) for the rest of the day while the mark stands
+  (`tc_widget_undo`, `tc_widget_undo_day`).
+- **Digest.** `ReminderWorker` keeps the morning's `DigestCard` (`tc_digest`) and
+  posts it through `postDigest` (Notifications.kt). `digestOffers` uses the very
+  `remindersDue` the payment lines come from. A press marks the payment; the
+  message keeps its text, is retitled «Позначено: …», «Скасувати» comes first and
+  the other payments keep their buttons; «Уже позначено» for one marked before; a
+  deleted payment loses its button. A redraw never rings (`setOnlyAlertOnce`).
+- **Three slots, shared (merge with §21).** §21's «Як скасувати» links ride on the
+  card as `DigestCard.links` (`tcl`); `digestLinks` shows one link when there are
+  payments to mark and two when there are none, and `digestButtons` leaves them the
+  room. Payment buttons come first, so «Скасувати» stays first.
+- **The stale list (§15) for the marks.** Every write goes through
+  `Store.updatePaidMarks` (re-read, change, save, under one lock — Glance runs a
+  callback on a background thread). The app's `setPaid` rebases what a screen did
+  (`rebaseMarks(store, before, after)`) instead of saving the screen's list.
+  `QuickMarks.version` makes an open app read the marks again. **Not changed:**
+  `MonoSync.apply` still writes the marks without the lock.
+- **Glance sessions.** A widget session lives ~45 s after each redraw, and during
+  it `updateAll` recomposes only if the widget's own state changed. The widget
+  reads the store inside its composition, keyed on `tc_stamp` (Glance state).
+  **`refreshWidget(context)` is the way to redraw it.** `PriceWorker` still calls
+  `updateAll` (rarely inside a live session).
+- R8: the two callbacks' constructors are kept in `proguard-rules.pro`.
+
+### Hiding sums
+- **What a sum is** (`maskSums`): a figure followed by ₴, $, грн, UAH, USD or «тис»;
+  «$12»; a bare figure right before «→». It becomes «•••» («••• ₴»). Percentages,
+  counts, days, dates and multiples stay. The mask is applied at the screen with
+  `personal(line)` / `personalFigure(figure)` — **never inside `money()` or
+  `bareAmount()`**, which also write the digest, alerts and tests. **Any new
+  screen that shows a personal sum must wrap it.**
+- **Recap «Без сум»**: a checkbox on the deck (`tc_recap_nosums`, ticked by itself
+  while the eye is shut); amounts «•••», a card whose headline is a sum left out,
+  a detail that was only a sum dropped. What is shared is what is shown.
+- **«Ховати суми поза застосунком»** (Налаштування, `tc_hide_out`): the widget
+  says «Інтернет», «12 жовтня · завтра», «Вільно: є» / «Бракує до кінця місяця»;
+  the tile «Вільно: є» with «на місяць · суми сховано». The rate stays. The
+  morning notification is not covered.
+- **The eye on the Огляд hero** (`tc_hide_in`, read in `onCreate` before the first
+  frame; always visible). Hidden: Огляд, the pill's payment line, Платежі, По
+  місяцях, a wish's savings plan (inputs as dots), purchases' tally/verdict/cost
+  per use, monobank's row, sheet and jar link. Kept: shop prices, the rate,
+  percentages and rings; sheets opened to edit a figure show it. Known gap by
+  design: a wish's ring plus the shop price let someone estimate the savings.
+
+### «Поділись листом про підписку»
+- First in the share router — before the waybill (§20) and the link: such letters
+  carry links, and a date-like order number can look like a waybill.
+  `parseSubscription` needs a subscription's own word outside the links
+  (підписк-, передплат-, пробн-, автопродовж-, абонплат-, абонентськ-, trial,
+  subscri-, renew, membership) **and** a sign the charge recurs (a trial, a
+  renewal or fee word, or a rhythm beside a price). «від 499 ₴/міс» instalments, a
+  999 ₴ gift subscription and «підписка на новини» stay what they were.
+- Price: the figure after «далі/then», not after «замість/was»; the second of «з
+  200 на 250». Dates: dd.MM[.yyyy], ISO, «12 листопада», «12 лист.», «Nov 12,
+  2026», «3 Nov». Name: ~70 known services, an e-mail's «From:», «підписка «…»», a
+  Latin name after «підписка», «Your X subscription».
+- A payment already on the list (`paymentNamedIn`, whole words or word starts;
+  «Підписка» alone never matches): at another price `PriceChangeDialog` offers
+  «Оновити ціну з 1 лист.: 200 → 250 ₴» via `withAmount` dated today (one price per
+  payment, so the change is immediate; a charge still due at the old price before
+  the new date is named in the dialog); at the same price a snackbar. Otherwise
+  «Новий платіж» opens filled in, with «З листа: …» under «Вставити з буфера»,
+  which reads the clipboard the same way.
+
+### New keys
+SharedPreferences (`flowpay`, none in the backup): `tc_digest`, `tc_widget_undo`,
+`tc_widget_undo_day`, `tc_hide_out`, `tc_hide_in`, `tc_recap_nosums`. Glance state:
+`tc_stamp`. No new JSON fields on Wish, Pay or Order.
+
+### Open with the owner
+- Hide sums in the morning notification too (it shows on the lock screen)?
+- With the eye shut, hide a wish page's ring as well?
+- The widget's undo lasts until the end of the day — fine?
+- A price change from a letter applies at once — or wait for its date (needs a
+  future-price field)?
