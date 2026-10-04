@@ -1984,7 +1984,15 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
         val next = pays.filterIndexed { at, _ -> at != index }
         pays = next
         store.savePays(next)
-        recycle(binEntryOf(pay, today.toEpochDay())) {
+        // A cancelled payment goes to the bin running — restoring it means it is
+        // wanted again — and its monobank merchant stays watched for three months.
+        val entry = if (pay.stopReason == STOP_CANCELLED) {
+            rememberGone(context, pay)
+            endedBinEntry(pay, today.toEpochDay()).copy(id = binEntryOf(pay, today.toEpochDay()).id)
+        } else {
+            binEntryOf(pay, today.toEpochDay())
+        }
+        recycle(entry) {
             val back = pays + pay
             pays = back
             store.savePays(back)
@@ -2027,6 +2035,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
     // had learned — and the next pass announced the same target hit a second time.
     LifecycleEventEffect(Lifecycle.Event.ON_START) {
         returns++
+        // A day passing changes the stored list — a promo's end written into its
+        // history, a cancellation whose question waited a week moved to the bin
+        // (PaymentsLife.kt) — so that is applied before the lists are read.
+        sweepPayments(context, store, LocalDate.now())
         reload()
     }
 
@@ -2277,7 +2289,14 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                             setAdding = { adding = it },
                             paid = paid,
                             setPaid = { marks -> paid = marks; store.savePaidMarks(marks) },
-                            onDelete = { deletePay(it) }
+                            onDelete = { deletePay(it) },
+                            orders = orders,
+                            // A plan's purchase went back: the purchase says so.
+                            onOrderReturned = { id, day ->
+                                val next = orders.map { if (it.id == id) it.copy(planReturned = day) else it }
+                                orders = next
+                                store.saveOrders(next)
+                            }
                         )
                         TAB_ORDERS -> OrdersScreen(
                             items = orders,
@@ -5785,7 +5804,11 @@ fun PaymentsScreen(
     /** What has been marked paid, across every month still kept. */
     paid: List<PaidMark>,
     setPaid: (List<PaidMark>) -> Unit,
-    onDelete: (Int) -> Unit
+    onDelete: (Int) -> Unit,
+    /** Purchases a plan «частинами» can be tied to — see PaymentsLife.kt. */
+    orders: List<Order> = emptyList(),
+    /** A plan's purchase went back: the purchase says so. */
+    onOrderReturned: (orderId: String, day: Long) -> Unit = { _, _ -> }
 ) {
     val touch = rememberTouch()
     // The rate the exchange screen already fetched and cached. Dollar entries are
@@ -5826,15 +5849,27 @@ fun PaymentsScreen(
             val client = mono.client()
             val txs = mono.txs()
             val currencies = accountCurrencies(client)
+            val gone = mono.gone()
             MonoView(
                 matches = monoMatches(items, txs, paid, mono.rejected(), currencies, today, rate.sell)
                     // A confirmed merchant ticks by itself on the next pass, unless that is off.
                     .filter { it.kind != MonoMatchKind.LEARNED || !mono.auto() },
-                found = findSubscriptions(txs, items, mono.ignored(), currencies, System.currentTimeMillis() / 1000),
-                drifts = monoDrifts(items, paid, today)
+                // A cancelled payment's merchant is watched for charges after the
+                // cancellation, not offered back as a forgotten subscription.
+                found = findSubscriptions(
+                    txs, items, mono.ignored() + gone.map { it.merchant }, currencies, System.currentTimeMillis() / 1000
+                ),
+                drifts = monoDrifts(items, paid, today),
+                silent = silentPayments(items, txs, paid, mono.waiting(), today),
+                doubles = doubleCharges(items, txs, mono.doublesOk(), System.currentTimeMillis() / 1000),
+                afterCancel = chargedAfterCancel(items, gone, txs, mono.afterOk(), currencies, rate.sell),
+                currencies = currencies
             )
         }
     }
+    // Answers to the monobank cards that act on a payment: «Прибрати» opens the
+    // cancel question with what the bank's silence says was paid for.
+    var removing by remember { mutableStateOf<SilentPay?>(null) }
     // The tiles rise in the first time this tab opens — see [Entrance].
     val entrance = LocalEntrance.current
     Box {
@@ -5990,7 +6025,8 @@ fun PaymentsScreen(
                                     // discovered on the first statement.
                                     if (trials.isNotEmpty()) {
                                         LeaderRow(
-                                            "Після пробних періодів",
+                                            // A promo is a discount, not a free period.
+                                            if (trials.any { isPromo(it) }) "Після знижок і пробних" else "Після пробних періодів",
                                             money(committed.total)
                                         )
                                     }
@@ -6069,6 +6105,87 @@ fun PaymentsScreen(
                         )
                     }
                 }
+                // What the statement says about payments' lives — Mono.kt. Money taken
+                // after a cancellation first: it should not have been taken at all.
+                val currencies = monoView?.currencies ?: emptyMap()
+                monoView?.afterCancel?.takeIf { it.isNotEmpty() }?.let { after ->
+                    item(key = "mono-after") {
+                        AfterCancelTile(
+                            after,
+                            Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                            onNotIt = {
+                                mono.afterIsOk(it.tx.id)
+                                MonoStore.bump()
+                            },
+                            onBringBack = { found ->
+                                val listed = found.pay
+                                if (listed != null) {
+                                    save(items.map { if (it == listed) unstopped(it) else it })
+                                } else {
+                                    found.gone?.pay?.takeIf { it.isNotBlank() }
+                                        ?.let { json -> runCatching { payOf(JSONObject(json)) }.getOrNull() }
+                                        ?.let { back -> save(items + back) }
+                                    mono.saveGone(mono.gone().filterNot { it == found.gone })
+                                }
+                                // It did charge: that month is paid, at what was taken.
+                                val month = monthKey(txDay(found.tx))
+                                if (!isPaid(paid, found.name, month)) {
+                                    setPaid(paid + PaidMark(found.name, month, found.charged, found.currency))
+                                }
+                                mono.afterIsOk(found.tx.id)
+                                MonoStore.bump()
+                            }
+                        )
+                    }
+                }
+                monoView?.doubles?.takeIf { it.isNotEmpty() }?.let { doubles ->
+                    item(key = "mono-doubles") {
+                        DoubleChargeTile(
+                            doubles,
+                            currencies,
+                            Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md)
+                        ) {
+                            mono.doubleOk(it.key)
+                            MonoStore.bump()
+                        }
+                    }
+                }
+                monoView?.silent?.takeIf { it.isNotEmpty() }?.let { silent ->
+                    item(key = "mono-silent") {
+                        SilentTile(
+                            silent,
+                            Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                            onWait = {
+                                mono.saveWaiting(it.pay.name, today.toEpochDay() + SILENT_WAIT_DAYS)
+                                MonoStore.bump()
+                            },
+                            onRemove = { removing = it }
+                        )
+                    }
+                }
+                // A cancellation whose paid period has run out asks, the day the next
+                // charge would have come, whether it really did not — PaymentsLife.kt.
+                // Not where the statement already shows the charge: the card above
+                // asks about that one with the bank's own figures.
+                val charged = monoView?.afterCancel.orEmpty().mapNotNull { it.pay }
+                items.withIndex()
+                    .filter { lifeOf(it.value, today) == PayLife.ENDED && it.value !in charged }
+                    .forEach { (position, pay) ->
+                        item(key = "ended-$position-${pay.name}") {
+                            EndedTile(
+                                pay,
+                                Modifier.padding(horizontal = Space.screen).padding(bottom = Space.md),
+                                onNotCharged = { onDelete(position) },
+                                onCharged = {
+                                    save(items.mapIndexed { i, item -> if (i == position) unstopped(item) else item })
+                                    val month = monthKey(LocalDate.ofEpochDay(pay.stopsAfter + 1))
+                                    if (!isPaid(paid, pay.name, month)) {
+                                        setPaid(paid + PaidMark(pay.name, month, pay.amount, pay.currency))
+                                    }
+                                }
+                            )
+                        }
+                    }
                 if (items.isEmpty()) {
                     item {
                         PlaceholderRows(
@@ -6125,6 +6242,50 @@ fun PaymentsScreen(
                         }
                     }
                 }
+                // Cancelled payments still running out what was paid for, and paused
+                // ones: off the timeline, because neither takes money, and each with
+                // its one way back — PaymentsLife.kt.
+                val winding = items.withIndex()
+                    .filter { lifeOf(it.value, today) == PayLife.CANCELLED && !isLive(it.value, today) }
+                if (winding.isNotEmpty()) {
+                    item(key = "cancelled-head") {
+                        Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg, bottom = Space.sm)) {
+                            SectionTitle("Скасовані — до кінця оплаченого")
+                        }
+                    }
+                    winding.forEach { (position, pay) ->
+                        item(key = "cancelled-$position-${pay.name}") {
+                            LifeTile(
+                                pay,
+                                cancelledLine(pay, today).orEmpty(),
+                                "Відновити",
+                                Modifier.padding(horizontal = Space.screen).padding(bottom = Space.sm),
+                                onAction = { save(items.mapIndexed { i, item -> if (i == position) unstopped(item) else item }) },
+                                onOpen = { editing = position }
+                            )
+                        }
+                    }
+                }
+                val resting = items.withIndex().filter { lifeOf(it.value, today) == PayLife.PAUSED }
+                if (resting.isNotEmpty()) {
+                    item(key = "paused-head") {
+                        Column(Modifier.padding(horizontal = Space.screen).padding(top = Space.lg, bottom = Space.sm)) {
+                            SectionTitle("На паузі")
+                        }
+                    }
+                    resting.forEach { (position, pay) ->
+                        item(key = "paused-$position-${pay.name}") {
+                            LifeTile(
+                                pay,
+                                pausedLine(pay).orEmpty(),
+                                "Відновити",
+                                Modifier.padding(horizontal = Space.screen).padding(bottom = Space.sm),
+                                onAction = { save(items.mapIndexed { i, item -> if (i == position) resumed(item, today) else item }) },
+                                onOpen = { editing = position }
+                            )
+                        }
+                    }
+                }
                 // Plans whose last payment is behind them: off the schedule, kept until
                 // deleted, so what they cost stays readable.
                 val finishedPlans = items.withIndex().filter { isFinished(it.value, today) }
@@ -6153,10 +6314,8 @@ fun PaymentsScreen(
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
-                                        TileCaption(
-                                            "${instalmentLine(pay, today)} · останній ${formatDate(instalmentLast(pay))}",
-                                            SurfaceRaised
-                                        )
+                                        // Paid off early and returned say so — PaymentsLife.kt.
+                                        TileCaption(finishedPlanLine(pay), SurfaceRaised)
                                     }
                                     EmojiGlyph("✅", 24.dp)
                                 }
@@ -6265,6 +6424,23 @@ fun PaymentsScreen(
             editingIncome = false
         }
     }
+    // «Прибрати» from «Мовчать»: the cancel question, with what the bank's silence
+    // says was paid for — usually already over, so it goes to the bin at once.
+    removing?.let { silent ->
+        CancelDialog(
+            name = silent.pay.name,
+            initial = silentPaidUntil(silent),
+            today = today,
+            onDismiss = { removing = null }
+        ) { until ->
+            removing = null
+            val index = items.indexOf(silent.pay)
+            if (index >= 0) {
+                save(items.mapIndexed { i, item -> if (i == index) cancelled(item, until, today) else item })
+                if (until.isBefore(today)) onDelete(index)
+            }
+        }
+    }
     editing?.let { index ->
         items.getOrNull(index)?.let { pay ->
             EditPaymentSheet(
@@ -6273,7 +6449,11 @@ fun PaymentsScreen(
                 delete = {
                     onDelete(index)
                     editing = null
-                }
+                },
+                marks = paid,
+                setMarks = setPaid,
+                orders = orders,
+                onReturned = onOrderReturned
             ) { changed ->
                 save(items.mapIndexed { i, item -> if (i == index) changed else item })
                 // Marks are matched by name, so a rename carries them across. Left
@@ -6355,6 +6535,8 @@ fun PaymentTile(
         if (isInstalment(pay)) {
             InstalmentBar(instalmentsBehind(pay, today), pay.instalments, inkOn(shown), Modifier.padding(top = Space.xs))
         }
+        // Cancelled with charges still to come before what was paid for runs out.
+        cancelledLine(pay, today)?.let { TileCaption(it, shown) }
         // The date the free ride ends: the one fact about this expense that expires.
         trialLabel(pay, today)?.let { free ->
             Text(
@@ -6437,6 +6619,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
     var currency by remember { mutableStateOf(UAH) }
     var warnDays by remember { mutableIntStateOf(DEFAULT_WARN_DAYS) }
     var trialEnd by remember { mutableLongStateOf(0L) }
+    // The price until [trialEnd]: empty is a free trial, as before. See [priceOn].
+    var promo by remember { mutableStateOf("") }
     var billingMonth by remember { mutableIntStateOf(0) }
     var emoji by remember { mutableStateOf("") }
     var plan by remember { mutableStateOf(false) }
@@ -6473,7 +6657,8 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
                         billingMonth,
                         emoji,
                         instalments = planTotal(plan, planCount),
-                        instalmentStart = planStart(plan, planCount, planDone, day, today)
+                        instalmentStart = planStart(plan, planCount, planDone, day, today),
+                        promoPrice = if (trialEnd > 0L) parseAmount(promo).coerceAtLeast(0.0) else 0.0
                     )
                 )
             }
@@ -6512,16 +6697,19 @@ fun AddPaymentSheet(close: () -> Unit, add: (Pay) -> Unit) {
             setCount = { planCount = it },
             setDone = { planDone = it }
         )
-        TrialField(trialEnd, today) { trialEnd = it }
-        firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today, billingMonth)
-            ?.let { note ->
-            Text(
-                note,
-                Modifier.padding(top = Space.xs),
-                color = TextSecondary,
-                fontSize = Type.captionSize,
-                lineHeight = Type.captionLine
-            )
+        PromoField(trialEnd, promo, parseAmount(amount), currency, today, { trialEnd = it }, { promo = it })
+        // Only a free period hides the first charge; a promo charges from its first date.
+        if (parseAmount(promo) <= 0.0) {
+            firstChargeNote(day.toIntOrNull()?.coerceIn(1, 31) ?: 1, trialEnd, today, billingMonth)
+                ?.let { note ->
+                    Text(
+                        note,
+                        Modifier.padding(top = Space.xs),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                }
         }
         WarnDaysChips(warnDays) { warnDays = it }
     }
@@ -7778,6 +7966,16 @@ fun ArchivedPurchase(
                 fontSize = Type.captionSize,
                 modifier = Modifier.padding(top = Space.xs)
             )
+            // Bought «частинами» and returned: the plan's «Повернув» says so here.
+            returnedPurchaseLine(order)?.let { line ->
+                Text(
+                    line,
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine,
+                    modifier = Modifier.padding(top = Space.xs)
+                )
+            }
             returnLine(order, today)?.let { line ->
                 Row(Modifier.padding(top = Space.xs), verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -8692,6 +8890,12 @@ fun EditPaymentSheet(
     pay: Pay,
     close: () -> Unit,
     delete: () -> Unit,
+    /** What has been marked paid: a payoff writes its month, a cancellation reads its «діє до». */
+    marks: List<PaidMark> = emptyList(),
+    setMarks: (List<PaidMark>) -> Unit = {},
+    /** Purchases a plan can be tied to, and what «Повернув» tells the one it is tied to. */
+    orders: List<Order> = emptyList(),
+    onReturned: (orderId: String, day: Long) -> Unit = { _, _ -> },
     save: (Pay) -> Unit
 ) {
     // A correction landing is worth feeling; opening the form to make one is not.
@@ -8702,12 +8906,18 @@ fun EditPaymentSheet(
     var currency by remember { mutableStateOf(pay.currency) }
     var warnDays by remember { mutableIntStateOf(pay.warnDays) }
     var trialEnd by remember { mutableLongStateOf(pay.trialEnd) }
+    var promo by remember { mutableStateOf(amountText(pay.promoPrice)) }
     var billingMonth by remember { mutableIntStateOf(pay.billingMonth) }
     var emoji by remember { mutableStateOf(pay.emoji) }
+    var cancelUrl by remember { mutableStateOf(pay.cancelUrl) }
+    var order by remember { mutableStateOf(pay.order) }
     val today = remember { LocalDate.now() }
     var plan by remember { mutableStateOf(isInstalment(pay)) }
     var planCount by remember { mutableStateOf(if (isInstalment(pay)) pay.instalments.toString() else "") }
     var planDone by remember { mutableStateOf(instalmentsBehind(pay, today).toString()) }
+    // The life actions ask first; each then acts on the payment as it is stored and
+    // closes the sheet, like «Видалити».
+    var asking by remember { mutableStateOf<String?>(null) }
     FormSheet(
         title = "Змінити витрату",
         confirmLabel = "Зберегти",
@@ -8725,6 +8935,7 @@ fun EditPaymentSheet(
                         day = day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
                         warnDays = warnDays,
                         trialEnd = trialEnd,
+                        promoPrice = if (trialEnd > 0L) parseAmount(promo).coerceAtLeast(0.0) else 0.0,
                         billingMonth = if (plan) 0 else billingMonth,
                         emoji = emoji,
                         instalments = planTotal(plan, planCount),
@@ -8734,7 +8945,10 @@ fun EditPaymentSheet(
                             planDone,
                             day,
                             today
-                        )
+                        ),
+                        // Kept only when it is an address; an empty field means the built-in one.
+                        cancelUrl = cancelUrl.trim().takeIf { it.isBlank() || isSupportedWebUrl(it) } ?: pay.cancelUrl,
+                        order = if (plan) order else ""
                     )
                 )
             }
@@ -8773,26 +8987,55 @@ fun EditPaymentSheet(
             today = today,
             setOn = { plan = it },
             setCount = { planCount = it },
-            setDone = { planDone = it }
+            setDone = { planDone = it },
+            stopped = isInstalment(pay) && pay.stopsAfter > 0L
         )
-        TrialField(trialEnd, today) { trialEnd = it }
-        // The reminder counts to this date, not to the free renewal before it.
-        firstChargeNote(
-            day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
-            trialEnd,
-            today,
-            billingMonth
-        )
-            ?.let { note ->
-                Text(
-                    note,
-                    Modifier.padding(top = Space.xs),
-                    color = TextSecondary,
-                    fontSize = Type.captionSize,
-                    lineHeight = Type.captionLine
-                )
-            }
+        PromoField(trialEnd, promo, parseAmount(amount), currency, today, { trialEnd = it }, { promo = it })
+        // The reminder counts to this date, not to the free renewal before it. A
+        // promo charges from its first date, so only a free period gets the note.
+        if (parseAmount(promo) <= 0.0) {
+            firstChargeNote(
+                day.toIntOrNull()?.coerceIn(1, 31) ?: pay.day,
+                trialEnd,
+                today,
+                billingMonth
+            )
+                ?.let { note ->
+                    Text(
+                        note,
+                        Modifier.padding(top = Space.xs),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
+                        lineHeight = Type.captionLine
+                    )
+                }
+        }
         WarnDaysChips(warnDays) { warnDays = it }
+        // A payment's life after it starts — PaymentsLife.kt. A plan ends by its own
+        // buttons; anything else can be cancelled (with «Як скасувати» beside a
+        // subscription or a trial) or paused.
+        if (plan || isInstalment(pay)) {
+            PlanActions(
+                pay = pay,
+                today = today,
+                orders = orders,
+                order = order,
+                setOrder = { order = it },
+                onPaidOff = { asking = ASK_PAY_OFF },
+                onReturned = { asking = ASK_RETURN },
+                onRestart = { save(unstopped(pay)) }
+            )
+        } else {
+            if (cancelHelpFits(pay, today)) CancelHelp(pay, cancelUrl) { cancelUrl = it }
+            LifeActions(
+                pay = pay,
+                today = today,
+                onCancel = { asking = ASK_CANCEL },
+                onPause = { save(paused(pay, today)) },
+                onResume = { save(resumed(pay, today)) },
+                onRestart = { save(unstopped(pay)) }
+            )
+        }
         val trail = amountTrailLines(pay)
         if (trail.isNotEmpty()) {
             Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
@@ -8821,7 +9064,46 @@ fun EditPaymentSheet(
             Text("Видалити витрату", color = Negative)
         }
     }
+    when (asking) {
+        ASK_CANCEL -> CancelDialog(
+            name = pay.name,
+            initial = paidUntil(pay, today, marks),
+            today = today,
+            onDismiss = { asking = null }
+        ) { until ->
+            asking = null
+            save(cancelled(pay, until, today))
+            // Already over: nothing left to ask about, so it goes to the bin now.
+            if (until.isBefore(today)) delete()
+        }
+        ASK_PAY_OFF -> PayOffDialog(
+            pay = pay,
+            recorded = payOffMarks(marks, pay, today)
+                .firstOrNull { it.name == pay.name && it.month == monthKey(today) }?.amount
+                ?: payOffSum(pay, today),
+            today = today,
+            onDismiss = { asking = null }
+        ) {
+            asking = null
+            setMarks(payOffMarks(marks, pay, today))
+            save(paidOff(pay, today))
+        }
+        ASK_RETURN -> ReturnDialog(
+            pay = pay,
+            order = orders.firstOrNull { it.id == order },
+            onDismiss = { asking = null }
+        ) {
+            asking = null
+            save(returned(pay.copy(order = order), today))
+            if (order.isNotBlank()) onReturned(order, today.toEpochDay())
+        }
+    }
 }
+
+/** Which question the payment sheet is asking before a life action. */
+private const val ASK_CANCEL = "cancel"
+private const val ASK_PAY_OFF = "payoff"
+private const val ASK_RETURN = "return"
 
 /**
  * Turns a wish into a parcel.
@@ -9040,63 +9322,6 @@ fun IncomeDialog(current: Double, close: () -> Unit, save: (Double) -> Unit) {
 }
 
 /**
- * The date a free trial runs out.
- *
- * A date rather than "30 днів", because a trial is sold in days and charged on a
- * date, and the conversion is exactly the arithmetic nobody does. Optional and
- * absent by default: almost no expense has one, and a field every rent and
- * electricity bill has to dismiss is a field that makes the form worse.
- */
-@Composable
-fun TrialField(trialEnd: Long, today: LocalDate, set: (Long) -> Unit) {
-    var picking by remember { mutableStateOf(false) }
-    val ends = trialEnd.takeIf { it > 0L }?.let { LocalDate.ofEpochDay(it) }
-    Column(Modifier.fillMaxWidth().padding(top = Space.md)) {
-        Text("Пробний період", color = TextSecondary, fontSize = Type.captionSize)
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TextButton({ picking = true }, Modifier.weight(1f)) {
-                Text(
-                    if (ends == null) {
-                        "Додати безкоштовний період"
-                    } else {
-                        "Безкоштовно до ${formatDate(ends)}"
-                    }
-                )
-            }
-            if (ends != null) {
-                TextButton({ set(0L) }) { Text("Прибрати", color = Negative) }
-            }
-        }
-    }
-    if (picking) {
-        val millisPerDay = 86_400_000L
-        val state = rememberDatePickerState(
-            // A month out: the length almost every trial actually runs.
-            initialSelectedDateMillis = (ends ?: today.plusMonths(1)).toEpochDay() * millisPerDay,
-            selectableDates = object : SelectableDates {
-                // A trial that ran out yesterday is not a trial, it is a charge,
-                // and entering one would hide a live subscription behind a nought.
-                override fun isSelectableDate(utcTimeMillis: Long) =
-                    utcTimeMillis / millisPerDay > today.toEpochDay()
-            }
-        )
-        DatePickerDialog(
-            onDismissRequest = { picking = false },
-            confirmButton = {
-                TextButton({
-                    // The picker works in UTC midnights, so this is an exact day.
-                    state.selectedDateMillis?.let { set(it / millisPerDay) }
-                    picking = false
-                }) { Text("Обрати") }
-            },
-            dismissButton = { TextButton({ picking = false }) { Text("Скасувати") } }
-        ) {
-            DatePicker(state)
-        }
-    }
-}
-
-/**
  * How much notice this expense gets.
  *
  * A row of chips rather than a number field: the useful answers are few, and one
@@ -9131,7 +9356,9 @@ fun InstalmentFields(
     today: LocalDate,
     setOn: (Boolean) -> Unit,
     setCount: (String) -> Unit,
-    setDone: (String) -> Unit
+    setDone: (String) -> Unit,
+    /** Paid off early or returned: the date below is the schedule's, not the plan's end. */
+    stopped: Boolean = false
 ) {
     Row(
         Modifier.fillMaxWidth().clip(Radius.sm).clickable { setOn(!on) }.padding(vertical = Space.xs),
@@ -9158,10 +9385,10 @@ fun InstalmentFields(
             val behind = (done.trim().toIntOrNull() ?: 0).coerceIn(0, total)
             val sample = Pay("", 0.0, day, instalments = total, instalmentStart = instalmentStartFor(day, behind, today))
             Text(
-                if (behind >= total) {
-                    "Усі платежі вже позаду"
-                } else {
-                    "Останній платіж — ${formatDate(instalmentLast(sample))}"
+                when {
+                    behind >= total -> "Усі платежі вже позаду"
+                    stopped -> "За графіком останній платіж — ${formatDate(instalmentLast(sample))}"
+                    else -> "Останній платіж — ${formatDate(instalmentLast(sample))}"
                 },
                 Modifier.padding(top = Space.xs),
                 color = TextSecondary,

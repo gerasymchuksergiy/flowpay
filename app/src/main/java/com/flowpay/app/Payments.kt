@@ -258,7 +258,8 @@ fun instalmentLine(pay: Pay, today: LocalDate): String? {
     return when {
         pay.stopReason == STOP_RETURNED -> "товар повернуто · платежів більше немає"
         pay.stopReason == STOP_PAID_OFF && (last == null || isFinished(pay, today)) -> "погашено достроково"
-        pay.stopReason == STOP_PAID_OFF -> "погашено достроково · останній ${dayMonth(last!!)}"
+        // Short enough for two lines of a tile in a grid of two.
+        pay.stopReason == STOP_PAID_OFF -> "дострокове погашення ${dayMonth(last!!)}"
         isFinished(pay, today) -> "усі ${paymentsLabel(pay.instalments)} позаду"
         behind == 0 -> "перший з ${pay.instalments} — ${dayMonth(instalmentFirst(pay))}"
         else -> "платіж ${behind + 1} з ${pay.instalments} · останній ${dayMonth(instalmentLast(pay))}"

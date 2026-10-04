@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.net.toUri
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
@@ -150,7 +151,7 @@ class ReminderWorker(context: Context, parameters: WorkerParameters) :
                 val open = android.app.PendingIntent.getActivity(
                     applicationContext,
                     ACTION_REQUEST_BASE + index,
-                    android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(action.url))
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, action.url.toUri())
                         .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
                     android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT
                 )

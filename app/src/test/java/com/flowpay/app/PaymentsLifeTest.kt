@@ -138,6 +138,19 @@ class PaymentsLifeTest {
     }
 
     @Test
+    fun `a cancellation that still has charges to come stays on the timeline and says so`() {
+        // Moved to the end of November by hand: October's charge still happens.
+        val late = cancelled(netflix, LocalDate.of(2026, 11, 30), today)
+        assertTrue(isLive(late, today))
+        assertEquals(PayLife.CANCELLED, lifeOf(late, today))
+        assertEquals(1, paymentGroups(listOf(late), today).size)
+        assertEquals(299.0, monthlyTotal(listOf(late), 0.0, today).total, 0.0)
+        assertEquals(598.0, yearlyCharge(late, today), 0.0)
+        assertEquals("скасовано · діє до 30 листопада", cancelledLine(late, today))
+        assertNull(cancelledLine(netflix, today))
+    }
+
+    @Test
     fun `a cancellation taken back runs as before`() {
         val gone = cancelled(netflix, LocalDate.of(2026, 10, 27), today)
         assertEquals(netflix, unstopped(gone))
@@ -297,7 +310,7 @@ class PaymentsLifeTest {
         assertTrue(stillOwing(listOf(off), marks, today).isEmpty())
         assertFalse(isFinished(off, today))
         assertTrue(isFinished(off, LocalDate.of(2026, 10, 16)))
-        assertEquals("погашено достроково · останній 15 жовтня", instalmentLine(off, today))
+        assertEquals("дострокове погашення 15 жовтня", instalmentLine(off, today))
         assertEquals("погашено достроково", instalmentLine(off, LocalDate.of(2026, 10, 16)))
         assertEquals("погашено достроково · 15 жовтня 2026", finishedPlanLine(off))
         assertEquals("Після 15 жовтня звільниться 2 500 ₴ на місяць", shown(freedLine(listOf(off), today, 41.6)!!))
@@ -386,6 +399,20 @@ class PaymentsLifeTest {
         assertEquals("https://www.youtube.com/paid_memberships", action.url)
         // No trial, no button.
         assertTrue(digest(emptyList(), listOf(netflix), emptyList(), LocalDate.of(2026, 10, 26), 0.0, 0.0).actions.isEmpty())
+        // The owner's own link is the one the button opens.
+        val own = trial.copy(cancelUrl = "https://my.example/yt")
+        assertEquals(
+            "https://my.example/yt",
+            digest(emptyList(), listOf(own), emptyList(), LocalDate.of(2026, 10, 17), 0.0, 0.0).actions.single().url
+        )
+    }
+
+    @Test
+    fun `a plan paid off but not yet at its last payment is still running`() {
+        val off = paidOff(phone, today)
+        assertEquals(PayLife.RUNNING, lifeOf(off, today))
+        assertEquals(PayLife.FINISHED, lifeOf(off, LocalDate.of(2026, 10, 16)))
+        assertEquals(1, paymentGroups(listOf(off), today).size)
     }
 
     // ------------------------------------------------------------ the morning
