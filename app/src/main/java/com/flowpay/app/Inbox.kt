@@ -159,7 +159,14 @@ data class TgMessage(
     val text: String?,
     /** A photo, a file, a voice message and the like: something that is not words. */
     val media: Boolean,
-    val fromBot: Boolean
+    val fromBot: Boolean,
+    /**
+     * The words of the message this one answers, when it is an answer. The bot's reply
+     * about a page with no price carries the page's link, and that is how an answer
+     * with a price finds its wish (§29). Telegram hands over only that one message,
+     * never the one it answered in turn.
+     */
+    val replied: String? = null
 )
 
 /** One update. [message] is null for anything that is not a new message — an edit, a channel post. */
@@ -187,18 +194,26 @@ fun updatesIn(result: Any?): List<TgUpdate> {
 fun tgMessageOf(json: JSONObject): TgMessage? {
     val chat = json.optJSONObject("chat") ?: return null
     if (!chat.has("id")) return null
-    val captioned = !json.has("text")
-    val words = if (captioned) json.optString("caption", "") else json.optString("text", "")
-    val hidden = hiddenLinks(json.optJSONArray(if (captioned) "caption_entities" else "entities"), words)
-    val text = (listOf(words) + hidden).filter { it.isNotBlank() }.joinToString("\n").ifBlank { null }
     return TgMessage(
         chatId = chat.optLong("id"),
         chatType = chat.optString("type", ""),
         messageId = json.optLong("message_id"),
-        text = text,
+        text = wordsOf(json),
         media = MEDIA_FIELDS.any { json.has(it) },
-        fromBot = json.optJSONObject("from")?.optBoolean("is_bot", false) == true
+        fromBot = json.optJSONObject("from")?.optBoolean("is_bot", false) == true,
+        replied = json.optJSONObject("reply_to_message")?.let(::wordsOf)
     )
+}
+
+/**
+ * A message's words: the text, else a photo's or a file's caption, with the addresses
+ * of links hidden under words added on their own lines. Null when there are none.
+ */
+private fun wordsOf(json: JSONObject): String? {
+    val captioned = !json.has("text")
+    val words = if (captioned) json.optString("caption", "") else json.optString("text", "")
+    val hidden = hiddenLinks(json.optJSONArray(if (captioned) "caption_entities" else "entities"), words)
+    return (listOf(words) + hidden).filter { it.isNotBlank() }.joinToString("\n").ifBlank { null }
 }
 
 /**
@@ -359,6 +374,12 @@ sealed interface InboxStep {
      * goes under the reply — the other links the message carried ([otherLinksNote]).
      */
     data class AddWish(val url: String, val note: String? = null) : InboxStep
+
+    /**
+     * A price typed in answer about a wish on the list, and the name that came with it,
+     * if one did — saved as «Редагувати товар» saves it ([typedWish]).
+     */
+    data class TypePrice(val wish: Wish, val price: Double, val name: String?, val reply: String) : InboxStep
 }
 
 private val ANY_URL = Regex("""https?://[^\s<>"']+""", RegexOption.IGNORE_CASE)
@@ -391,6 +412,56 @@ fun otherLinksNote(text: String): String? =
 /** A reply with a line under it, when there is one. */
 fun withNote(reply: String, note: String?): String = if (note == null) reply else "$reply\n$note"
 
+/** A price typed in answer about a wish: the figure, and the name before it when one came. */
+data class TypedWishPrice(val price: Double, val name: String?)
+
+/** Above this a «price» is a waybill or an order number, not money. */
+const val MAX_TYPED_PRICE = 10_000_000.0
+
+/** Longer than this, or on several lines, and an answer is a letter or a note, not a price. */
+private const val TYPED_PRICE_CHARS = 150
+
+/** The figure at the end: «13819», «13 819», «1.599», «1 599,50», with «грн» or «₴» after it. */
+private val TYPED_PRICE = Regex(
+    """(?:^|\s)(\d{1,3}(?:[ \u00A0\u202F.]\d{3})+|\d+)(?:[.,](\d{1,2}))?\s*(?:грн\.?|гривень|гривні|гривня|₴|uah)?\s*[.!]?$""",
+    RegexOption.IGNORE_CASE
+)
+
+/** What may stand between a name and its figure: «Навушники JBL — 1599», «ціна: 1599». */
+private val NAME_TAIL = charArrayOf('—', '–', '-', ':', ',', '=')
+
+/** A word before the figure that is about the figure, not the name: «ціна 13819», «JBL за 1599». */
+private val PRICE_WORDS = setOf("ціна", "ціну", "вартість", "коштує", "за", "по", "price")
+
+/**
+ * The price at the end of a short answer, and whatever stands before it as the name:
+ * «13819», «13 819 грн», «TUF Gaming VG34VQ3B 13819». Null when the words end in no
+ * figure, run long or over several lines (a letter), carry a link (an errand of its
+ * own), or the figure is nought or too big to be a price.
+ */
+fun typedWishPrice(text: String): TypedWishPrice? {
+    val words = text.trim()
+    if (words.length > TYPED_PRICE_CHARS || '\n' in words || ANY_URL.containsMatchIn(words)) return null
+    val match = TYPED_PRICE.find(words) ?: return null
+    val whole = match.groupValues[1].filter { it.isDigit() }.toLongOrNull() ?: return null
+    val cents = match.groupValues[2].let { if (it.isEmpty()) 0.0 else it.padEnd(2, '0').toInt() / 100.0 }
+    val price = whole + cents
+    if (price <= 0.0 || price > MAX_TYPED_PRICE) return null
+    var name = words.substring(0, match.range.first).trim().trimEnd(*NAME_TAIL).trim()
+    val last = name.substringAfterLast(' ')
+    if (last.lowercase() in PRICE_WORDS) name = name.dropLast(last.length).trim().trimEnd(*NAME_TAIL).trim()
+    return TypedWishPrice(price, name.ifBlank { null })
+}
+
+/**
+ * The wish an answer is about: the first link in the message it answers, when that
+ * page is on the list. The bot's reply about a page with no price ends with the page's
+ * link for exactly this ([typePriceHint]); the owner's own message with the link works
+ * the same way.
+ */
+fun repliedWish(replied: String?, wishes: List<Wish>): Wish? =
+    (sharedLink(replied, wishes) as? SharedLink.Known)?.wish
+
 /**
  * The share router's decision for a message from the owner, as a step the inbox can
  * take without a screen. [hideSums] is «Ховати суми поза застосунком»: a chat is
@@ -403,9 +474,20 @@ fun inboxStep(
     pays: List<Pay>,
     orders: List<Order>,
     today: LocalDate,
-    hideSums: Boolean
+    hideSums: Boolean,
+    /** The words of the message this one answers ([TgMessage.replied]), when it is an answer. */
+    replied: String? = null
 ): InboxStep {
     fun outside(line: String) = if (hideSums) maskSums(line) else line
+    // An answer with a price in it, to a message about a wish: the price is typed in
+    // (§29). Anything else in an answer — a link, a letter, a waybill — is an errand
+    // of its own and goes the usual way below.
+    if (replied != null) {
+        typedWishPrice(text)?.let { typed ->
+            val wish = repliedWish(replied, wishes) ?: return InboxStep.Say(INBOX_PRICE_WHICH)
+            return InboxStep.TypePrice(wish, typed.price, typed.name, typedPriceReply(typed.name ?: wish.name, typed.price))
+        }
+    }
     return when (val route = shareRoute(text, wishes, pays, today)) {
         is ShareRoute.Letter -> when (val letter = route.letter) {
             is SharedLetter.SamePrice -> InboxStep.Say(samePriceReply(letter.pay))
@@ -449,6 +531,33 @@ const val INBOX_HOTLINE = "Сторінку Hotline прив'язати до б�
 
 /** Said when handling a message failed in a way nobody foresaw, so it is not retried for ever. */
 const val INBOX_FAILED = "Не вдалося обробити це повідомлення — додайте вручну у FlowPay"
+
+/** An answer with a price to a message that names no wish on the list. */
+const val INBOX_PRICE_WHICH =
+    "🤔 Не знаю, до якого бажання ця ціна: у повідомленні, на яке ви відповіли, немає посилання на товар зі списку"
+
+/** The wish an answer was about was deleted on the phone meanwhile. */
+const val INBOX_WISH_GONE = "Цього бажання вже немає у FlowPay — ціну не записано"
+
+/**
+ * Under a reply about a wish with no price: how to give it one from the PC, and the
+ * page's link on its own line — an answer to the reply finds its wish by it.
+ */
+fun typePriceHint(url: String): String =
+    "Щоб вписати ціну, дайте відповідь на це повідомлення числом, наприклад 12999. " +
+        "Можна з назвою: Навушники JBL 1599\n$url"
+
+/**
+ * A page the shop keeps from programs (§29). The item is on the list all the same; the
+ * reply says why nothing more came and how to give the price from here — the check
+ * twice a day would be turned away just the same, so it is not promised.
+ */
+fun refusedWishReply(url: String): String =
+    "🔒 Бажання додано, але ${sourceName(url)} не пускає застосунки на свої сторінки — " +
+        "ні назви, ні ціни звідти не прочитати.\n" + typePriceHint(url)
+
+/** «✏️ TUF Gaming VG34VQ3B — 13 819 ₴, ціну вписано вручну». A shop's price, never masked. */
+fun typedPriceReply(name: String, price: Double): String = "✏️ $name — ${money(price)}, ціну вписано вручну"
 
 /** «12.11», or «15.01.2027» outside this year. */
 fun dottedDate(date: LocalDate, today: LocalDate): String =
@@ -502,7 +611,8 @@ fun knownWishReply(wish: Wish): String {
         isStale(wish.freshness) -> "востаннє ${money(wish.price)}"
         else -> "зараз ${money(wish.price)}"
     }
-    return "👀 Уже стежу: ${wish.name} — $price"
+    val head = "👀 Уже стежу: ${wish.name} — $price"
+    return if (wish.price <= 0.0) "$head\n${typePriceHint(wish.url)}" else head
 }
 
 /**
@@ -516,11 +626,12 @@ fun newWishReply(wish: Wish?, url: String): String {
     val shop = sourceName(url)
     val named = wish?.name?.takeIf { it.isNotBlank() && it != placeholderName(url) }
     if (wish == null || wish.price <= 0.0) {
-        return if (named != null) {
+        val head = if (named != null) {
             "✅ Бажання: $named ($shop) — ціну прочитати не вдалося, спробую під час перевірки цін"
         } else {
             "✅ Бажання додано ($shop), але ціну прочитати не вдалося — спробую під час перевірки цін"
         }
+        return "$head\n${typePriceHint(url)}"
     }
     // A price the page showed while saying the thing cannot be bought is said so.
     val state = freshnessLabel(wish.freshness)?.let { " · ${it.lowercase()}" }.orEmpty()

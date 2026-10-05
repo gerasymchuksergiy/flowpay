@@ -198,10 +198,11 @@ class NoPriceAddTest {
 
     @Test
     fun `the message says which of the two things happened`() {
-        assertTrue(noPriceNote(facts).startsWith("Прочитав назву й фото, але ціни на сторінці немає"))
-        assertTrue(noPriceNote(facts.copy(image = "")).startsWith("Прочитав назву,"))
-        assertTrue(noPriceNote(facts.copy(name = "")).startsWith("Прочитав фото,"))
-        assertTrue(noPriceNote(facts).contains("Впиши її сам"))
+        assertTrue(noPriceNote(facts).startsWith("Прочитано назву й фото, але ціни на сторінці немає"))
+        assertTrue(noPriceNote(facts.copy(image = "")).startsWith("Прочитано назву,"))
+        assertTrue(noPriceNote(facts.copy(name = "")).startsWith("Прочитано фото,"))
+        // HANDOFF §13: no gendered verb, no «сам».
+        assertTrue(noPriceNote(facts).contains("Впиши її вручну"))
         // And the failure that really is a failure sends you back to the link.
         assertTrue(NOTHING_READ_NOTE.contains("посилання"))
     }

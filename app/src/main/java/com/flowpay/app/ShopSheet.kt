@@ -234,7 +234,7 @@ private fun KnownSheet(id: String, onClose: () -> Unit, onOpenApp: () -> Unit) {
             Text(it, color = TextSecondary, fontSize = Type.captionSize, modifier = Modifier.padding(bottom = 4.dp))
         }
     }
-    freshnessNote(wish.freshness)?.let {
+    wishNote(wish)?.let {
         Text(it, color = Negative, fontSize = Type.captionSize, lineHeight = Type.captionLine)
     }
     cardLine(wish, hasCard)?.let { PriceAside(it) }

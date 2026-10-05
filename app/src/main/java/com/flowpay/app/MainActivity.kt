@@ -1603,6 +1603,15 @@ fun readWish(
  */
 class PageGone(val code: Int) : java.io.IOException("Сторінка більше не відповідає ($code)")
 
+/**
+ * The shop answered, and the answer was «not to programs»: 401 or 403 for a page any
+ * browser opens — a bot wall such as DataDome in front of ua.store.asus.com (§29).
+ * Distinct from [PageGone], because the item is fine, and from a dropped connection,
+ * because asking again does not help and a typed price does. The app takes the
+ * answer; it does not try to get round it.
+ */
+class PageRefused(val code: Int) : java.io.IOException("Магазин не пускає застосунки на свої сторінки")
+
 /** Fetches a shop page. Separate from parsing it, so both uses share one request. */
 suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
     val normalizedLink = link.trim()
@@ -1617,6 +1626,7 @@ suspend fun pageHtml(link: String): String = withContext(Dispatchers.IO) {
     // about the item. The card is allowed to claim the page is gone only here.
     val code = connection.responseCode
     if (code == 404 || code == 410) throw PageGone(code)
+    if (refusesApps(code)) throw PageRefused(code)
     connection.inputStream.bufferedReader().use { it.readText() }
 }
 
@@ -1665,6 +1675,7 @@ suspend fun pricedPageHtml(link: String): String {
  */
 suspend fun refreshed(previous: Wish, today: Long, rate: FxRate): Reading {
     val sources = wishSources(previous)
+    var refused = 0
     // One at a time rather than in parallel: the pass already walks the whole
     // wishlist this way, and three shops answering at once is a burst of requests
     // at one shop's neighbours for no gain a background job can feel.
@@ -1677,12 +1688,18 @@ suspend fun refreshed(previous: Wish, today: Long, rate: FxRate): Reading {
             return@map SourceReading.Stale(
                 source.copy(checkedDay = today, freshness = Freshness.GONE)
             )
+        } catch (wall: PageRefused) {
+            // Nothing read, so nothing changes — the same as a dropped connection.
+            // Counted only so that a tap on «Оновити» can be told why.
+            refused++
+            return@map SourceReading.Failed
         } catch (failure: Exception) {
             return@map SourceReading.Failed
         }
         readSource(source, html, today, rate)
     }
-    return mergeSources(previous, readings, today, rate)
+    val reading = mergeSources(previous, readings, today, rate)
+    return if (reading == Reading.Failed && refused == sources.size) Reading.Refused else reading
 }
 
 data class UpdateInfo(val versionCode: Int, val versionName: String, val downloadUrl: String)
@@ -2004,9 +2021,10 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     wishes = saved
                     store.saveWishes(saved)
                     say("Додано до бажань, шукаю ціну…")
-                    val read = runCatching {
+                    val attempt = runCatching {
                         readForAdd(pricedPageHtml(route.url), route.url, id, day, rate)
-                    }.getOrNull()
+                    }
+                    val read = attempt.getOrNull()
 
                     /** The placeholder filled from its page, by [filledWish]. */
                     fun fill(fetched: Wish) {
@@ -2018,7 +2036,13 @@ fun FlowPayApp(context: Context, command: AppCommand? = null, onCommandHandled: 
                     when (read) {
                         // No page at all, or one that named nothing. Either way
                         // the link is safe in the list and the price is typed.
-                        null, PageAdd.Blank -> say("Сторінка не читається — впишіть ціну вручну")
+                        null, PageAdd.Blank -> say(
+                            if (attempt.exceptionOrNull() is PageRefused) {
+                                refusedNote(route.url)
+                            } else {
+                                "Сторінка не читається — впишіть ціну вручну"
+                            }
+                        )
                         is PageAdd.Priced -> {
                             fill(read.wish)
                             say("Додано: ${read.wish.name}")
@@ -3322,7 +3346,7 @@ fun CategorySuggestions(known: List<String>, chosen: String, onPick: (String) ->
  * that before a number is typed.
  */
 @Composable
-fun NoPricePreview(facts: PageFacts, link: String) {
+fun NoPricePreview(facts: PageFacts, link: String, note: String = noPriceNote(facts)) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         if (facts.image.isNotBlank()) {
             AsyncImage(
@@ -3352,7 +3376,7 @@ fun NoPricePreview(facts: PageFacts, link: String) {
         }
     }
     Text(
-        noPriceNote(facts),
+        note,
         color = TextSecondary,
         fontSize = Type.captionSize,
         lineHeight = Type.captionLine,
@@ -3383,6 +3407,10 @@ fun AddWishSheet(
     // and it does not say what it costs. Null keeps the sheet on its usual form.
     var facts by remember { mutableStateOf<PageFacts?>(null) }
     var typedPrice by remember { mutableStateOf("") }
+    // The shop turned the app away (§29): the same typed form, with a name field,
+    // since nothing at all came from the page.
+    var refused by remember { mutableStateOf(false) }
+    var typedName by remember { mutableStateOf("") }
     val touch = rememberTouch()
     val scope = rememberCoroutineScope()
 
@@ -3412,7 +3440,7 @@ fun AddWishSheet(
         touch.landed()
         add(
             wishFromFacts(
-                read,
+                read.copy(name = read.name.ifBlank { typedName.trim() }),
                 link.trim(),
                 System.currentTimeMillis().toString(),
                 parseAmount(typedPrice),
@@ -3467,7 +3495,16 @@ fun AddWishSheet(
                             else -> { page = html; offers = found }
                         }
                     }
-                    .onFailure { error = it.message ?: "Не вдалося прочитати сторінку" }
+                    .onFailure { failure ->
+                        // A shop that turns programs away still leaves a link worth
+                        // keeping: the name and the price are typed instead.
+                        if (failure is PageRefused) {
+                            refused = true
+                            facts = PageFacts()
+                        } else {
+                            error = failure.message ?: "Не вдалося прочитати сторінку"
+                        }
+                    }
                 // Whichever way it failed — nothing readable on the page, money
                 // with no rate, or no page at all. The error text says which; this
                 // says that the link you pasted did not become a wish, which is
@@ -3479,7 +3516,16 @@ fun AddWishSheet(
         onDismiss = close
     ) {
         if (read != null) {
-            NoPricePreview(read, link)
+            NoPricePreview(read, link, if (refused) refusedNote(link) else noPriceNote(read))
+            // No name came from the page: a photograph only, or nothing at all.
+            if (read.name.isBlank()) {
+                OutlinedTextField(
+                    typedName,
+                    { typedName = it },
+                    Modifier.fillMaxWidth().padding(top = Space.md),
+                    label = { Text("Назва") }
+                )
+            }
             NumberField("Ціна, ₴", typedPrice) { typedPrice = it }
             NumberField("Цільова ціна, ₴ (необов'язково)", target) { target = it }
             OutlinedTextField(
@@ -3577,24 +3623,10 @@ fun EditWishSheet(
         confirmLabel = "Зберегти",
         confirmEnabled = true,
         onConfirm = {
-            val typed = parseAmount(price)
-            // A price the user typed is the deliberate fallback for a page that
-            // cannot be read, so it is marked as hand-entered rather than passed off
-            // as a reading: the card then stops promising it is being watched.
-            val priced = if (typed > 0.0 && typed != wish.price) {
-                wish.copy(
-                    price = typed,
-                    history = appendPrice(wish.history, typed, today),
-                    checkedDay = today,
-                    freshness = Freshness.MANUAL
-                )
-            } else {
-                wish
-            }
             touch.landed()
             save(
-                priced.copy(
-                    name = name.ifBlank { wish.name },
+                // The Telegram inbox's answer with a price saves through [typedWish] too.
+                typedWish(wish, parseAmount(price), name, today).copy(
                     targetPrice = parseAmount(target),
                     category = canonicalCategory(category, known),
                     why = why.trim().take(WHY_LIMIT)
@@ -3850,7 +3882,7 @@ fun AddSourceSheet(
                                 // already has one that answers.
                                 offer == null || converted == null ->
                                     error = if (pageFacts(html).describable) {
-                                        "Сторінку прочитав, але ціни на ній немає. " +
+                                        "Сторінку прочитано, але ціни на ній немає. " +
                                             "Другий магазин потрібен саме заради ціни."
                                     } else {
                                         NOTHING_READ_NOTE
@@ -4509,7 +4541,7 @@ fun SharedTransitionScope.WishDetailScreen(
                 MarketRow(wish, today.toEpochDay()) { openLink(context, it) }
                 // Why the figure above is the colour it is, in one sentence. The
                 // card can only carry a two-word badge; this is where it is explained.
-                freshnessNote(wish.freshness)?.let { note ->
+                wishNote(wish)?.let { note ->
                     Text(
                         note,
                         color = if (stale) Negative else TextSecondary,
@@ -5149,7 +5181,7 @@ fun SharedTransitionScope.WishDetailScreen(
                                 // Edited while the page was being read: the edit wins,
                                 // and the reading is not laid over it. Asking again
                                 // is one tap; retyping a figure is not.
-                                if (latest != started && reading !is Reading.Failed) {
+                                if (latest != started && reading != Reading.Failed && reading != Reading.Refused) {
                                     refreshing = false
                                     message = "Бажання змінилось, поки читалась сторінка — оновіть ще раз"
                                     return@launch
@@ -5175,7 +5207,7 @@ fun SharedTransitionScope.WishDetailScreen(
                                     // back: the new freshness is itself the news.
                                     is Reading.Stale -> {
                                         onChange(reading.wish)
-                                        message = freshnessNote(reading.wish.freshness)
+                                        message = wishNote(reading.wish)
                                     }
                                     Reading.Failed -> {
                                         // You asked and the network refused. This is
@@ -5185,6 +5217,13 @@ fun SharedTransitionScope.WishDetailScreen(
                                         // same page on a schedule stays silent.
                                         touch.refused()
                                         message = "Не вдалося прочитати сторінку"
+                                    }
+                                    // The shop answered, and turned the app away.
+                                    // Asking again will not change that; a typed
+                                    // price will, and the pencil is right above.
+                                    Reading.Refused -> {
+                                        touch.refused()
+                                        message = refusedNote(wish.url)
                                     }
                                 }
                                 refreshing = false

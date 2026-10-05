@@ -3,7 +3,7 @@
 Everything the next session needs to work on this app without relearning it the
 expensive way. Written 16 September 2026, at `v3.12.0` / 1002 tests; brought up
 to date 3 October 2026 at `v3.13.0` / 1096 tests (see §15 for what changed), and
-again on 5 October 2026 at `v3.23.0` / 1590 tests. **Start with §19**:
+again on 5 October 2026 at `v3.23.1` / 1606 tests. **Start with §19**:
 where things stand and what to do first.
 
 Nearly every rule below exists because breaking it cost something real — a failed
@@ -1036,6 +1036,7 @@ from the tag, the new strings found in the DEX):
 | `v3.21.2` | Taken back out at the owner's word: «На життя» and the monobank balance as «your money» (§26) |
 | `v3.22.0` | «Сканувати QR»: a link read with the camera goes the way «Поділитися» does (§27) |
 | `v3.23.0` | Telegram inbox: links, waybills and letters sent from the PC to the owner's own bot (§28) |
+| `v3.23.1` | A shop that turns apps away (403) is named as such; a price typed from the PC by answering the bot (§29) |
 
 How 3.17–3.21 were made: the owner said «додай все» to the research page, five
 builders worked in parallel worktrees (`.claude/worktrees/{parcels,prices,touch,
@@ -1056,15 +1057,16 @@ important ones: a «Подушка» fund; «Мій номер для Нової
 Rozetka card; the sheet over the shop (keep or go back); whether to hide sums in
 the morning notification.
 
-**The Telegram inbox (§28) is the newest thing and was never run against a real
-bot.** The owner made @flowpay_moya_skrynka_bot on 5 October; connecting it is the
-owner's next step (Налаштування → «Telegram-скринька», then «Без обмежень» for the
-battery). Its token was pasted into this chat and not revoked (§28) — never copy
-it anywhere.
+**The Telegram inbox (§28) works on the real bot.** The owner made
+@flowpay_moya_skrynka_bot on 5 October and bound it at 01:10 («Готово» came back).
+The first link, sent at 01:11, waited until FlowPay was opened — the 15-minute
+worker had not run yet — and then landed as «Товар з ua.store.asus.com», 0 ₴: that
+shop turns every app away with a 403 (§29). Its token was pasted into this chat and
+not revoked (§28) — never copy it anywhere.
 
 **First thing next session:**
-0. Ask whether the Telegram inbox connected and answered a test link; if not, a
-   screenshot of its sheet (the fault line says why).
+0. Ask whether answering the bot with a price worked (§29), and whether replies come
+   soon enough with FlowPay closed (the 15-minute worker needs «Без обмежень»).
 1. Ask which version is installed, and for screenshots: Огляд (hero, weather,
    «Чи потягну?», «Розкласти зарплату» near month end), Платежі (monobank
    questions, Фонди), Налаштування → monobank. Everything since 3.17 has only been
@@ -1879,3 +1881,84 @@ behaviour, not from the docs read.
 - Payment sums in replies hidden only with «Ховати суми поза застосунком» — or
   always?
 - Several links in one message: «first one + a note», or add them all?
+
+---
+
+## 29. A shop that turns apps away; a price answered from the PC (5 October 2026, v3.23.1)
+
+The first link the owner sent the bot — ua.store.asus.com/90lm0aa0-b01170.html, an
+ASUS TUF VG34VQ3B monitor at 13 819 грн — landed as «Товар з ua.store.asus.com»,
+0 ₴, and the item page said «На сторінці більше немає ціни, яку вдається прочитати.
+Показана остання відома.» Both were wrong. ua.store.asus.com sits behind DataDome
+(CloudFront, `X-DataDome: protected`) and answers **403** with a captcha page to
+anything that is not a real browser — checked with curl and the app's own
+User-Agent: 403, 768 bytes. The fetch threw, the inbox swallowed it, and the reply
+promised a twice-daily check that would be turned away the same way.
+
+**Decision: the app does not try to get past bot walls** — no browser-like header
+tricks, no hidden WebView, no captcha. The shop decided; the app says so plainly and
+takes a typed price.
+
+### What changed
+- `pageHtml`: 401 or 403 → `PageRefused(code)` (`refusesApps`), beside `PageGone`.
+  Background passes treat it as a failed read: nothing on the wish changes.
+- `refreshed` returns `Reading.Refused` when every shop of a wish refused. «Оновити»
+  on the item page then says `refusedNote(url)` («ua.store.asus.com не пускає
+  застосунки на свої сторінки, тож ціну тут доведеться вписати вручну»).
+  PriceWorker and `applyFollowed` treat it as `Failed`.
+- The share on the phone says `refusedNote` instead of «Сторінка не читається».
+- «Новий товар» (the add sheet): a refused page opens the typed form, as a page with
+  no price does, instead of ending on an error. A «Назва» field shows whenever the
+  page gave no name (`NoPricePreview` takes its sentence from the caller now).
+- Item page and the sheet over the shop: `wishNote(wish)`. A wish that never had a
+  price says `NO_PRICE_YET_NOTE` («Ціну на сторінці прочитати не вдалося — її можна
+  вписати вручну.»), never «показана остання відома».
+- `typedWish(wish, price, name, day)` is the one way a typed price is saved:
+  MANUAL, history appended, checked today, the name if one came. «Редагувати товар»
+  calls it.
+- Telegram, a refused page: `refusedWishReply` («🔒 Бажання додано, але … не пускає
+  застосунки на свої сторінки…»), with no promise of the twice-daily check.
+- Telegram, every reply about a wish with no price (`refusedWishReply`, the unpriced
+  `newWishReply` and `knownWishReply`) ends with `typePriceHint(url)`: «Щоб вписати
+  ціну, дайте відповідь на це повідомлення числом, наприклад 12999. Можна з назвою:
+  Навушники JBL 1599», then the page's link on its own line.
+- Telegram, an **answer** with a price. `TgMessage.replied` holds the words of
+  `reply_to_message`, and `inboxStep(…, replied)` checks it first:
+  - `typedWishPrice(text)` takes the figure at the end («13819», «13 819 грн»,
+    «1.599», «1 599,50», «₴»). The words before it are the name; «ціна», «за» and
+    the like are dropped. It needs ≤ 150 chars, one line, no link, and
+    0 < price ≤ 10 000 000.
+  - `repliedWish` takes the first link in the answered message and finds the wish
+    on the list.
+  - Then `InboxStep.TypePrice` → `typedWish` → «✏️ Назва — 13 819 ₴, ціну вписано
+    вручну».
+  - A price answering a message with no wish link gets `INBOX_PRICE_WHICH`. Anything
+    else in an answer (a link, a letter, chatter) goes the usual way.
+  - The link sits in the bot's own text because Telegram hands over only the
+    answered message, never the one it answered in turn. An answer to the owner's
+    own message with the link works too.
+- §13 fixes found on the way: «Прочитав …, але ціни … Впиши її сам» → «Прочитано …
+  Впиши її вручну»; «Сторінку прочитав» → «Сторінку прочитано».
+
+Tests: `RefusedPageTest` (5); `InboxTest` +11, including the answer's JSON, the
+price forms, what is not a price, and every priceless reply leading an answer back
+to its wish.
+
+### For the owner's ASUS wish already on the list
+Its bot reply came from 3.23.0, so it has no link in it. The owner can answer their
+own 01:11 message (the link) with «TUF Gaming VG34VQ3B 13819», or send the link
+again and answer the bot's «👀 Уже стежу…». Or use the pencil on the item page.
+
+### Rules added — do not undo
+- Never get round a shop's bot wall. A 401/403 is an answer, not a fault to defeat.
+- Every Telegram reply about a wish with no price ends with `typePriceHint(url)`;
+  `repliedWish` finds the wish by that link.
+- A typed price is saved only through `typedWish`.
+
+### Not verified
+A real Telegram answer: the `reply_to_message` shape is from the Bot API docs, not
+from a bot. The add sheet's typed form for a refused page was not seen on the phone.
+
+### Open with the owner
+- A bare number sent without answering anything is not applied to «the last
+  priceless wish»: too easy to land on the wrong one. Fine?

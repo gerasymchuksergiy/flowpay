@@ -60,7 +60,7 @@ class PriceWorker(context: Context, parameters: WorkerParameters) : CoroutineWor
         val fresh = old.map { previous ->
             if (System.currentTimeMillis() > deadline) return@map previous
             val read = when (val reading = refreshed(previous, today, stamp)) {
-                Reading.Failed -> previous
+                Reading.Failed, Reading.Refused -> previous
                 // A page that answered without a price is still news about the item,
                 // so the new freshness is saved. It is deliberately not counted as a
                 // price read: a whole list of these is a shop outage, not a success.

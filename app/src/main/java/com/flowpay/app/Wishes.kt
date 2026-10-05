@@ -76,6 +76,17 @@ fun freshnessNote(freshness: Freshness): String? = when (freshness) {
         "Ціну вказано вручну, тож автоматично вона не оновлюється."
 }
 
+/**
+ * The item page's sentence: [freshnessNote], except for a wish that has never had a
+ * price. «Показана остання відома» under a nought is the app describing a price that
+ * does not exist — what a link added from Telegram, at a shop that turns apps away,
+ * showed on 5 October (§29).
+ */
+fun wishNote(wish: Wish): String? =
+    if (wish.price <= 0.0 && wish.freshness == Freshness.UNREADABLE) NO_PRICE_YET_NOTE else freshnessNote(wish.freshness)
+
+const val NO_PRICE_YET_NOTE = "Ціну на сторінці прочитати не вдалося — її можна вписати вручну."
+
 /** Reads a stored freshness back, defaulting to the state old data was saved in. */
 fun freshnessFrom(name: String): Freshness =
     Freshness.entries.firstOrNull { it.name == name } ?: Freshness.OK
@@ -97,6 +108,12 @@ sealed interface Reading {
 
     /** Nothing came back: no network, a timeout, a shop that hung up. */
     data object Failed : Reading
+
+    /**
+     * Nothing came back because every shop turned the app away ([PageRefused], §29).
+     * Changes nothing, exactly as [Failed]; only the answer to a tap says it differently.
+     */
+    data object Refused : Reading
 }
 
 // ------------------------------------------------------- the shops behind a wish
@@ -1115,6 +1132,29 @@ fun placeholderWish(url: String, id: String, today: Long = LocalDate.now().toEpo
     )
 
 /**
+ * A wish with a price typed in by hand, and a new name if one came with it.
+ *
+ * A typed price is the deliberate fallback for a page that cannot be read, so it is
+ * marked as hand-entered rather than passed off as a reading: the card then stops
+ * promising it is being watched. «Редагувати товар» on the phone and an answer with a
+ * price in the Telegram inbox (§29) both save through this, so the two cannot drift.
+ * Nought, or the same price again, leaves the figure and its history alone.
+ */
+fun typedWish(wish: Wish, price: Double, name: String?, day: Long): Wish {
+    val priced = if (price > 0.0 && price != wish.price) {
+        wish.copy(
+            price = price,
+            history = appendPrice(wish.history, price, day),
+            checkedDay = day,
+            freshness = Freshness.MANUAL
+        )
+    } else {
+        wish
+    }
+    return priced.copy(name = name?.trim()?.takeIf { it.isNotBlank() } ?: wish.name)
+}
+
+/**
  * The wish to keep when a page said what the thing is but not what it costs.
  *
  * A shop that gives up its title and its photograph and keeps its price behind
@@ -1193,7 +1233,7 @@ fun noPriceNote(facts: PageFacts): String {
         facts.image.isNotBlank() -> "фото"
         else -> "назву"
     }
-    return "Прочитав $read, але ціни на сторінці немає. Впиши її сам — " +
+    return "Прочитано $read, але ціни на сторінці немає. Впиши її вручну — " +
         "ціль, план і нагадування працюватимуть як завжди."
 }
 
@@ -1206,6 +1246,17 @@ fun noPriceNote(facts: PageFacts): String {
  */
 const val NOTHING_READ_NOTE: String =
     "Сторінка не дала ні ціни, ні назви товару. Перевір, чи це посилання саме на товар."
+
+/**
+ * Whether a shop's answer turns programs away rather than the page: 401 or 403 for an
+ * address any browser opens. ua.store.asus.com answers every app this way from behind
+ * DataDome (§29). Not 404 or 410 — that page is gone — and not 429 or a 5xx, which pass.
+ */
+fun refusesApps(code: Int): Boolean = code == 401 || code == 403
+
+/** «ua.store.asus.com не пускає застосунки…»: said where someone asked and is waiting. */
+fun refusedNote(url: String): String =
+    "${sourceName(url)} не пускає застосунки на свої сторінки, тож ціну тут доведеться вписати вручну"
 
 data class RefreshResult(val wishes: List<Wish>, val updated: Int)
 

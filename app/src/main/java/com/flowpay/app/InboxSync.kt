@@ -391,7 +391,7 @@ object InboxSync {
                 // A message that breaks the handling is answered and passed over, never
                 // retried for ever with every message behind it waiting.
                 val said = try {
-                    act(context, step.text)
+                    act(context, step.text, step.message.replied)
                 } catch (stopped: CancellationException) {
                     throw stopped
                 } catch (_: Exception) {
@@ -409,10 +409,12 @@ object InboxSync {
      * phone — [inboxStep] decides — and the reply that says so. Every write re-reads
      * its list from the store right before it, and tells an open app to read again.
      */
-    private suspend fun act(context: Context, text: String): String {
+    private suspend fun act(context: Context, text: String, replied: String?): String {
         val store = Store(context)
         val today = LocalDate.now()
-        val step = inboxStep(text, store.wishes(), store.pays(), store.orders(), today, TouchPrefs(context).hideOutside())
+        val step = inboxStep(
+            text, store.wishes(), store.pays(), store.orders(), today, TouchPrefs(context).hideOutside(), replied
+        )
         return when (step) {
             is InboxStep.Say -> step.text
             is InboxStep.AddPay -> {
@@ -429,6 +431,15 @@ object InboxSync {
             }
             is InboxStep.AddParcel -> addParcel(context, store, step.number, today.toEpochDay())
             is InboxStep.AddWish -> withNote(addWish(context, store, step.url, today.toEpochDay()), step.note)
+            is InboxStep.TypePrice -> {
+                // As «Редагувати товар» saves a typed price, on the list as it is now.
+                val list = store.wishes()
+                if (list.none { it.id == step.wish.id }) return INBOX_WISH_GONE
+                val day = today.toEpochDay()
+                store.saveWishes(list.map { if (it.id == step.wish.id) typedWish(it, step.price, step.name, day) else it })
+                changed(context)
+                step.reply
+            }
         }
     }
 
@@ -465,7 +476,17 @@ object InboxSync {
             // Watched already — added on the phone a moment ago.
             return store.wishes().firstOrNull { hasSource(it, url) }?.let(::knownWishReply) ?: newWishReply(null, url)
         }
-        val read = quietly { readForAdd(pricedPageHtml(url), url, id, today, rate) }
+        val read = try {
+            readForAdd(pricedPageHtml(url), url, id, today, rate)
+        } catch (stopped: CancellationException) {
+            throw stopped
+        } catch (_: PageRefused) {
+            // The shop turns programs away (§29); the reply says so and how to give
+            // the price from the PC, instead of promising a check that will be refused.
+            return refusedWishReply(url)
+        } catch (_: Exception) {
+            null
+        }
         val fetched = when (read) {
             is PageAdd.Priced -> read.wish
             is PageAdd.Described -> read.wish

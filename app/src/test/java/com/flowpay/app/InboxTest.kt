@@ -343,7 +343,10 @@ class InboxTest {
 
     @Test
     fun `a watched thing with no fresh price says so`() {
-        assertEquals("👀 Уже стежу: Кросівки — ціни поки немає", knownWishReply(wish("w", "Кросівки", rozetkaUrl, 0.0)))
+        assertEquals(
+            "👀 Уже стежу: Кросівки — ціни поки немає\n${typePriceHint(rozetkaUrl)}",
+            knownWishReply(wish("w", "Кросівки", rozetkaUrl, 0.0))
+        )
         assertEquals(
             "👀 Уже стежу: Кросівки — востаннє ${money(2_100.0)}",
             knownWishReply(wish("w", "Кросівки", rozetkaUrl, 2_100.0, Freshness.OUT_OF_STOCK))
@@ -519,12 +522,14 @@ class InboxTest {
     @Test
     fun `a new wish without a price promises the next check`() {
         assertEquals(
-            "✅ Бажання додано (rozetka.com.ua), але ціну прочитати не вдалося — спробую під час перевірки цін",
+            "✅ Бажання додано (rozetka.com.ua), але ціну прочитати не вдалося — спробую під час перевірки цін\n" +
+                typePriceHint(rozetkaUrl),
             newWishReply(null, rozetkaUrl)
         )
         // The page named the thing and kept its price back.
         assertEquals(
-            "✅ Бажання: Навушники JBL Tune 520BT (rozetka.com.ua) — ціну прочитати не вдалося, спробую під час перевірки цін",
+            "✅ Бажання: Навушники JBL Tune 520BT (rozetka.com.ua) — ціну прочитати не вдалося, спробую під час перевірки цін\n" +
+                typePriceHint(rozetkaUrl),
             newWishReply(wish("w1", "Навушники JBL Tune 520BT", rozetkaUrl, 0.0, Freshness.UNREADABLE), rozetkaUrl)
         )
         // A placeholder's own name is not a name read from the page.
@@ -822,5 +827,140 @@ class InboxTest {
     fun `a refused token on connecting says what to copy`() {
         assertTrue(connectProblem(401).contains("@BotFather"))
         assertTrue(connectProblem(500).contains("500"))
+    }
+
+    // ------------------------------------------------------------ an answer with a price (§29)
+
+    private val asusUrl = "https://ua.store.asus.com/90lm0aa0-b01170.html"
+
+    private fun answer(text: String, replied: String?, wishes: List<Wish>) =
+        inboxStep(text, wishes, emptyList(), emptyList(), today, false, replied)
+
+    @Test
+    fun `an answer carries the words of the message it answers`() {
+        val body = """
+            {"ok":true,"result":[{"update_id":900000010,"message":{"message_id":31,
+             "from":{"id":5550001,"is_bot":false,"first_name":"Test"},"chat":{"id":5550001,"type":"private"},
+             "date":1792000300,"text":"13819",
+             "reply_to_message":{"message_id":30,"from":{"id":1000001,"is_bot":true,"first_name":"FlowPay"},
+              "chat":{"id":5550001,"type":"private"},"date":1792000290,
+              "text":"🔒 Бажання додано\n$asusUrl"}}}]}
+        """.trimIndent()
+        val message = updatesIn(tgAnswer(body)!!.result).single().message!!
+
+        assertEquals("13819", message.text)
+        assertEquals("🔒 Бажання додано\n$asusUrl", message.replied)
+        // The answer is the owner's, though the message it answers is the bot's.
+        assertFalse(message.fromBot)
+    }
+
+    @Test
+    fun `a message that answers nothing has no replied words`() {
+        assertNull(parsed()[0].message!!.replied)
+    }
+
+    @Test
+    fun `an answer with a price types it into the wish its message is about`() {
+        val placeholder = placeholderWish(asusUrl, "w1", day)
+
+        val step = answer("13819", refusedWishReply(asusUrl), listOf(placeholder)) as InboxStep.TypePrice
+
+        assertEquals("w1", step.wish.id)
+        assertEquals(13_819.0, step.price, 0.0)
+        assertNull(step.name)
+        assertEquals("✏️ Товар з ua.store.asus.com — ${money(13_819.0)}, ціну вписано вручну", step.reply)
+    }
+
+    @Test
+    fun `an answer with a name before the price names the wish too`() {
+        val placeholder = placeholderWish(asusUrl, "w1", day)
+
+        val step = answer("TUF Gaming VG34VQ3B 13 819 грн", refusedWishReply(asusUrl), listOf(placeholder))
+            as InboxStep.TypePrice
+
+        assertEquals(13_819.0, step.price, 0.0)
+        assertEquals("TUF Gaming VG34VQ3B", step.name)
+        assertEquals("✏️ TUF Gaming VG34VQ3B — ${money(13_819.0)}, ціну вписано вручну", step.reply)
+    }
+
+    @Test
+    fun `an answer to the owner's own message with the link works the same`() {
+        val placeholder = placeholderWish(asusUrl, "w1", day)
+
+        val step = answer("13819", asusUrl, listOf(placeholder))
+
+        assertEquals("w1", (step as InboxStep.TypePrice).wish.id)
+    }
+
+    @Test
+    fun `every reply about a wish with no price leads an answer back to it`() {
+        val placeholder = placeholderWish(asusUrl, "w1", day)
+        val wishes = listOf(placeholder)
+
+        assertEquals(placeholder, repliedWish(refusedWishReply(asusUrl), wishes))
+        assertEquals(placeholder, repliedWish(newWishReply(null, asusUrl), wishes))
+        assertEquals(placeholder, repliedWish(knownWishReply(placeholder), wishes))
+    }
+
+    @Test
+    fun `a price is read the ways people write one`() {
+        assertEquals(TypedWishPrice(13_819.0, null), typedWishPrice("13819"))
+        assertEquals(TypedWishPrice(13_819.0, null), typedWishPrice(" 13 819 "))
+        assertEquals(TypedWishPrice(13_819.0, null), typedWishPrice("13\u00A0819 грн"))
+        assertEquals(TypedWishPrice(13_819.0, null), typedWishPrice("13819₴"))
+        assertEquals(TypedWishPrice(13_819.0, null), typedWishPrice("13819 грн."))
+        assertEquals(TypedWishPrice(1_599.0, null), typedWishPrice("1.599"))
+        assertEquals(TypedWishPrice(1_599.5, null), typedWishPrice("1 599,5"))
+        assertEquals(TypedWishPrice(1_599.99, null), typedWishPrice("1599.99"))
+        assertEquals(TypedWishPrice(13_819.0, null), typedWishPrice("ціна: 13819"))
+        assertEquals(TypedWishPrice(1_599.0, "Навушники JBL"), typedWishPrice("Навушники JBL — 1599"))
+        assertEquals(TypedWishPrice(1_599.0, "Навушники JBL"), typedWishPrice("Навушники JBL за 1599 грн"))
+        // Digits inside the name stay in the name; the figure is the last one.
+        assertEquals(TypedWishPrice(2_999.0, "Монітор 27 дюймів"), typedWishPrice("Монітор 27 дюймів 2999"))
+        assertEquals(TypedWishPrice(45_999.0, "iPhone 15 128"), typedWishPrice("iPhone 15 128 45 999"))
+    }
+
+    @Test
+    fun `what is not a price is not taken for one`() {
+        assertNull(typedWishPrice("дякую"))
+        assertNull(typedWishPrice("0"))
+        assertNull(typedWishPrice("13819 TUF Gaming"))
+        // A waybill is a parcel, not money.
+        assertNull(typedWishPrice("20450000000001"))
+        // A link is an errand of its own.
+        assertNull(typedWishPrice("$rozetkaUrl 1599"))
+        // A letter is long, and on several lines.
+        assertNull(typedWishPrice(internetLetter))
+        assertNull(typedWishPrice("Навушники\n1599"))
+    }
+
+    @Test
+    fun `an answer with a price to a message about no wish asks which`() {
+        val wishes = listOf(placeholderWish(asusUrl, "w1", day))
+
+        assertEquals(INBOX_PRICE_WHICH, said(answer("1599", "🧾 Платіж: Megogo — 199 ₴ щомісяця", wishes)))
+        // A link to a page not on the list names no wish either.
+        assertEquals(INBOX_PRICE_WHICH, said(answer("1599", rozetkaUrl, wishes)))
+    }
+
+    @Test
+    fun `an answer that is not a price goes the usual way`() {
+        val wishes = listOf(placeholderWish(asusUrl, "w1", day))
+
+        assertEquals(InboxStep.AddWish(rozetkaUrl), answer(rozetkaUrl, refusedWishReply(asusUrl), wishes))
+        assertEquals(INBOX_UNCLEAR, said(answer("дякую", refusedWishReply(asusUrl), wishes)))
+        // A number on its own, answering nothing, is not a price for anything.
+        assertEquals(INBOX_UNCLEAR, said(answer("13819", null, wishes)))
+    }
+
+    @Test
+    fun `a shop that keeps apps out is named, with the way to give the price`() {
+        val reply = refusedWishReply(asusUrl)
+
+        assertTrue(reply.startsWith("🔒 Бажання додано, але ua.store.asus.com не пускає застосунки на свої сторінки"))
+        // No promise of a check that the shop would turn away just the same.
+        assertFalse(reply.contains("перевірки цін"))
+        assertTrue(reply.contains("дайте відповідь на це повідомлення числом"))
+        assertEquals(asusUrl, reply.lines().last())
     }
 }
