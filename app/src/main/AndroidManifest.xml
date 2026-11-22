@@ -2,12 +2,109 @@
  <uses-permission android:name="android.permission.INTERNET"/>
  <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
  <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+ <!-- «Відкрити в Новій пошті»: Android 11+ hides other apps unless named here,
+      and the launcher intent for them would come back null. ParcelsNet.kt. -->
+ <queries>
+  <package android:name="eu.novapost"/>
+  <package android:name="ua.novaposhtaa"/>
+ </queries>
  <application
   android:theme="@style/Theme.FlowPay"
   android:label="FlowPay"
   android:icon="@mipmap/ic_launcher"
   android:roundIcon="@mipmap/ic_launcher"
-  android:allowBackup="true">
-  <activity android:name=".MainActivity" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
+  android:allowBackup="false"
+  android:fullBackupContent="false"
+  android:dataExtractionRules="@xml/data_extraction_rules">
+  <!-- The QR scanner's module, fetched by Google Play services ahead of the first
+       scan rather than on it (QrScan.kt). -->
+  <meta-data
+   android:name="com.google.mlkit.vision.DEPENDENCIES"
+   android:value="barcode_ui"/>
+  <!-- singleTask so a share, or a shortcut, reaches the copy of the app that is
+       already open instead of stacking a second one behind it. -->
+  <activity
+   android:name=".MainActivity"
+   android:exported="true"
+   android:launchMode="singleTask">
+   <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+   <!-- «Поділитися» now reaches ShopSheetActivity below first. It hands on to this
+        activity, as an explicit intent, everything that is not a shop's link: a
+        parcel number, an e-mail, a Hotline page, text with no link. -->
+   <!-- What a long press on the Quick Settings tile looks for. Without it the
+        system falls back to the App info screen; the ACTIVITY_NAME meta-data on
+        the service below is not a key the platform reads. -->
+   <intent-filter>
+    <action android:name="android.service.quicksettings.action.QS_TILE_PREFERENCES"/>
+    <category android:name="android.intent.category.DEFAULT"/>
+   </intent-filter>
+   <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts"/>
+  </activity>
+  <!-- «Аркуш поверх магазину» (ShopSheet.kt): the share target. A see-through
+       window over the shop's app, never in recents, gone once the owner leaves
+       it, and outside the app's own task so «Готово» lands back in the shop.
+       Browsers and shop apps hand a link over as text/plain; a few send it as
+       text/html instead, which is the same string with a tag around it. -->
+  <activity
+   android:name=".ShopSheetActivity"
+   android:exported="true"
+   android:theme="@style/Theme.FlowPay.Sheet"
+   android:excludeFromRecents="true"
+   android:noHistory="true"
+   android:taskAffinity="">
+   <intent-filter>
+    <action android:name="android.intent.action.SEND"/>
+    <category android:name="android.intent.category.DEFAULT"/>
+    <data android:mimeType="text/plain"/>
+    <data android:mimeType="text/html"/>
+   </intent-filter>
+  </activity>
+  <!-- One figure in the notification shade, reachable without leaving whatever
+       is on screen. Exported because Quick Settings binds it from the system
+       process; the BIND permission is what keeps anything else out. -->
+  <service
+   android:name=".FlowPayTileService"
+   android:exported="true"
+   android:icon="@drawable/ic_tile"
+   android:label="@string/tile_label"
+   android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+   <intent-filter>
+    <action android:name="android.service.quicksettings.action.QS_TILE"/>
+   </intent-filter>
+   <!-- A short press swaps which figure is shown; a long press opens the app
+        through the QS_TILE_PREFERENCES filter on MainActivity. -->
+  </service>
+  <receiver
+   android:name=".FlowPayWidgetReceiver"
+   android:exported="false"
+   android:label="FlowPay">
+   <intent-filter>
+    <action android:name="android.appwidget.action.APPWIDGET_UPDATE"/>
+   </intent-filter>
+   <meta-data
+    android:name="android.appwidget.provider"
+    android:resource="@xml/flowpay_widget_info"/>
+  </receiver>
+  <!-- «Сплачено · …» and «Скасувати» under the morning message. Not exported and
+       no intent filter: only the app's own notification reaches it, through the
+       explicit PendingIntents in Notifications.kt. -->
+  <receiver
+   android:name=".QuickMarkReceiver"
+   android:exported="false"/>
+  <!-- «Стежити далі» and «Готово» on a rate notification (RateWorker.kt). Only the
+       app's own PendingIntents reach it. -->
+  <receiver
+   android:name=".RateActionReceiver"
+   android:exported="false"/>
+  <!-- A recap card shared as a picture: only cache/shared/ is reachable. -->
+  <provider
+    android:name="androidx.core.content.FileProvider"
+    android:authorities="${applicationId}.files"
+    android:exported="false"
+    android:grantUriPermissions="true">
+    <meta-data
+      android:name="android.support.FILE_PROVIDER_PATHS"
+      android:resource="@xml/shared_files"/>
+  </provider>
  </application>
 </manifest>

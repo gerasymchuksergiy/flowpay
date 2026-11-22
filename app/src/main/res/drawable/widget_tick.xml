@@ -1,0 +1,22 @@
+<!-- The widget's «Сплачено»: an open ring with a tick in it, in the lime tile's
+     dark ink. The ring says "this can be ticked off"; the same ring on a payment
+     tile in the app is where a mark is made. A drawable rather than a rounded
+     Glance box, because Glance only rounds corners on Android 12 and later. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="40dp"
+    android:height="40dp"
+    android:viewportWidth="40"
+    android:viewportHeight="40">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF0A0B09"
+        android:strokeWidth="2.5"
+        android:pathData="M20,5a15,15 0 1,1 0,30a15,15 0 1,1 0,-30z"/>
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF0A0B09"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M13.5,20.5l4.5,4.5l8.5,-9"/>
+</vector>

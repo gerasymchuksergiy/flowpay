@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="48"
+    android:viewportHeight="48">
+    <path
+        android:fillColor="@color/shortcut_background"
+        android:pathData="M24,0a24,24 0 1,0 0,48a24,24 0 1,0 0,-48z"/>
+    <!-- An arc left open at the top right, closed by the arrowhead: the gap is
+         what reads as rotation rather than as a ring. -->
+    <path
+        android:strokeColor="@color/shortcut_glyph"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M34,17a12,12 0 1,0 3,7"/>
+    <path
+        android:fillColor="@color/shortcut_glyph"
+        android:pathData="M35,11l2,9l-9,-2z"/>
+</vector>
