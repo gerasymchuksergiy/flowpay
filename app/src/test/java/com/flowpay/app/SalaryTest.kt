@@ -146,6 +146,49 @@ class SalaryTest {
     }
 
     @Test
+    fun `a pasted history reads line by line, salary filed under the month it is for`() {
+        val paste = parseSalaryLines(
+            """
+            16.09.2026 аванс 500$ курс 41,2
+            03.10.2026 зарплата 520$ курс 41.3 за 09.2026
+
+            16.10.2026 аванс 540 $ курс 41,4
+            це не виплата
+            02.11.2026 зарплата 1 234,50$ за 10.2026
+            20.11.2026 премія 100$ курс 45
+            """.trimIndent()
+        )
+        assertEquals(listOf("це не виплата"), paste.unreadable)
+        assertEquals(5, paste.entries.size)
+        val (sepAdvance, sepSalary, octAdvance, octSalary, bonus) = paste.entries
+        assertEquals(SalaryKind.ADVANCE, sepAdvance.kind)
+        assertEquals("2026-09", sepAdvance.month)
+        assertEquals(500.0, sepAdvance.amount, 0.001)
+        assertEquals(41.2, sepAdvance.rate, 0.0001)
+        assertEquals(LocalDate.of(2026, 9, 16).toEpochDay(), sepAdvance.day)
+        // Paid on 3 October, for September.
+        assertEquals(SalaryKind.SALARY, sepSalary.kind)
+        assertEquals("2026-09", sepSalary.month)
+        assertEquals(41.3, sepSalary.rate, 0.0001)
+        assertEquals(540.0, octAdvance.amount, 0.001)
+        // No rate given: dollars only, no invented hryvnias.
+        assertEquals("2026-10", octSalary.month)
+        assertEquals(1_234.5, octSalary.amount, 0.001)
+        assertEquals(0.0, octSalary.rate, 0.0)
+        assertEquals(SalaryKind.OTHER, bonus.kind)
+        assertEquals("премія", bonus.note)
+    }
+
+    @Test
+    fun `pasting the same list twice adds nothing the second time`() {
+        val list = parseSalaryLines("16.09.2026 аванс 500$ курс 41,2\n03.10.2026 зарплата 520$ за 09.2026").entries
+        assertEquals(2, newPayments(emptyList(), list).size)
+        assertEquals(0, newPayments(list, parseSalaryLines("16.09.2026 аванс 500$ курс 41,2").entries).size)
+        // A repeated line inside one paste counts once.
+        assertEquals(1, newPayments(emptyList(), list.take(1) + list.take(1).map { it.copy(id = "other") }).size)
+    }
+
+    @Test
     fun `the tile says this month, or that nothing is written yet`() {
         assertEquals(SalaryTileText("—", "за листопад ще не записано"), salaryTile(emptyList(), nov))
         val log = listOf(

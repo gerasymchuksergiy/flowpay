@@ -170,6 +170,86 @@ fun lastAmount(entries: List<SalaryEntry>, kind: SalaryKind): Double? =
         .maxWithOrNull(compareBy({ it.month }, { it.day }))
         ?.amount
 
+// ------------------------------------------------------------ «Вставити списком»
+
+/**
+ * What a pasted list read as: the payments found, and the lines that were not
+ * understood, shown back so nothing is dropped without a word.
+ */
+data class SalaryPaste(val entries: List<SalaryEntry>, val unreadable: List<String>)
+
+private val PASTE_DATE = Regex("""(\d{1,2})\.(\d{1,2})\.(\d{4})""")
+private val PASTE_MONTH = Regex("""за\s+(\d{1,2})\.(\d{4})""", RegexOption.IGNORE_CASE)
+private val PASTE_RATE = Regex("""курс\s*(\d+(?:[.,]\d+)?)""", RegexOption.IGNORE_CASE)
+private val PASTE_AMOUNT = Regex("""(\d[\d\s ]*(?:[.,]\d+)?)\s*\$""")
+
+/**
+ * Reads one payment per line, the way the owner's history was written down:
+ *
+ * `16.09.2026 аванс 500$ курс 41,2`
+ * `03.10.2026 зарплата 520$ курс 41,3 за 09.2026`
+ *
+ * The date is the day the money came; «за ММ.РРРР» is the month it is for, and
+ * without it, the date's own month; «курс» is optional (without it the payment
+ * is in dollars only). The kind is «аванс», «зарплата», anything else is «Інше»
+ * with the line's leftover words as its note. Blank lines are skipped.
+ */
+fun parseSalaryLines(text: String): SalaryPaste {
+    val found = mutableListOf<SalaryEntry>()
+    val bad = mutableListOf<String>()
+    text.lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { line ->
+        val entry = runCatching { salaryLine(line) }.getOrNull()
+        if (entry != null) found += entry else bad += line
+    }
+    return SalaryPaste(found, bad)
+}
+
+private fun salaryLine(line: String): SalaryEntry? {
+    var rest = line
+    val monthMatch = PASTE_MONTH.find(rest)
+    monthMatch?.let { rest = rest.replace(it.value, " ") }
+    val dateMatch = PASTE_DATE.find(rest) ?: return null
+    rest = rest.replace(dateMatch.value, " ")
+    val (d, m, y) = dateMatch.destructured
+    val day = LocalDate.of(y.toInt(), m.toInt(), d.toInt())
+    val rateMatch = PASTE_RATE.find(rest)
+    rateMatch?.let { rest = rest.replace(it.value, " ") }
+    val amountMatch = PASTE_AMOUNT.find(rest) ?: return null
+    rest = rest.replace(amountMatch.value, " ")
+    val amount = parseAmount(amountMatch.groupValues[1]).takeIf { it > 0.0 } ?: return null
+    val month = monthMatch?.let { monthKey(LocalDate.of(it.groupValues[2].toInt(), it.groupValues[1].toInt(), 1)) }
+        ?: monthKey(day)
+    val words = rest.replace(Regex("""[·,;:—–-]"""), " ").trim().replace(Regex("""\s+"""), " ")
+    val lower = words.lowercase()
+    val kind = when {
+        "аванс" in lower -> SalaryKind.ADVANCE
+        "зарплат" in lower || "зп" == lower -> SalaryKind.SALARY
+        else -> SalaryKind.OTHER
+    }
+    val note = if (kind == SalaryKind.OTHER) words.removePrefix("інше").removePrefix("Інше").trim() else ""
+    return SalaryEntry(
+        month = month,
+        kind = kind,
+        amount = amount,
+        day = day.toEpochDay(),
+        note = note.take(60),
+        rate = rateMatch?.let { parseAmount(it.groupValues[1]) }?.takeIf { it > 0.0 } ?: 0.0
+    )
+}
+
+/**
+ * The pasted payments not already in the log — so pasting the same list twice,
+ * or a list that overlaps what was typed by hand, adds nothing twice. The same
+ * payment means the same month, kind, dollar amount and day.
+ */
+fun newPayments(existing: List<SalaryEntry>, pasted: List<SalaryEntry>): List<SalaryEntry> {
+    fun same(a: SalaryEntry, b: SalaryEntry) =
+        a.month == b.month && a.kind == b.kind && a.day == b.day && kotlin.math.abs(a.amount - b.amount) < 0.005
+    val kept = mutableListOf<SalaryEntry>()
+    pasted.forEach { one -> if (existing.none { same(it, one) } && kept.none { same(it, one) }) kept += one }
+    return kept
+}
+
 /** The tile on Огляд: this month's figure, and the line under it. */
 data class SalaryTileText(val value: String, val caption: String)
 

@@ -98,6 +98,22 @@ fun SalarySheet(
     // Null: the log. Otherwise the payment being written — new, or one being changed.
     var editing by remember { mutableStateOf<SalaryEntry?>(null) }
     var isNew by remember { mutableStateOf(false) }
+    // «Вставити списком»: the history, many payments at once.
+    var pasting by remember { mutableStateOf(false) }
+    var said by remember { mutableStateOf<String?>(null) }
+
+    if (pasting) {
+        SalaryPasteForm(
+            entries = entries,
+            onAdd = { added ->
+                store.save(entries + added)
+                said = "Додано виплат: ${added.size}"
+                pasting = false
+            },
+            onBack = { pasting = false }
+        )
+        return
+    }
 
     val current = editing
     if (current != null) {
@@ -161,6 +177,12 @@ fun SalarySheet(
             Icon(Icons.Default.Add, null, Modifier.size(20.dp))
             Spacer(Modifier.width(Space.sm))
             Text("Записати виплату", fontWeight = Type.medium)
+        }
+        TextButton({ pasting = true }, Modifier.fillMaxWidth()) {
+            Text("Вставити кілька виплат списком", color = TextSecondary)
+        }
+        said?.let {
+            Text(it, color = TextPrimary, fontSize = Type.captionSize, modifier = Modifier.padding(bottom = Space.xs))
         }
 
         // 3. Every month, newest first.
@@ -402,5 +424,82 @@ private fun SalaryEntryForm(
             },
             dismissButton = { TextButton({ confirmDelete = false }) { Text("Скасувати") } }
         )
+    }
+}
+
+/** An example the paste field shows until something is typed. */
+private const val PASTE_EXAMPLE = "16.09.2026 аванс 500\$ курс 41,2\n03.10.2026 зарплата 520\$ курс 41,3 за 09.2026"
+
+/**
+ * «Вставити списком»: a whole history at once, one payment a line. What was read
+ * is said back — how many, the total, and any line not understood — before
+ * anything is added, and payments already in the log are not added twice.
+ */
+@Composable
+private fun SalaryPasteForm(
+    entries: List<SalaryEntry>,
+    onAdd: (List<SalaryEntry>) -> Unit,
+    onBack: () -> Unit
+) {
+    var text by remember { mutableStateOf("") }
+    val paste = remember(text) { parseSalaryLines(text) }
+    val fresh = remember(paste, entries) { newPayments(entries, paste.entries) }
+    val repeated = paste.entries.size - fresh.size
+
+    FormSheet(
+        title = "Вставити списком",
+        confirmLabel = if (fresh.isEmpty()) "Додати" else "Додати ${fresh.size}",
+        confirmEnabled = fresh.isNotEmpty(),
+        onConfirm = { onAdd(fresh) },
+        onDismiss = onBack
+    ) {
+        Text(
+            "Одна виплата — один рядок: дата, аванс чи зарплата, сума в доларах, курс. " +
+                "«за ММ.РРРР» — якщо виплата за інший місяць.",
+            color = TextSecondary,
+            fontSize = Type.captionSize,
+            lineHeight = Type.captionLine
+        )
+        OutlinedTextField(
+            text,
+            { text = it },
+            Modifier.fillMaxWidth().padding(top = Space.md).height(180.dp),
+            placeholder = { Text(PASTE_EXAMPLE, color = TextDisabled, fontSize = Type.captionSize) },
+            textStyle = Tabular.copy(fontSize = Type.captionSize)
+        )
+        if (paste.entries.isNotEmpty()) {
+            val months = salaryMonths(fresh)
+            Text(
+                personal(
+                    "Знайдено: ${paste.entries.size}" +
+                        (if (repeated > 0) " · уже є в списку: $repeated" else "") +
+                        (if (fresh.isNotEmpty()) " · нових на " + (
+                            if (fresh.all { it.rate > 0.0 }) "${money(fresh.sumOf { it.uah })} (${dollars(fresh.sumOf { it.amount })})"
+                            else dollars(fresh.sumOf { it.amount })
+                        ) else "")
+                ),
+                Modifier.padding(top = Space.md),
+                fontSize = Type.bodySize,
+                fontWeight = Type.medium
+            )
+            months.forEach { month ->
+                Text(
+                    personal("${monthTitle(month.month)} — ${salaryMainFigure(month)} · ${salaryBreakdown(month)}"),
+                    Modifier.padding(top = Space.xs),
+                    color = TextSecondary,
+                    fontSize = Type.captionSize,
+                    lineHeight = Type.captionLine
+                )
+            }
+        }
+        if (paste.unreadable.isNotEmpty()) {
+            Text(
+                "Не зрозумів ${if (paste.unreadable.size == 1) "рядок" else "рядки"}:\n" + paste.unreadable.joinToString("\n"),
+                Modifier.padding(top = Space.md),
+                color = Negative,
+                fontSize = Type.captionSize,
+                lineHeight = Type.captionLine
+            )
+        }
     }
 }

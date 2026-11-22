@@ -1991,8 +1991,25 @@ after the four Огляд tiles, `salaryOpen`, `exportJson`/`importJson`.
 Prefs `sl_log` (JSON list); entry `sli slm slk sla sld sln slr`; backup key
 `salary` (an old file without it keeps the phone's log).
 
+### «Вставити списком» (v3.25.0)
+For the history: one payment a line, `16.09.2026 аванс 500$ курс 41,2`, with
+`за 09.2026` when the pay is for another month (the owner's salary arrives
+early the next month and belongs to the month before). `parseSalaryLines` /
+`newPayments` in Salary.kt — read back before adding (count, totals by month,
+lines not understood in red), and a payment already in the log (same month,
+kind, dollars, day) is never added twice.
+
+**The owner's own figures never go into the repository — it is public.** They
+are in `private/salary-history.txt` (gitignored), ready to paste. The rates in
+it are the NBU official rate for each payment's date
+(`bank.gov.ua/NBUStatService/v1/statdirectory/exchange?valcode=USD&date=YYYYMMDD&json`);
+the owner asked for the rate to be looked up from history rather than typed.
+
+### Releases
+v3.24.0 — the log; v3.25.0 — the paste. See below for what was checked.
+
 ### Not verified
-Seen only as JVM renders, never on the phone.
+Seen only as JVM renders (`SalaryShots`, `SalaryPasteShots`), never on the phone.
 
 ### Ideas offered, not built
 Payday reminder with a one-tap «записати» from the morning message;

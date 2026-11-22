@@ -12,3 +12,6 @@ local.properties
 
 # Agent worktrees and session scratch. Never part of the app.
 .claude/
+
+# The owner's own figures, kept beside the project. The repository is public.
+private/
