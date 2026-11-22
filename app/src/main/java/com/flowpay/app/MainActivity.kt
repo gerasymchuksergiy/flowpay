@@ -996,6 +996,8 @@ class Store(context: Context) {
         // The funds — money the owner says he put aside — are his data like the
         // wishes. «На життя» and the payday are preferences, like the income.
         .put("mpFunds", JSONArray(prefs.getString(PlanStore.FUNDS_KEY, "[]")))
+        // «Зарплата»: what each month actually brought — Salary.kt.
+        .put("salary", JSONArray(prefs.getString(SalaryStore.KEY, "[]")))
         .toString(2)
 
     fun importJson(text: String) {
@@ -1010,6 +1012,7 @@ class Store(context: Context) {
         val paid = root.optJSONArray("paid")
         val bin = root.optJSONArray("bin")
         val funds = root.optJSONArray("mpFunds")
+        val salary = root.optJSONArray("salary")
         prefs.edit {
             putString("w", wishes.toString())
             putString("pay", payments.toString())
@@ -1017,7 +1020,9 @@ class Store(context: Context) {
             paid?.let { putString("paid", it.toString()) }
             bin?.let { putString("bin", it.toString()) }
             funds?.let { putString(PlanStore.FUNDS_KEY, it.toString()) }
+            salary?.let { putString(SalaryStore.KEY, it.toString()) }
         }
+        SalaryStore.version++
     }
 
     private fun <T> jsonList(key: String, map: (JSONObject) -> T): List<T> = runCatching {
@@ -8969,6 +8974,8 @@ fun SettingsScreen(
     var monoOpen by remember { mutableStateOf(false) }
     // «Telegram-скринька» — InboxUi.kt.
     var inboxOpen by remember { mutableStateOf(false) }
+    // «Зарплата» — SalaryUi.kt.
+    var salaryOpen by remember { mutableStateOf(false) }
     var importingEmoji by remember { mutableStateOf(false) }
     val pickEmoji = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -9159,6 +9166,13 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         ) { onOpenTab(TAB_PAYMENTS) }
                     }
+
+                    // «Зарплата»: what this month has actually brought — SalaryUi.kt.
+                    Spacer(Modifier.height(Space.md))
+                    SalaryOverviewTile(
+                        LocalDate.ofEpochDay(today),
+                        Modifier.fillMaxWidth().revealOnEnter(5, entrance)
+                    ) { salaryOpen = true }
 
                     // Money owed back for things returned. Pink once a shop is past
                     // its days; until then it is simply money on its way.
@@ -9709,6 +9723,12 @@ fun SettingsScreen(
     }
     if (monoOpen) MonoSheet { monoOpen = false }
     if (inboxOpen) InboxSheet { inboxOpen = false }
+    if (salaryOpen) {
+        SalarySheet(
+            moneyHost?.settings?.payday ?: PlanStore(context).payday(),
+            store.fxRate().first.let { if (it.buy > 0.0) it.buy else it.sell }
+        ) { salaryOpen = false }
+    }
     if (phoneOpen) {
         NovaPhoneDialog(novaPhone, { phoneOpen = false }) { typed ->
             parcelPrefs.savePhone(typed).also { saved -> if (saved) novaPhone = parcelPrefs.phone() }

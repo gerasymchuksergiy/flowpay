@@ -1962,3 +1962,40 @@ from a bot. The add sheet's typed form for a refused page was not seen on the ph
 ### Open with the owner
 - A bare number sent without answering anything is not applied to «the last
   priceless wish»: too easy to land on the wrong one. Fine?
+
+---
+
+## 30. «Зарплата» — the pay actually received (22 November 2026)
+
+The owner asked for a place to log each month's pay — the advance, then the
+salary — and see what a month came to, as a list.
+
+### Files
+`Salary.kt` (pure: `SalaryEntry`, `SalaryMonth`, `salaryMonths`,
+`salaryBreakdown`, `salaryYear`, `suggestedKind`, `lastAmount`, `salaryTile`,
+`SalaryStore`; tests `SalaryTest`), `SalaryUi.kt` (the tile on Огляд and the
+sheet), JVM renders `screens/SalaryShots.kt`. Hooks in MainActivity: the tile
+after the four Огляд tiles, `salaryOpen`, `exportJson`/`importJson`.
+
+### Owner decisions — do not undo
+- **Agreed in hryvnias, paid in dollars** (crypto, not to a card). A payment is
+  typed in dollars with the rate of its day (prefilled from `fxRate()` — buy,
+  else sell — editable); screens lead with ₴ and show the $ under it. A payment
+  without a rate shows in $ only; no hryvnia figure is invented.
+- **Kept simple** after «зроби зрозуміліше»: this month's total, one button
+  «Записати виплату», the list by month. A month switcher, three quick-add
+  tiles and a six-month bar chart were built first and taken out.
+- Separate from the planned income (`Store.income`): nothing here changes «Вільно».
+
+### Keys
+Prefs `sl_log` (JSON list); entry `sli slm slk sla sld sln slr`; backup key
+`salary` (an old file without it keeps the phone's log).
+
+### Not verified
+Seen only as JVM renders, never on the phone.
+
+### Ideas offered, not built
+Payday reminder with a one-tap «записати» from the morning message;
+«очікувано / отримано» against the planned income; a numpad with «+»; year in
+numbers and a widget line. (Reading the pay from monobank does not apply — it
+does not arrive on a card.)
