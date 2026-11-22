@@ -250,19 +250,6 @@ fun newPayments(existing: List<SalaryEntry>, pasted: List<SalaryEntry>): List<Sa
     return kept
 }
 
-/** The tile on Огляд: this month's figure, and the line under it. */
-data class SalaryTileText(val value: String, val caption: String)
-
-fun salaryTile(entries: List<SalaryEntry>, today: LocalDate): SalaryTileText {
-    val month = salaryMonths(entries).firstOrNull { it.month == monthKey(today) }
-    return if (month == null) {
-        // Every month's name is masculine, so «за листопад» is the nominative as it stands.
-        SalaryTileText("—", "за ${monthName(today.monthValue).lowercase()} ще не записано")
-    } else {
-        SalaryTileText(salaryMainFigure(month), listOfNotNull(salaryDollarLine(month), salaryBreakdown(month)).joinToString(" · "))
-    }
-}
-
 /** Where the log lives: one JSON list in the app's preferences file. It goes into the backup. */
 class SalaryStore(context: Context) {
     private val prefs = context.getSharedPreferences("flowpay", Context.MODE_PRIVATE)

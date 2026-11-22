@@ -6178,9 +6178,12 @@ fun CommittedBar(bar: Committed, modifier: Modifier = Modifier) {
     }
 }
 
-/** The two halves of the payments screen. */
+/** The three views of the payments screen. */
 const val PAYMENTS_SCHEDULE = 0
 const val PAYMENTS_BY_MONTH = 1
+
+/** «Зарплата» — what came in, beside what goes out. SalaryUi.kt. */
+const val PAYMENTS_SALARY = 2
 
 @Composable
 fun PaymentsScreen(
@@ -6233,6 +6236,8 @@ fun PaymentsScreen(
     // Which half of the screen is showing. Not remembered: the schedule is what
     // the tab is opened for, and the history is a question asked on purpose.
     var view by remember { mutableIntStateOf(PAYMENTS_SCHEDULE) }
+    // The header's «+» while «Зарплата» shows: write a payment down rather than add an expense.
+    var salaryAdding by remember { mutableStateOf(false) }
     // monobank: charges that look like payments, and subscriptions not on the list.
     // Worked out here from the stored statement — no network on this screen.
     val context = LocalContext.current
@@ -6274,18 +6279,33 @@ fun PaymentsScreen(
             contentPadding = PaddingValues(bottom = navClearance() + Space.fabClearance)
         ) {
             // Item zero is the header alone: that is the block the compact bar watches.
-            item { ScreenHeader("Платежі", trailing = { AddButton("Додати витрату") { setAdding(true) } }) }
+            item {
+                ScreenHeader("Платежі", trailing = {
+                    if (view == PAYMENTS_SALARY) AddButton("Записати виплату") { salaryAdding = true }
+                    else AddButton("Додати витрату") { setAdding(true) }
+                })
+            }
             // Two halves of one screen: what is coming, and what already went. The
             // second used to live at the bottom of Огляд, which is not where anyone
             // looks for "скільки я заплатив за вересень".
             item {
                 SegmentedControl(
-                    options = listOf("Розклад", "По місяцях"),
+                    options = listOf("Розклад", "По місяцях", "Зарплата"),
                     selected = view,
                     modifier = Modifier.padding(horizontal = Space.screen).padding(bottom = Space.lg)
                 ) { view = it }
             }
-            if (view == PAYMENTS_BY_MONTH) {
+            if (view == PAYMENTS_SALARY) {
+                item(key = "salary") {
+                    SalaryPanel(
+                        payday = moneyHost?.settings?.payday ?: PlanStore(context).payday(),
+                        todayRate = if (rate.buy > 0.0) rate.buy else rate.sell,
+                        adding = salaryAdding,
+                        setAdding = { salaryAdding = it },
+                        modifier = Modifier.padding(horizontal = Space.screen)
+                    )
+                }
+            } else if (view == PAYMENTS_BY_MONTH) {
                 item(key = "paid-months") {
                     PaidMonths(
                         // Two months at least, so the one just ended is always there
@@ -8974,8 +8994,6 @@ fun SettingsScreen(
     var monoOpen by remember { mutableStateOf(false) }
     // «Telegram-скринька» — InboxUi.kt.
     var inboxOpen by remember { mutableStateOf(false) }
-    // «Зарплата» — SalaryUi.kt.
-    var salaryOpen by remember { mutableStateOf(false) }
     var importingEmoji by remember { mutableStateOf(false) }
     val pickEmoji = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -9166,13 +9184,6 @@ fun SettingsScreen(
                             modifier = Modifier.weight(1f).fillMaxHeight()
                         ) { onOpenTab(TAB_PAYMENTS) }
                     }
-
-                    // «Зарплата»: what this month has actually brought — SalaryUi.kt.
-                    Spacer(Modifier.height(Space.md))
-                    SalaryOverviewTile(
-                        LocalDate.ofEpochDay(today),
-                        Modifier.fillMaxWidth().revealOnEnter(5, entrance)
-                    ) { salaryOpen = true }
 
                     // Money owed back for things returned. Pink once a shop is past
                     // its days; until then it is simply money on its way.
@@ -9723,12 +9734,6 @@ fun SettingsScreen(
     }
     if (monoOpen) MonoSheet { monoOpen = false }
     if (inboxOpen) InboxSheet { inboxOpen = false }
-    if (salaryOpen) {
-        SalarySheet(
-            moneyHost?.settings?.payday ?: PlanStore(context).payday(),
-            store.fxRate().first.let { if (it.buy > 0.0) it.buy else it.sell }
-        ) { salaryOpen = false }
-    }
     if (phoneOpen) {
         NovaPhoneDialog(novaPhone, { phoneOpen = false }) { typed ->
             parcelPrefs.savePhone(typed).also { saved -> if (saved) novaPhone = parcelPrefs.phone() }

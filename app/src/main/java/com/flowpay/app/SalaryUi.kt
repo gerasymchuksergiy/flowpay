@@ -1,5 +1,8 @@
 package com.flowpay.app
 
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -32,6 +35,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,31 +53,13 @@ import androidx.compose.ui.unit.dp
 import java.time.LocalDate
 
 /**
- * «Зарплата»: the tile on Огляд and the sheet behind it.
+ * «Зарплата»: the third view of Платежі.
  *
  * Kept to three things on purpose — the owner found the first version, with a
  * month switcher, three add tiles and a bar chart, confusing («зроби зрозуміліше»):
  * this month's total, one button to write a payment down, and the list of months.
  * The arithmetic is in Salary.kt.
  */
-
-/** The tile on Огляд: what this month has brought so far. */
-@Composable
-fun SalaryOverviewTile(today: LocalDate, modifier: Modifier = Modifier, onOpen: () -> Unit) {
-    val context = LocalContext.current
-    val version = SalaryStore.version
-    val entries = remember(version) { SalaryStore(context).entries() }
-    val tile = salaryTile(entries, today)
-    OverviewTile(
-        "Зарплата за ${monthName(today.monthValue).lowercase()}",
-        if (tile.value == "—") tile.value else personalFigure(tile.value),
-        personal(tile.caption),
-        emoji = "💼",
-        // Sand: mint is «Мені винні», which can sit right under this tile.
-        colour = TileSand,
-        modifier = modifier
-    ) { onOpen() }
-}
 
 /** The pastel a kind wears when it is the one picked in the form. */
 private fun kindColour(kind: SalaryKind): Color = when (kind) {
@@ -82,13 +68,20 @@ private fun kindColour(kind: SalaryKind): Color = when (kind) {
     SalaryKind.OTHER -> TileLavender
 }
 
-/** The sheet: the log, and the form for one payment in its place while that is open. */
+/**
+ * «Зарплата» as the third view of Платежі (owner's call, 22 November 2026 — it
+ * first opened as a sheet from a tile on Огляд). The log on the page; the form for
+ * one payment and the paste form rise over it as sheets.
+ */
 @Composable
-fun SalarySheet(
+fun SalaryPanel(
     payday: Payday,
     /** Hryvnias for a dollar today — what a new payment's rate starts at. Nought when none has loaded. */
     todayRate: Double,
-    onClose: () -> Unit
+    /** The header's «+» on Платежі while this view shows: write a payment down. */
+    adding: Boolean,
+    setAdding: (Boolean) -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val store = remember { SalaryStore(context) }
@@ -102,6 +95,24 @@ fun SalarySheet(
     var pasting by remember { mutableStateOf(false) }
     var said by remember { mutableStateOf<String?>(null) }
 
+    val thisMonth = monthKey(today)
+    fun startNew() {
+        isNew = true
+        editing = SalaryEntry(
+            month = thisMonth,
+            kind = suggestedKind(entries, thisMonth, payday),
+            amount = 0.0,
+            day = today.toEpochDay(),
+            rate = todayRate
+        )
+    }
+    LaunchedEffect(adding) {
+        if (adding) {
+            if (editing == null) startNew()
+            setAdding(false)
+        }
+    }
+
     if (pasting) {
         SalaryPasteForm(
             entries = entries,
@@ -112,7 +123,6 @@ fun SalarySheet(
             },
             onBack = { pasting = false }
         )
-        return
     }
 
     val current = editing
@@ -131,82 +141,131 @@ fun SalarySheet(
             },
             onBack = { editing = null }
         )
-        return
     }
 
-    val thisMonth = monthKey(today)
     val months = salaryMonths(entries)
     val now = months.firstOrNull { it.month == thisMonth }
+    val previous = months.firstOrNull { it.month == shiftMonthKey(thisMonth, -1) }
+    val year = salaryYear(entries, today.year)
+    // The tallest month, for the thin bar under each month's figure.
+    val tallest = months.maxOfOrNull { if (it.uahKnown) it.uah else it.total } ?: 0.0
 
-    FormSheet(
-        title = "Зарплата",
-        confirmLabel = "Готово",
-        confirmEnabled = true,
-        onConfirm = onClose,
-        onDismiss = onClose
-    ) {
-        // 1. This month.
+    Column(modifier) {
+        // 1. This month, in the one lime panel — with where each kind stands inside it.
         HeroPanel(
             label = "Отримано за ${monthName(today.monthValue).lowercase()}",
             // In hryvnias, which the pay is agreed in; the dollars that came, under it.
             value = personalFigure(now?.let { salaryMainFigure(it) } ?: money(0.0)),
-            caption = personal(
-                now?.let { listOfNotNull(salaryDollarLine(it), salaryBreakdown(it)).joinToString("\n") }
-                    ?: "Ще нічого не записано"
-            ),
+            caption = personal(now?.let { salaryDollarLine(it) } ?: "Ще нічого не записано"),
             muted = now == null,
-            emoji = "💼"
-        )
-
-        // 2. The one way in.
-        Button(
-            onClick = {
-                isNew = true
-                editing = SalaryEntry(
-                    month = thisMonth,
-                    kind = suggestedKind(entries, thisMonth, payday),
-                    amount = 0.0,
-                    day = today.toEpochDay(),
-                    rate = todayRate
-                )
-            },
-            modifier = Modifier.fillMaxWidth().padding(top = Space.md).height(Space.touchRow),
-            shape = Radius.pill,
-            colors = ButtonDefaults.buttonColors(containerColor = SurfaceRaised, contentColor = TextPrimary)
-        ) {
-            Icon(Icons.Default.Add, null, Modifier.size(20.dp))
-            Spacer(Modifier.width(Space.sm))
-            Text("Записати виплату", fontWeight = Type.medium)
-        }
-        TextButton({ pasting = true }, Modifier.fillMaxWidth()) {
-            Text("Вставити кілька виплат списком", color = TextSecondary)
-        }
-        said?.let {
-            Text(it, color = TextPrimary, fontSize = Type.captionSize, modifier = Modifier.padding(bottom = Space.xs))
-        }
-
-        // 3. Every month, newest first.
-        if (months.isEmpty()) {
-            Spacer(Modifier.height(Space.lg))
-            EmptyInvite(
-                "Тут буде список по місяцях",
-                "Прийшов аванс чи зарплата — натисніть «Записати виплату» і вкажіть суму."
-            )
-        } else {
-            Row(Modifier.padding(top = Space.xl), verticalAlignment = Alignment.CenterVertically) {
-                Text("По місяцях", Modifier.weight(1f), fontSize = Type.bodySize, fontWeight = Type.medium)
-                val year = salaryYear(entries, today.year)
-                if (year.months > 0) {
-                    Text(
-                        personal("за ${year.year} рік ${if (year.uahKnown) money(year.uah) else dollars(year.total)}"),
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        style = Tabular
-                    )
+            emoji = "💼",
+            footer = {
+                Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+                    listOf(SalaryKind.ADVANCE, SalaryKind.SALARY).forEach { kind ->
+                        val got = now?.entries?.filter { it.kind == kind }.orEmpty()
+                        KindChip(
+                            kind,
+                            when {
+                                got.isEmpty() -> "ще ні"
+                                got.all { it.rate > 0.0 } -> personal(money(got.sumOf { it.uah }))
+                                else -> personal(dollars(got.sumOf { it.amount }))
+                            },
+                            done = got.isNotEmpty(),
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
+        )
+
+        // 2. The year and the month before, as two tiles — the same pair Розклад has.
+        if (months.isNotEmpty()) {
+            Spacer(Modifier.height(Space.md))
+            Row(
+                Modifier.height(IntrinsicSize.Min),
+                horizontalArrangement = Arrangement.spacedBy(Space.md)
+            ) {
+                FigureTile(
+                    "За ${year.year} рік",
+                    personalFigure(if (year.uahKnown) money(year.uah) else dollars(year.total)),
+                    when (year.months) {
+                        0 -> "ще нічого"
+                        1 -> "1 місяць"
+                        else -> personal(
+                            "≈ ${if (year.uahKnown) money(kotlin.math.round(year.uah / year.months)) else dollars(kotlin.math.round(year.average))} на місяць"
+                        )
+                    },
+                    "📅",
+                    TileSky,
+                    Modifier.weight(1f).fillMaxHeight()
+                )
+                FigureTile(
+                    previous?.let { "За ${monthName(monthKeyDate(it.month)!!.monthValue).lowercase()}" } ?: "Минулий місяць",
+                    previous?.let { personalFigure(salaryMainFigure(it)) } ?: "—",
+                    previous?.let { p -> salaryDollarLine(p)?.let { personal(it) } } ?: "не записано",
+                    "🗓️",
+                    TileLavender,
+                    Modifier.weight(1f).fillMaxHeight()
+                )
+            }
+        }
+
+        // 3. The ways in: one payment, or a whole history.
+        Spacer(Modifier.height(Space.md))
+        Row(horizontalArrangement = Arrangement.spacedBy(Space.sm)) {
+            Button(
+                onClick = { startNew() },
+                modifier = Modifier.weight(1f).height(Space.touchRow),
+                shape = Radius.pill,
+                colors = ButtonDefaults.buttonColors(containerColor = SurfaceRaised, contentColor = TextPrimary)
+            ) {
+                Icon(Icons.Default.Add, null, Modifier.size(20.dp))
+                Spacer(Modifier.width(Space.sm))
+                Text("Записати виплату", fontWeight = Type.medium, maxLines = 1)
+            }
+            OutlinedButton(
+                onClick = { pasting = true },
+                modifier = Modifier.height(Space.touchRow),
+                shape = Radius.pill,
+                border = BorderStroke(1.dp, HairLine),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = TextPrimary)
+            ) { Text("Списком", maxLines = 1) }
+        }
+        said?.let {
+            Text(it, Modifier.padding(top = Space.sm), color = TextSecondary, fontSize = Type.captionSize)
+        }
+
+        // 4. Every month, newest first.
+        if (months.isEmpty()) {
+            Card(
+                Modifier.fillMaxWidth().padding(top = Space.lg).litEdge(Radius.md),
+                colors = CardDefaults.cardColors(containerColor = SurfaceBase),
+                shape = Radius.md
+            ) {
+                Row(Modifier.padding(Space.lg), verticalAlignment = Alignment.CenterVertically) {
+                    EmojiGlyph("🗂️", 36.dp)
+                    Spacer(Modifier.width(Space.md))
+                    Column(Modifier.weight(1f)) {
+                        Text("Тут буде список по місяцях", fontSize = Type.cardTitleSize, fontWeight = Type.medium)
+                        Text(
+                            "Прийшов аванс чи зарплата — «Записати виплату». Кілька старих одразу — «Списком».",
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            lineHeight = Type.captionLine
+                        )
+                    }
+                }
+            }
+        } else {
+            Text(
+                "По місяцях",
+                Modifier.padding(top = Space.xl, bottom = Space.xs),
+                fontSize = Type.bodySize,
+                fontWeight = Type.medium
+            )
             months.forEach { month ->
-                SalaryMonthCard(month) { entry ->
+                val size = if (month.uahKnown) month.uah else month.total
+                SalaryMonthCard(month, if (tallest > 0.0) (size / tallest).toFloat() else 0f) { entry ->
                     isNew = false
                     editing = entry
                 }
@@ -221,66 +280,131 @@ fun SalarySheet(
     }
 }
 
-/** One month: name and total on one line, then each payment on its own. */
+/** «💵 Аванс · 24 720 ₴» or «💼 Зарплата · ще ні», on the lime panel. */
 @Composable
-private fun SalaryMonthCard(month: SalaryMonth, onEdit: (SalaryEntry) -> Unit) {
+private fun KindChip(kind: SalaryKind, value: String, done: Boolean, modifier: Modifier = Modifier) {
+    Row(
+        modifier
+            .background(AccentInk.copy(alpha = if (done) 0.12f else 0.06f), Radius.pill)
+            .padding(horizontal = Space.md, vertical = Space.sm),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        EmojiGlyph(kind.emoji, 18.dp)
+        Spacer(Modifier.width(Space.xs))
+        Column {
+            Text(kind.label, color = AccentInk.copy(alpha = 0.65f), fontSize = 11.sp, maxLines = 1)
+            Text(
+                value,
+                color = AccentInk.copy(alpha = if (done) 1f else 0.5f),
+                fontSize = Type.captionSize,
+                fontWeight = Type.strong,
+                maxLines = 1,
+                style = Tabular
+            )
+        }
+    }
+}
+
+/** A pastel tile with one figure: the year, the month before. */
+@Composable
+private fun FigureTile(label: String, value: String, caption: String, emoji: String, colour: Color, modifier: Modifier) {
+    BentoTile(colour, modifier) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(label, Modifier.weight(1f), color = softInkOn(colour), fontSize = Type.captionSize, maxLines = 1)
+            EmojiGlyph(emoji, 24.dp)
+        }
+        Spacer(Modifier.height(Space.xs))
+        SplitFigure(value, 20.sp, colour = inkOn(colour))
+        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.height(Space.sm))
+        TileCaption(caption, colour)
+    }
+}
+
+/**
+ * One month: its name, its figure in the display face with the dollars beside it,
+ * a thin bar against the best month, then each payment — tap one to change it.
+ */
+@Composable
+private fun SalaryMonthCard(month: SalaryMonth, share: Float, onEdit: (SalaryEntry) -> Unit) {
     Card(
         Modifier.fillMaxWidth().padding(top = Space.sm).litEdge(Radius.md),
         colors = CardDefaults.cardColors(containerColor = SurfaceBase),
         shape = Radius.md
     ) {
         Column(Modifier.padding(horizontal = Space.lg, vertical = Space.md)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    monthTitle(month.month),
-                    Modifier.weight(1f),
-                    fontSize = Type.cardTitleSize,
-                    fontWeight = Type.medium
-                )
-                Column(horizontalAlignment = Alignment.End) {
+            Text(monthTitle(month.month), color = TextSecondary, fontSize = Type.captionSize)
+            Row(verticalAlignment = Alignment.Bottom) {
+                SplitFigure(personalFigure(salaryMainFigure(month)), 22.sp, Modifier.weight(1f), colour = TextPrimary)
+                if (month.uahKnown) {
                     Text(
-                        personalFigure(salaryMainFigure(month)),
-                        fontSize = Type.cardTitleSize,
-                        fontWeight = FontWeight.Bold,
+                        personal(dollars(month.total)),
+                        Modifier.padding(bottom = 2.dp),
+                        color = TextSecondary,
+                        fontSize = Type.captionSize,
                         style = Tabular
                     )
-                    if (month.uahKnown) {
-                        Text(personal(dollars(month.total)), color = TextSecondary, fontSize = Type.captionSize, style = Tabular)
-                    }
                 }
             }
-            Spacer(Modifier.height(Space.xs))
+            // How this month stands against the best one — a glance, not a chart.
+            Box(
+                Modifier
+                    .padding(top = Space.sm)
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .background(HairLine, Radius.pill)
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxWidth(share.coerceIn(0.02f, 1f))
+                        .height(4.dp)
+                        .background(TileMint, Radius.pill)
+                )
+            }
+            Spacer(Modifier.height(Space.sm))
             month.entries.forEach { entry ->
                 Row(
                     Modifier
                         .fillMaxWidth()
+                        .clip(Radius.sm)
                         .clickable(role = Role.Button, onClickLabel = "Змінити") { onEdit(entry) }
-                        .padding(vertical = Space.xs),
+                        .padding(vertical = Space.sm),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    EmojiGlyph(entry.kind.emoji, 20.dp)
-                    Spacer(Modifier.width(Space.sm))
-                    Text(
-                        // «Зарплата · 580 $ × 41,50» — the dollars and the rate that made the hryvnias.
-                        personal(
-                            listOfNotNull(
-                                entry.kind.label,
-                                entry.note.takeIf { it.isNotBlank() },
-                                if (entry.rate > 0.0) "${dollars(entry.amount)} × ${figure(entry.rate, 2)}" else null
-                            ).joinToString(" · ")
-                        ),
-                        Modifier.weight(1f).padding(end = Space.sm),
-                        color = TextSecondary,
-                        fontSize = Type.captionSize,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    Box(
+                        Modifier.size(32.dp).background(SurfaceRaised, Radius.pill),
+                        contentAlignment = Alignment.Center
+                    ) { EmojiGlyph(entry.kind.emoji, 18.dp) }
+                    Spacer(Modifier.width(Space.md))
+                    Column(Modifier.weight(1f).padding(end = Space.sm)) {
+                        Text(
+                            listOfNotNull(entry.kind.label, entry.note.takeIf { it.isNotBlank() }).joinToString(" · "),
+                            fontSize = Type.bodySize,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            personal(
+                                listOfNotNull(
+                                    // «16.11» rather than «16 листопада»: the rate has to fit beside it.
+                                    LocalDate.ofEpochDay(entry.day).let { d ->
+                                        String.format(java.util.Locale.ROOT, "%02d.%02d", d.dayOfMonth, d.monthValue)
+                                    }.takeIf { entry.day > 0 },
+                                    if (entry.rate > 0.0) "${dollars(entry.amount)} × ${figure(entry.rate, 2)}" else null
+                                ).joinToString(" · ")
+                            ),
+                            color = TextSecondary,
+                            fontSize = Type.captionSize,
+                            maxLines = 1
+                        )
+                    }
                     Text(
                         personalFigure(if (entry.rate > 0.0) money(entry.uah) else dollars(entry.amount)),
-                        fontSize = Type.captionSize,
+                        fontSize = Type.bodySize,
+                        fontWeight = Type.medium,
                         style = Tabular
                     )
-                    Icon(Icons.Default.ChevronRight, null, Modifier.size(16.dp), tint = TextDisabled)
+                    Icon(Icons.Default.ChevronRight, null, Modifier.size(18.dp), tint = TextDisabled)
                 }
             }
         }

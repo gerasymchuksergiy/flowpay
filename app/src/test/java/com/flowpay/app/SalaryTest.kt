@@ -187,19 +187,4 @@ class SalaryTest {
         // A repeated line inside one paste counts once.
         assertEquals(1, newPayments(emptyList(), list.take(1) + list.take(1).map { it.copy(id = "other") }).size)
     }
-
-    @Test
-    fun `the tile says this month, or that nothing is written yet`() {
-        assertEquals(SalaryTileText("—", "за листопад ще не записано"), salaryTile(emptyList(), nov))
-        val log = listOf(
-            entry("2026-11", SalaryKind.ADVANCE, 15_000.0, 10),
-            entry("2026-10", SalaryKind.SALARY, 23_000.0, 3)
-        )
-        assertEquals(SalaryTileText(dollars(15_000.0), "аванс ${dollars(15_000.0)}"), salaryTile(log, nov))
-        val withRate = listOf(SalaryEntry("a", "2026-11", SalaryKind.ADVANCE, 300.0, 1L, rate = 41.0))
-        assertEquals(
-            SalaryTileText(money(12_300.0), "прийшло ${dollars(300.0)} · аванс ${money(12_300.0)}"),
-            salaryTile(withRate, nov)
-        )
-    }
 }

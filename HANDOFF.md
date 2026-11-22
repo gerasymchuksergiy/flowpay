@@ -1972,10 +1972,22 @@ salary — and see what a month came to, as a list.
 
 ### Files
 `Salary.kt` (pure: `SalaryEntry`, `SalaryMonth`, `salaryMonths`,
-`salaryBreakdown`, `salaryYear`, `suggestedKind`, `lastAmount`, `salaryTile`,
-`SalaryStore`; tests `SalaryTest`), `SalaryUi.kt` (the tile on Огляд and the
-sheet), JVM renders `screens/SalaryShots.kt`. Hooks in MainActivity: the tile
-after the four Огляд tiles, `salaryOpen`, `exportJson`/`importJson`.
+`salaryBreakdown`, `salaryMainFigure`, `salaryYear`, `suggestedKind`,
+`lastAmount`, `parseSalaryLines`, `newPayments`, `SalaryStore`; tests
+`SalaryTest`), `SalaryUi.kt` (`SalaryPanel` and its forms), JVM renders
+`screens/SalaryShots.kt` (drives the real app: Платежі → «Зарплата»). Hooks in
+MainActivity: `PAYMENTS_SALARY`, the third segment and the header «+» in
+`PaymentsScreen`, `exportJson`/`importJson`.
+
+### Where it lives (v3.26.0)
+**The third view of Платежі** — «Розклад · По місяцях · Зарплата» — at the
+owner's request; in 3.24–3.25 it was a sheet behind a tile on Огляд, now gone.
+The page: the lime panel (this month in ₴, the $ under it, two chips — аванс /
+зарплата, «ще ні» until written); two pastel tiles like Розклад's (the year with
+its average month, the month before); «Записати виплату» + «Списком»; the months
+as cards with the figure in the display face, the $ beside it and a thin mint
+bar against the best month; each payment with its date, «$ × курс» and ₴. While
+this view shows, the header «+» writes a payment, not an expense.
 
 ### Owner decisions — do not undo
 - **Agreed in hryvnias, paid in dollars** (crypto, not to a card). A payment is
@@ -2006,7 +2018,9 @@ it are the NBU official rate for each payment's date
 the owner asked for the rate to be looked up from history rather than typed.
 
 ### Releases
-v3.24.0 — the log; v3.25.0 — the paste. See below for what was checked.
+v3.24.0 — the log; v3.25.0 — the paste; v3.26.0 — moved into Платежі and
+redesigned. Each APK downloaded and checked: signature `00e2a967…bca6e`,
+versionCode, the new strings in the DEX.
 
 ### Not verified
 Seen only as JVM renders (`SalaryShots`, `SalaryPasteShots`), never on the phone.
